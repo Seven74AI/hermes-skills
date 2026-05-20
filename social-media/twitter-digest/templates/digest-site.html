@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Twitter Digest</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#000; color:#e7e9ea; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .container { max-width:600px; margin:0 auto; padding:16px; }
+  header { padding:20px 16px; border-bottom:1px solid #2f3336; position:sticky; top:0; background:#000; z-index:10; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:20px; font-weight:700; }
+  .filters { display:flex; gap:8px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid #2f3336; }
+  .filter-btn { padding:4px 12px; border-radius:16px; border:1px solid #536471; background:transparent; color:#e7e9ea; cursor:pointer; font-size:13px; }
+  .filter-btn.active { background:#1d9bf0; border-color:#1d9bf0; color:#fff; }
+  .day-header { padding:16px; font-size:18px; font-weight:700; color:#1d9bf0; border-bottom:1px solid #2f3336; }
+  .tweet { padding:12px 16px; border-bottom:1px solid #2f3336; display:flex; gap:10px; }
+  .tweet:hover { background:#080808; }
+  .avatar { width:40px; height:40px; border-radius:50%; flex-shrink:0; background:#2f3336; }
+  .tweet-body { flex:1; min-width:0; }
+  .tweet-header { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-bottom:4px; }
+  .tweet-name { font-weight:700; font-size:14px; }
+  .tweet-handle { color:#71767b; font-size:14px; }
+  .tweet-text { font-size:15px; line-height:1.5; word-wrap:break-word; margin:4px 0; }
+  .tweet-text a { color:#1d9bf0; text-decoration:none; }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .badge { padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+  .badge-signal { background:#1d9bf01a; color:#1d9bf0; }
+  .badge-theme { background:#00ba7c1a; color:#00ba7c; }
+  .badge-source { background:#f918801a; color:#f91880; }
+  .tweet-meta { display:flex; gap:16px; margin-top:8px; color:#71767b; font-size:13px; }
+  .tweet-link { color:#71767b; font-size:12px; text-decoration:none; }
+  .tweet-link:hover { color:#1d9bf0; }
+  .parent-tweet { padding:8px 12px; background:#0a0a0a; border-radius:8px; margin-bottom:8px; font-size:14px; }
+  .thread { flex-direction:column; }
+  .media-grid { display:flex; gap:4px; flex-wrap:wrap; margin:8px 0; }
+  .tweet-media { max-width:100%; max-height:300px; border-radius:12px; border:1px solid #2f3336; }
+  .video-link { color:#1d9bf0; font-size:13px; text-decoration:none; display:inline-block; margin:4px 0; }
+  .empty { padding:40px 16px; text-align:center; color:#71767b; }
+  .tab-bar { display:flex; border-bottom:1px solid #2f3336; }
+  .tab { flex:1; padding:12px; text-align:center; color:#71767b; font-size:15px; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab:hover { background:#080808; }
+  .tab.active { color:#e7e9ea; border-bottom-color:#1d9bf0; font-weight:600; }
+  .signal-sig { color:#f91880; }
+  .signal-insight { color:#f5a623; }
+  .signal-disc { color:#00ba7c; }
+  .signal-link { color:#71767b; }
+  footer { padding:20px; text-align:center; color:#71767b; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗞️ Twitter Digest</h1>
+  <span id="date-range" style="color:#71767b;font-size:13px;"></span>
+</header>
+<div class="tab-bar">
+  <div class="tab active" data-list="all">All</div>
+  <div class="tab" data-list="Dev/AI">Dev/AI</div>
+  <div class="tab" data-list="Crypto">Crypto</div>
+</div>
+<div class="filters">
+  <span style="color:#71767b;font-size:13px;align-self:center;">Signal:</span>
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="🔴 Signal">🔴 Signal</button>
+  <button class="filter-btn" data-filter="🟡 Insight">🟡 Insight</button>
+  <button class="filter-btn" data-filter="🟢 Discussion">🟢 Discussion</button>
+  <button class="filter-btn" data-filter="⚪ Link/Ref">⚪ Link/Ref</button>
+</div>
+<div class="container" id="feed"></div>
+<footer>Updated daily at 7h Paris · <a href="https://github.com/Seven74AI/twitter-digest" style="color:#1d9bf0;">GitHub</a></footer>
+<script>
+let allDigests = [], activeList = 'all', activeSignal = 'all';
+async function loadDigests() {
+  try {
+    const res = await fetch('data/index.json');
+    const files = await res.json();
+    allDigests = [];
+    for (const f of files) {
+      try { const r = await fetch(`data/${f}`); allDigests.push(await r.json()); }
+      catch(e) { console.warn(f, e); }
+    }
+    allDigests.sort((a,b) => b.date.localeCompare(a.date));
+    render();
+  } catch(e) { document.getElementById('feed').innerHTML = '<div class="empty">No digests yet.</div>'; }
+}
+function render() {
+  const feed = document.getElementById('feed');
+  let html = '', total = 0;
+  const filtered = allDigests.filter(d => activeList === 'all' || d.list === activeList);
+  if (!filtered.length) { feed.innerHTML = '<div class="empty">No digests for this list.</div>'; return; }
+  for (const digest of filtered) {
+    const tweets = digest.tweets.filter(t => {
+      const t2 = t.is_reply ? t.reply : t;
+      return activeSignal === 'all' || t2.signal === activeSignal;
+    });
+    if (!tweets.length) continue;
+    total += tweets.length;
+    html += `<div class="day-header">${new Date(digest.date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})} · ${digest.list} · ${tweets.length} tweets</div>`;
+    for (const t of tweets) {
+      if (t.is_reply) html += renderPair(t); else html += renderTweet(t);
+    }
+  }
+  if (!html) html = '<div class="empty">No tweets match filters.</div>';
+  feed.innerHTML = html;
+  document.getElementById('date-range').textContent = filtered.length ? `${filtered[filtered.length-1].date} → ${filtered[0].date} · ${total} tweets` : '';
+}
+function renderTweet(t) {
+  const sig = t.signal||''; const sc = sig.startsWith('🔴')?'signal-sig':sig.startsWith('🟡')?'signal-insight':sig.startsWith('🟢')?'signal-disc':'signal-link';
+  const u = t.username||'?'; const init = u[0].toUpperCase();
+  return `<div class="tweet"><img class="avatar" src="${t.avatar||`data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><rect fill=%22%232f3336%22 width=%2240%22 height=%2240%22 rx=%2220%22/><text fill=%22%2371767b%22 x=%2220%22 y=%2224%22 text-anchor=%22middle%22 font-size=%2216%22>${init}</text></svg>`}" alt="${u}" loading="lazy">
+  <div class="tweet-body">
+    <div class="tweet-header"><span class="tweet-name">${t.name||u||'User'}</span><span class="tweet-handle">@${u||'unknown'}</span></div>
+    <div class="tweet-text">${linkify(t.text)}</div>
+    ${renderMedia(t.media)}
+    <div class="badges">${t.signal?`<span class="badge badge-signal ${sc}">${t.signal}</span>`:''}${(t.themes||[]).map(th=>`<span class="badge badge-theme">${th}</span>`).join('')}${t.source?`<span class="badge badge-source">${t.source}</span>`:''}</div>
+    <div class="tweet-meta">${t.likes!==undefined?`<span>❤️ ${t.likes}</span>`:''}${t.retweets!==undefined?`<span>🔄 ${t.retweets}</span>`:''}${t.tweet_url?`<a href="${t.tweet_url}" class="tweet-link" target="_blank">🔗 view on X</a>`:''}</div>
+  </div></div>`;
+}
+function renderPair(t) {
+  return `<div class="tweet thread">
+    ${t.parent?`<div class="parent-tweet"><span class="tweet-handle">↳ @${t.parent.username||'unknown'}</span><div class="tweet-text" style="color:#71767b;font-size:14px;">${linkify(t.parent.text)}</div>${renderMedia(t.parent.media)}${t.parent.tweet_url?`<a href="${t.parent.tweet_url}" class="tweet-link">🔗 view on X</a>`:''}</div>`:''}
+    <div style="margin-left:20px;border-left:2px solid #2f3336;padding-left:12px;">${renderTweet(t.reply)}</div>
+  </div>`;
+}
+function renderMedia(media) {
+  if(!media||!media.length)return'';
+  return `<div class="media-grid">${media.map(m=>m.type==='image'?`<a href="${m.url}" target="_blank"><img src="${m.url}" class="tweet-media" loading="lazy"></a>`:m.type==='video'?`<a href="${m.url}" target="_blank" class="video-link">▶️ Watch video</a>`:`<a href="${m.url}" target="_blank">📎 Media</a>`).join('')}</div>`;
+}
+function linkify(t){return(t||'').replace(/https?:\/\/[^\s]+/g,'<a href="$&" target="_blank">$&</a>').replace(/@(\w+)/g,'<a href="https://x.com/$1" target="_blank">@$1</a>');}
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));tab.classList.add('active');activeList=tab.dataset.list;render();}));
+document.querySelectorAll('.filter-btn').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');activeSignal=btn.dataset.filter;render();}));
+loadDigests();
+</script>
+</body>
+</html>

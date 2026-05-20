@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Twitter Digest</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#000; color:#e7e9ea; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .container { max-width:600px; margin:0 auto; padding:16px; }
+  header { padding:20px 16px; border-bottom:1px solid #2f3336; position:sticky; top:0; background:#000; z-index:10; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:20px; font-weight:700; }
+  .filters { display:flex; gap:8px; flex-wrap:wrap; padding:12px 16px; border-bottom:1px solid #2f3336; }
+  .filter-btn { padding:4px 12px; border-radius:16px; border:1px solid #536471; background:transparent; color:#e7e9ea; cursor:pointer; font-size:13px; }
+  .filter-btn.active { background:#1d9bf0; border-color:#1d9bf0; color:#fff; }
+  .day-header { padding:16px; font-size:18px; font-weight:700; color:#1d9bf0; border-bottom:1px solid #2f3336; }
+  .tweet { padding:12px 16px; border-bottom:1px solid #2f3336; display:flex; gap:10px; }
+  .tweet:hover { background:#080808; }
+  .avatar { width:40px; height:40px; border-radius:50%; flex-shrink:0; background:#2f3336; }
+  .tweet-body { flex:1; min-width:0; }
+  .tweet-header { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-bottom:4px; }
+  .tweet-name { font-weight:700; font-size:14px; }
+  .tweet-handle { color:#71767b; font-size:14px; }
+  .tweet-text { font-size:15px; line-height:1.5; word-wrap:break-word; margin:4px 0; }
+  .tweet-text a { color:#1d9bf0; text-decoration:none; }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .badge { padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+  .badge-signal { background:#1d9bf01a; color:#1d9bf0; }
+  .badge-theme { background:#00ba7c1a; color:#00ba7c; }
+  .badge-source { background:#f918801a; color:#f91880; }
+  .tweet-meta { display:flex; gap:16px; margin-top:8px; color:#71767b; font-size:13px; }
+  .tweet-link { color:#71767b; font-size:12px; text-decoration:none; }
+  .empty { padding:40px 16px; text-align:center; color:#71767b; }
+  .tab-bar { display:flex; border-bottom:1px solid #2f3336; }
+  .tab { flex:1; padding:12px; text-align:center; color:#71767b; font-size:15px; cursor:pointer; border-bottom:2px solid transparent; }
+  .tab.active { color:#e7e9ea; border-bottom-color:#1d9bf0; font-weight:600; }
+  .signal-sig { color:#f91880; } .signal-insight { color:#f5a623; } .signal-disc { color:#00ba7c; } .signal-link { color:#71767b; }
+  footer { padding:20px; text-align:center; color:#71767b; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗞️ Twitter Digest</h1>
+  <span id="date-range" style="color:#71767b;font-size:13px;"></span>
+</header>
+<div class="tab-bar">
+  <div class="tab active" data-list="all">All</div>
+  <div class="tab" data-list="Dev/AI">Dev/AI</div>
+  <div class="tab" data-list="Crypto">Crypto</div>
+</div>
+<div class="filters">
+  <span style="color:#71767b;font-size:13px;align-self:center;">Signal:</span>
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="🔴 Signal">🔴 Signal</button>
+  <button class="filter-btn" data-filter="🟡 Insight">🟡 Insight</button>
+  <button class="filter-btn" data-filter="🟢 Discussion">🟢 Discussion</button>
+  <button class="filter-btn" data-filter="⚪ Link/Ref">⚪ Link/Ref</button>
+</div>
+<div class="container" id="feed"></div>
+<footer>Updated daily at 7h Paris · <a href="https://github.com/Seven74AI/twitter-digest" style="color:#1d9bf0;">GitHub</a></footer>
+<script>
+let allDigests=[],activeList='all',activeSignal='all';
+async function loadDigests(){
+  try{const r=await fetch('data/index.json');const f=await r.json();allDigests=[];
+    for(const x of f){try{const r=await fetch(`data/${x}`);allDigests.push(await r.json())}catch(e){}}
+    allDigests.sort((a,b)=>b.date.localeCompare(a.date));render();
+  }catch(e){document.getElementById('feed').innerHTML='<div class="empty">No digests yet.</div>';}}
+function render(){
+  const fd=document.getElementById('feed');let h='',tt=0;
+  const fl=allDigests.filter(d=>activeList==='all'||d.list===activeList);
+  if(!fl.length){h='<div class="empty">No digests for this list.</div>';}
+  for(const d of fl){const tw=d.tweets.filter(t=>activeSignal==='all'||t.signal===activeSignal);if(!tw.length)continue;tt+=tw.length;
+    h+=`<div class="day-header">${new Date(d.date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})} · ${d.list} · ${tw.length} tweets</div>`;
+    for(const t of tw){const sc=t.signal.startsWith('🔴')?'signal-sig':t.signal.startsWith('🟡')?'signal-insight':t.signal.startsWith('🟢')?'signal-disc':'signal-link';
+      h+=`<div class="tweet"><img class="avatar" src="${t.avatar||''}" alt="${t.username}" loading="lazy" onerror="this.style.display='none'"><div class="tweet-body"><div class="tweet-header"><span class="tweet-name">${t.name}</span><span class="tweet-handle">@${t.username}</span></div><div class="tweet-text">${(t.text||'').replace(/https?:\/\/[^\s]+/g,'<a href=\"$&\" target=\"_blank\">$&</a>').replace(/@(\w+)/g,'<a href=\"https://x.com/$1\" target=\"_blank\">@$1</a>')}</div><div class="badges"><span class="badge badge-signal ${sc}">${t.signal}</span>${(t.themes||[]).map(th=>`<span class="badge badge-theme">${th}</span>`).join('')}<span class="badge badge-source">${t.source}</span></div><div class="tweet-meta">${t.tweet_url?`<a href="${t.tweet_url}" class="tweet-link" target="_blank">🔗 view on X</a>`:''}</div></div></div>`;}}
+  if(!h)h='<div class="empty">No tweets match this filter.</div>';fd.innerHTML=h;
+  document.getElementById('date-range').textContent=fl.length?`${fl[fl.length-1].date} → ${fl[0].date} · ${tt} tweets`:'';}
+document.querySelectorAll('.tab').forEach(t=>{t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');activeList=t.dataset.list;render();})});
+document.querySelectorAll('.filter-btn').forEach(b=>{b.addEventListener('click',()=>{document.querySelectorAll('.filter-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');activeSignal=b.dataset.filter;render();})});
+loadDigests();
+</script>
+</body>
+</html>
