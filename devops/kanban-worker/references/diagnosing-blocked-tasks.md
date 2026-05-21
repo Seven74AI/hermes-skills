@@ -251,6 +251,87 @@ hermes kanban --board <board> dispatch
 6. Unblock with explanatory comment
 ```
 
+### 9. `respawn_guarded: active_pr` — task stuck in `ready`, never dispatched
+
+**What it means**: The dispatcher sees an open PR on the upstream repo and refuses to spawn a worker — it treats the PR as "work already in progress." The task stays `ready` but the dispatcher emits `respawn_guarded` events with reason `active_pr` instead of spawning.
+
+**Symptoms**:
+- Task is `ready` for hours, never transitions to `running`
+- Event log shows dozens/hundreds of `respawn_guarded` events: `{"reason": "active_pr"}`
+- `hermes kanban diagnostics` shows these tasks as "guarded, not dispatched"
+- Other tasks dispatched normally — only specific tasks affected
+
+**Diagnosis**:
+```bash
+# Check if task has open PRs blocking it
+python3 -c "
+import sqlite3, json
+db = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+events = db.execute(\"SELECT payload FROM task_events WHERE kind='respawn_guarded' AND task_id='<task_id>' ORDER BY id DESC LIMIT 1\").fetchone()
+if events:
+    p = json.loads(events[0])
+    print(f'Block reason: {p.get(\"reason\")}')
+db.close()
+"
+
+# Check open PRs on upstream
+gh pr list --repo <upstream-org>/<repo> --state open --json number,title,headRefName
+```
+
+**Root cause**: Workers created PRs targeting the upstream repo (`mnlamart/shop`) instead of pushing only to the fork (`Seven74AI/shop`). The dispatcher interprets the open upstream PR as the task being "already in flight" and won't dispatch a new worker.
+
+**Fix**:
+1. Close the premature PRs on upstream: `gh pr close <number> --repo <upstream-org>/<repo>`
+2. Update the project skill to explicitly forbid creating upstream PRs until consolidation phase
+3. Workers must push branches to fork only, run CI, then block `review-required` — NO `gh pr create`
+
+**Real case (shop 2026-05-20)**: 4 P1 tasks had 240 `respawn_guarded` events in 1 hour because workers pushed 11 PRs to `mnlamart/shop` instead of `Seven74AI/shop`. Closing the PRs resolved it immediately — the next dispatcher tick spawned normally.
+
+### 8. Crash loop: `running` + high `consecutive_failures` — never blocked
+
+**What it means**: The worker process crashes on bootstrap (missing skill, corrupt workspace, config error, broken profile) and the dispatcher immediately respawns it. The task stays `status='running'` forever, invisible to the block watchdog.
+
+**Why the block watchdog misses it**: The watchdog only scans `--status blocked`. A crash-loop task is `running` — the dispatcher keeps giving it fresh claim locks.
+
+**Symptoms**:
+- `hermes kanban diagnostics` shows `repeated_crashes: Agent crashed 176x`
+- `consecutive_failures` climbs indefinitely in `kanban.db`
+- Board has tasks in `ready` that never dispatch (all slots consumed by crash-loop + normal workers)
+
+**Diagnosis via SQLite** (fast, no CLI overhead):
+```bash
+python3 -c "
+import sqlite3
+db = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+rows = db.execute('''SELECT id, title, assignee, consecutive_failures, last_failure_error
+                     FROM tasks WHERE status=\"running\" AND consecutive_failures >= 5
+                     ORDER BY consecutive_failures DESC''').fetchall()
+for r in rows:
+    print(f'{r[0][:16]} | {r[3]}x | @{r[2]} | {r[4][:80] if r[4] else \"?\"}')
+db.close()
+"
+```
+
+**Common bootstrap failures**:
+- **Missing skill in profile**: Skill exists in main `~/.hermes/skills/` but not in `~/.hermes/profiles/<profile>/skills/`. The `.skills_prompt_snapshot.json` cache can mask this — other workers use the cached snapshot that still lists the skill, but a snapshot regeneration reveals the missing directory.
+- **Corrupt workspace**: `kanban/boards/<board>/workspaces/<task_id>/` doesn't exist or is unreadable.
+- **Profile config error**: Profile's `config.yaml` has wrong provider/model → API auth fails → process exits code 1.
+
+**Fix**:
+1. Diagnose root cause from `last_failure_error` in kanban.db
+2. Fix the underlying issue (copy skill, recreate workspace, fix profile config)
+3. Reassign to release stale claim: `hermes kanban --board <board> reassign <task_id> <profile> --reclaim`
+4. Dispatch: `hermes kanban --board <board> dispatch`
+
+**Automated detection**: `~/.hermes/scripts/check-crash-loops.py` (runs via `watchdog-all.py` cron) auto-blocks tasks with ≥5 `consecutive_failures` — stops dispatcher waste, alerts user. Config: `CRASH_LOOP_THRESHOLD=5`, `AUTO_BLOCK=true`.
+
+**Prevention**: After creating/updating project skills (`dogfood/*`), verify they exist in ALL profiles that will use them:
+```bash
+for p in coder reviewer researcher planner; do
+  [ -d "/root/.hermes/profiles/$p/skills/dogfood/<skill>" ] && echo "✅ $p" || echo "❌ $p MISSING"
+done
+```
+
 ## When NOT to unblock
 
 - **Review-gate with review task still pending** → let the review process work

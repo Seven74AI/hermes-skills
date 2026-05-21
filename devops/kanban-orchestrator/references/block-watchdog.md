@@ -23,14 +23,16 @@ A cron-based watchdog that runs every 5 minutes:
 ## Setup
 
 ```bash
-# 1. Deploy the scan script (Python, scans all boards)
-#    See ~/.hermes/scripts/check-blocked-tasks.py
+# 1. Deploy both scanner scripts
+#    check-blocked-tasks.py  — scans --status blocked
+#    check-crash-loops.py    — scans running + consecutive_failures >= 5
+#    watchdog-all.py         — wrapper that runs both
 
 # 2. Create the cron job
 hermes cronjob create \
   --name "Kanban Block Watchdog" \
   --schedule "every 5m" \
-  --script check-blocked-tasks.py \
+  --script watchdog-all.py \
   --enabled-toolsets terminal \
   --prompt "... watchdog prompt ..."
 ```
@@ -68,10 +70,32 @@ The most common pathology: a coder blocks with `review-required` but never creat
 
 **Check for duplicates first.** Scan existing tasks for ones with similar titles referencing the same blocked task ID. If a dispatchable reviewer already exists, don't create a duplicate. If only deadlocked duplicates exist, archive them then create the real one.
 
+## Crash-Loop Watchdog (`check-crash-loops.py`)
+
+The block watchdog only sees tasks with `status='blocked'`. A task in a **crash loop** stays `status='running'` because the dispatcher keeps respawning it — the watchdog never sees it. Same for **timeout loops** where the worker exceeds `max_runtime_seconds` every run but `consecutive_failures` stays 0 (kanban bug — timeout doesn't increment the counter).
+
+### Detection phases
+
+**Phase 1 — Crash loops:** `consecutive_failures >= CRASH_LOOP_THRESHOLD` (default 5). Catches genuine crashes (segfault, OOM, protocol violation). Standard, unchanged.
+
+**Phase 2a — Timeout loops (run count):** tasks with `total_runs >= 20` AND current run has been going `>30 min`. Catches tasks that timeout→respawn endlessly but don't trigger `consecutive_failures`. The `>30 min` filter prevents false positives on freshly-reclaimed tasks that have historical runs but are now running fine with corrected settings.
+
+**Phase 2b — Stale tasks:** tasks running `>1h` with no heartbeat in `>30 min`. Catches workers that died silently (no exit, no crash signal).
+
+### DB sync
+
+When a timeout loop is detected (20+ runs), the watchdog patches `consecutive_failures` in the DB directly: `UPDATE tasks SET consecutive_failures = MIN(total_runs, 99) WHERE consecutive_failures < CRASH_LOOP_THRESHOLD`. This fixes the kanban bug where timeout doesn't increment the counter, so Phase 1 detection works next cycle.
+
+### Query optimization
+
+Uses a single `LEFT JOIN` with a pre-aggregated subquery (`GROUP BY task_id` on `task_runs`) instead of per-row correlated subqueries. This avoids O(n²) lookups on boards with 400+ task_runs. Previously the script would timeout (30s+) when scanning boards with heavy run histories; now completes in <5s.
+
 ## Known Limitations
 
 - Delivery to messaging platforms (Telegram, Discord) can fail with `RuntimeError('cannot schedule new futures after interpreter shutdown')` — use `deliver: local` and have the watchdog comment directly on tasks instead.
 - When too many workers run concurrently, OOM kills workers → tasks cycle crash→unblock→crash. Fix: set `kanban.max_spawn` (see skill body) to cap concurrent workers at 2-3. This is the definitive fix — cloning/removing profiles does not address the root cause (dispatcher spawns per-task, not per-profile).
+- **Timeout loops with <20 runs aren't detected by Phase 2a** — the run-count threshold is 20 to avoid false positives from normal retry cycles. Tasks with 5-19 runs that are stuck in timeout are caught by Phase 2b if they run >1h without heartbeat.
+- **`consecutive_failures` kanban bug.** Timeout runs don't increment `consecutive_failures` in the DB (the `enforce_max_runtime → _record_task_failure` code path looks correct but the counter stays 0 on observed tasks with 400+ timed_out runs). Phase 2 and the DB sync work around this. Root cause not yet identified in `kanban_db.py`. Fix at source when discovered.
 
 ## Delivery: ALWAYS `origin`
 
@@ -94,6 +118,32 @@ The watchdog should escalate when the same issue repeats, rather than silently r
 | Same task **unblocked 3+ times** still blocking with **same technical reason** | 🔴 **REPEATED BLOCKER** — do NOT unblock again. Escalate: "REPEATED BLOCKER: `<task_id>` blocked N times with `<reason>`. Needs root cause fix, not another unblock." |
 
 These rules prevent silent failure loops where the watchdog unblocks a task, the dispatcher retries, it fails with the same error, and the cycle repeats indefinitely without the user knowing.
+
+## Retry cooldown tuning
+
+The cooldown between crash retries is configured in `check-blocked-tasks.py` via `BACKOFF_SCHEDULE`. The current schedule is **linear**: `[120, 240, 360, 480, 600]` (2, 4, 6, 8, 10 minutes — 30 minutes total before escalation).
+
+### Trade-off: linear vs exponential
+
+| Approach | Schedule | Total before escalation | Best for |
+|----------|----------|------------------------|----------|
+| **Linear** (current) | `[120, 240, 360, 480, 600]` | 30 min | Fast feedback, busy boards where a stuck task wastes a worker slot |
+| **Exponential** (old default) | `[300, 600, 1200, 2400, 4800]` | 155 min | Fragile systems where crashes need real cool-down time (e.g. rate-limit recovery, resource contention) |
+
+**Linear is preferred for kanban boards with `max_spawn` caps.** When worker slots are scarce (e.g. `max_spawn=5` with 25 ready tasks), a stuck task burning retries holds a slot that healthy tasks need. Fast failure → fast escalation → slot freed.
+
+### When to switch back to exponential
+
+If crashes are rate-limit related (API throttling, CI runner exhaustion) and retrying every 2 minutes makes the problem worse (hammering the rate limiter), exponential backoff gives the system breathing room. But kanban crashes are rarely rate-limit related — they're more often OOM, broken code, or missing config — so fast escalation is usually better.
+
+### How to change
+
+```bash
+# Edit the schedule in the script
+$EDITOR ~/.hermes/scripts/check-blocked-tasks.py
+# Line: BACKOFF_SCHEDULE = [120, 240, 360, 480, 600]
+# No cron prompt update needed — the values are purely in the script.
+```
 
 ## Script (`check-blocked-tasks.py`)
 

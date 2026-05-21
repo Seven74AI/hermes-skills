@@ -1,7 +1,7 @@
 ---
 name: kanban-orchestrator
 description: Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill is the deeper playbook when you're specifically playing the orchestrator role.
-version: 4.1.0
+version: 4.2.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -53,8 +53,9 @@ Your job description says "route, don't execute." The rules that enforce that:
 - **Do not execute the work yourself.** Your restricted toolset usually doesn't even include terminal/file/code/web for implementation. If you find yourself "just fixing this quickly" — stop and create a task for the right specialist.
 - **For any concrete task, create a Kanban task and assign it.** Every single time.
 - **Split multi-lane requests before creating cards.** A user prompt can contain several independent workstreams. Extract those lanes first, then create one card per lane instead of bundling unrelated work into a single implementer card.
-- **Run independent lanes in parallel.** If two cards do not need each other's output, leave them unlinked so the dispatcher can fan them out. Link only true data dependencies.
+- Run independent lanes in parallel. If two cards do not need each other's output, leave them unlinked so the dispatcher can fan them out. Link only true data dependencies.
 - **Never create dependent work as independent ready cards.** If a card must wait for another card, pass `parents=[...]` in the original `kanban_create` call. Do not create it first and link it later, and do not rely on prose like "wait for T1" inside the body.
+- **After decomposition, audit the new tickets.** Check max_runtime (must be 3600s), body (must not be NULL), and parent/child links. See `kanban-profile-blueprint` skill → `references/ticket-audit-pattern.md` for the SQL query.
 - **If no specialist fits the available profiles, create a new one.** Use `hermes profile create <name> --clone-from <base>` to add a profile for a new role. Never create clones (no -2, -3) — one profile per role max.
 - **Decompose, route, and summarize — that's the whole job.**
 
@@ -217,7 +218,9 @@ Full workflow for creating a new Kanban team from scratch: profiles, SOUL.md, Gi
 
 **Parallelism with cap=1:** Since each role has exactly one profile, all tasks assigned to that role are serialized — the dispatcher queues them (though it may overspawn workers). No cloning.
 
-**Split-and-merge for complex monolithic tasks:** When a single task does too many unrelated fixes that COULD run in parallel, split it (see `references/dependency-update-pipeline.md`).
+**Split-and-merge for complex monolithic tasks:** When a single task does too many unrelated fixes that COULD run in parallel, split it. Full step-by-step pattern: `references/task-splitting.md`. Covers when to split, chain-vs-parallel decision, dependency preservation (parents→sub1, children→subN), and verification.
+
+**Bundle decomposition (multi-feature → parallel atomics):** When a ticket bundles 2+ independent features (visible from combined tags like `[GM-2+GM-3+GM-10]`), decompose into parallel atomic tasks. Different from chain-splitting — these are genuinely independent features that can run concurrently. Full recipe: `references/bundle-decomposition.md`.
 
 **Block Watchdog:** For automated detection and recovery of abnormally blocked tasks (crashes, OOM, iteration budget, missing reviewer tasks). Full pattern in `references/block-watchdog.md`.:
 
@@ -269,9 +272,47 @@ done
 
 **Circular parent dependencies (deadlock).** Creating a review task with the coder task as `parent` while the coder task is blocked waiting for review creates a deadlock — the review task stays `todo` forever because its parent is `blocked` and the dispatcher won't promote children of blocked tasks. Fix: block the coder with `review-required`, then create the review task WITHOUT a `parent` link. Include the coder task ID in the review task's body text as a reference.
 
+**Auto-unblock defeats manual blocks.** The dispatcher auto-promotes blocked tasks to `ready` when all parents are `done`. This means you cannot simply `hermes kanban block` a stuck task to free a slot — if its parents are done, the dispatcher unblocks it immediately. To stop a task from consuming a slot: either mark it `done` via SQL (`UPDATE tasks SET status='done' WHERE id='t_xxx'`), or remove its parent links first. When a task has posted a review-required handoff, it should be marked done and a standalone review task created — NOT left running or blocked. Real case (shop 2026-05-20): 2 tasks with review-required handoffs consumed worker slots for 7h; blocking them failed because parents were done; marking them done + creating standalone reviews freed the slots.
+
 **Forgetting dependency links.** If the task graph says `research -> implement -> review`, do not create all tasks as independent ready cards. Use parent links so implement/review cannot run before their inputs exist.
 
+**Stale parent→child links after archiving bundle tickets.** When you archive a bundle ticket that was a child of a root task, the root still lists it as a child in `task_links`. Run `hermes kanban unlink <root> <archived>` to clean up. Otherwise the graph shows dead references and confuses audits.
+
 **Task timeout calibration.** Different task types need different `--max-runtime`. Research/web-heavy: 600–1000s. Install/download: 120–300s. Code implementation: default 180s usually fine. Always set at creation — don't wait for 5 watchdog cycles. Full data in `references/timeout-calibration.md`.
+
+**Runtime tuning (profile vs per-task).** `max_runtime_seconds` in the profile config does NOT propagate to kanban tasks — each task has its own `max_runtime_seconds` column in `kanban.db`. `max_iterations` controls API call budget (default 50). Timeout loops are invisible to the block watchdog; the crash-loop watchdog (`check-crash-loops.py`) now detects them via run count and heartbeat staleness. 
+
+**Fix recipe when tasks timeout repeatedly:**
+```bash
+# 1. Check the actual per-task runtime (not the profile config)
+python3 -c "
+import sqlite3
+for board in ['the-swarm', 'videogame-lab', 'shop']:
+    db = sqlite3.connect(f'/root/.hermes/kanban/boards/{board}/kanban.db')
+    for r in db.execute('SELECT id, max_runtime_seconds FROM tasks WHERE status=\"running\"'):
+        print(f'{board} {r[0]} max_runtime={r[1]}')
+    db.close()
+"
+
+# 2. Fix: set per-task runtime + bump max_iterations in profile
+python3 -c "
+import sqlite3
+boards = {'the-swarm': ['t_xxx'], 'videogame-lab': ['t_yyy']}
+for board, tids in boards.items():
+    db = sqlite3.connect(f'/root/.hermes/kanban/boards/{board}/kanban.db')
+    for tid in tids:
+        db.execute('UPDATE tasks SET max_runtime_seconds = 600 WHERE id = ?', (tid,))
+    db.commit()
+    db.close()
+"
+hermes config --profile coder set kanban.max_iterations 120
+hermes config --profile planner set kanban.max_iterations 120
+
+# 3. Reclaim to restart with new settings
+hermes kanban --board <board> reclaim <id>
+```
+
+**Real case (2026-05-20):** planner on the-swarm and coder on videogame-lab both timed out at 120s despite profile `max_runtime_seconds: 600`. Root cause: the per-task DB column was `max_runtime_seconds = 120` and took precedence. 717 cumulative timeout runs across 3 tasks, all invisible to both watchdogs until `check-crash-loops.py` was upgraded with Phase 2 detection.
 
 **Budget exhaustion on migration/refactoring tasks.** When a task asks a worker to apply a migration AND re-verify the full test suite inline, the worker exhausts its iteration budget on test output (e.g. 90 iterations burned on 283 test logs in 95s). Fix: split verification from application. Reference prior benchmark results in the task body and explicitly tell workers to SKIP tests — CI will catch regressions. Seen on shop pnpm migration (2026-05-18): task blocked at 90/90 after 20min because it ran `pnpm test` inline despite a prior benchmark proving 283/283 pass.
 
@@ -301,9 +342,51 @@ Do NOT mix modes: if you read `HERMES_TENANT` for some cards and pass literals f
 
 **Shell quoting breaks on complex `--body` content.** Em dashes (`—`), French accents, backticks, and single quotes defeat `shlex.quote()` when creating tasks. Workaround: recreate with `--title` and `--assignee` only; skip `--body`. Body content can be reconstructed from context or added later via `kanban comment`.
 
+**`reclaim` does not support `--force`.** `hermes kanban reclaim <id> --force` errors with `unrecognized arguments: --force`. Reclaim stops the worker, kills the PID, and resets the task — there's no separate force mode. If reclaim says `not running or unknown id`, the task's status isn't `running` from the dispatcher's perspective, even if the DB column says `running`.
+
+**Heartbeat NULL at task level is a false-positive zombie signal.** The `tasks.last_heartbeat_at` column can be NULL even on genuinely running tasks — it's only set after the worker's first heartbeat write, and new runs start with NULL. If a previous run crashed and the dispatcher reclaimed + respawned, the task-level heartbeat stays NULL from the old run. **Always cross-check `task_runs`**: check the current run's `started_at` and `last_heartbeat_at` before declaring a zombie. A task with NULL task-level heartbeat but a current run started 11 minutes ago is alive — not a zombie.
+
+```python
+# Query both task-level and run-level heartbeat state
+import sqlite3, time
+conn = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+now = time.time()
+t = conn.execute(
+    "SELECT id, last_heartbeat_at, current_run_id FROM tasks WHERE status='running'"
+).fetchall()
+for tid, hb, run_id in t:
+    task_hb_age = (now - hb) / 60 if hb else 999
+    run = conn.execute(
+        "SELECT started_at, last_heartbeat_at FROM task_runs WHERE id=? AND status='running'",
+        (run_id,)
+    ).fetchone()
+    if run:
+        run_age = (now - run[0]) / 60
+        run_hb_age = (now - run[1]) / 60 if run[1] else run_age
+        print(f"{tid}: task_hb={task_hb_age:.0f}m run_hb={run_hb_age:.0f}m run_age={run_age:.0f}m {'✅ ALIVE' if run_hb_age < 30 else '🧟 ZOMBIE'}")
+```
+
 **`reclaim` is single-task only.** `hermes kanban reclaim` accepts exactly one task ID per invocation. Passing multiple IDs (space-separated) produces `unrecognized arguments`. Loop over task IDs individually.
 
+**`respawn_guarded` / `active_pr` — PR URLs in comments block dispatch for 24h.** The dispatcher scans `task_comments` for GitHub PR URLs (any repo, any state — open, merged, or closed). When found within `_RESPAWN_GUARD_PR_WINDOW` (86400s = 24h), it sets `active_pr` guard and refuses to spawn. The PR being merged/closed does NOT clear the guard — the comment persists. **Never post PR URLs in kanban comments.** Use GitHub labels instead: apply `kanban:TASK_ID` label to the PR, reference the label in block reasons and comments.
+
+**Fix when tasks are stuck on `active_pr`:**
+```python
+import sqlite3
+conn = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+# Find offending comments
+rows = conn.execute(
+    "SELECT id, task_id FROM task_comments WHERE body LIKE '%github.com%pull%'"
+).fetchall()
+# Delete them
+conn.execute("DELETE FROM task_comments WHERE body LIKE '%github.com%pull%'")
+conn.commit()
+```
+Tasks become spawnable on the next dispatcher tick after deletion.
+
 **New board dispatcher claims all tasks instantly.** After creating tasks on a freshly-created board, its dispatcher loop picks them up within seconds — even if worker profiles are stopped. This produces a wave of crash/block events. Always `reclaim` all tasks on the new board after a bulk migration to reset them to `ready` (or `todo` if you want them held).
+
+**Kanban notify subscriptions — zero by default.** No Telegram/Discord notifications are sent unless you explicitly subscribe. The gateway delivers events (`completed`, `blocked`, `promoted`, etc.) to subscribed channels via the `kanban_notify_subs` table. CLI: `hermes kanban notify-subscribe/unsubscribe/list`. Full schema, batch subscription SQL, and event type coverage in `references/kanban-notify.md`.
 
 **Bulk unblock risks OOM on memory-constrained hosts.** When many tasks (20+) are unblocked simultaneously, the dispatcher may claim them all and spawn workers for each. Each worker loads a model (~120MB RSS), so 40 unblocked tasks → 40 workers → 4.8GB just for workers plus the gateway's own memory. On 8GB hosts, this OOMs instantly. **Fix: set `kanban.max_spawn` to cap concurrent workers** (see \"Controlling worker concurrency\" above). Without this config, unblock in small batches (5-10), wait for workers to finish or block, then unblock the next batch.
 
@@ -350,12 +433,26 @@ frees up. Recommend setting to slightly below your number of active profiles
 Gateway restart is mandatory — the config is read once at startup.
 
 **Verification:** after restart, `ps aux | grep "hermes.*kanban"` should
-show at most `max_spawn` workers, and `free -h` should show healthy memory.
+show at most `max_spawn` workers **per board**, and `free -h` should show healthy memory.
+With 10 boards and `max_spawn=5`, up to 50 concurrent workers is expected — not a bug.
 
 **⚠️ Pitfall:** `max_spawn` only limits **new** spawns. Tasks already `running`
 before the config change or gateway restart keep their claims until TTL expires
 (~15 min). After any `max_spawn` change or gateway restart, reclaim all running
 tasks to reset them:
+
+**⚠️ Pitfall — same-tick overspawn:** the dispatcher computes `running_count`
+(`SELECT COUNT(*) FROM tasks WHERE status='running'`) once at the start of each
+tick, before the spawn loop. If a single tick sees many `ready` tasks and
+`running_count` is low (e.g. 0 or 1), the spawn loop checks `running_count +
+spawned >= max_spawn` but does NOT re-query after each spawn. Under rapid task
+promotion or when multiple boards share the same tick window, this can produce
+more workers than `max_spawn` allows. **Observed 2026-05-20:** shop board,
+`max_spawn=5`, gateway restarted at 02:46 with the config in effect, yet 7
+workers were running at 08:28 — 6 spawned in a 2-second window (08:28:55–57)
+from the same dispatcher tick. DB showed `running_count=1` (t_16f50502 from
+08:26:29) yet 6 more were spawned, totaling 7 > 5. Full evidence and code
+walkthrough in `references/max-spawn-overspawn-bug.md`.
 
 ```bash
 hermes kanban --board <board> list | grep "●" | awk '{print $2}' | while read id; do
@@ -389,6 +486,24 @@ When a worker profile keeps crashing or getting blocked, the kanban dashboard fl
 
 **Deep tasks (research, analysis) need `--max-runtime` set at creation.** The dispatcher default timeout is 180s. Web-search-heavy research tasks routinely hit 180-200s and time out before producing output. The watchdog will unblock and retry, but the task hits the same wall every time (observed: 5 consecutive timeouts at ~190s on the-swarm UX research, 2026-05-19).
 
+**⚠️ MANDATORY: set `--max-runtime` on EVERY task.** The profile config `max_runtime_seconds` does NOT propagate to kanban tasks — each task has its own DB column. NULL defaults to a hardcoded fallback (~120s) which is too low for most work. Use the calibration table below. A 30-second CLI flag prevents hours of timeout loops and watchdog escalations.
+
+| Task type | `--max-runtime` | `max_iterations` |
+|-----------|----------------|-------------------|
+| All tasks | 3600s (1h safety net) | 120 |
+
+**Heartbeat is the primary liveness signal.** Workers heartbeating regularly should NOT be killed. `max_runtime_seconds` = 3600s is a generous safety net for actual runaway loops — not a performance target. The dispatcher's `dispatch_stale_timeout_seconds` (4h, with heartbeat required within 1h) handles genuinely stuck workers.
+
+**Fix at creation time — don't wait for 5 watchdog cycles.** The `--max-runtime` flag on `hermes kanban create` sets the per-task DB column that the dispatcher actually enforces.
+
+```bash
+# ✅ Always include --max-runtime
+hermes kanban --board <board> create --assignee coder --max-runtime 600s "My task"
+
+# ❌ No max-runtime = task will timeout at 120s silently
+hermes kanban --board <board> create --assignee coder "My task"
+```
+
 **Fix:** create research/synthesis/large-scope tasks with `--max-runtime 300s` minimum. For deep research that reads multiple sources, use `1000s` and calibrate down from the actual runtime afterward.
 
 ```bash
@@ -401,7 +516,7 @@ hermes kanban --board <board> create --assignee researcher --max-runtime 300s "R
 
 **There is no `kanban update` to change an existing task's runtime.** If a task was created without `--max-runtime` and keeps timing out, the pattern is: archive → recreate with the flag → reclaim child tasks (they were auto-promoted to ready when the parent was archived) → re-link them to the new parent. Full recipe in `references/deep-task-timeout-recovery.md`.
 
-**🎯 Strategy:** over-estimate (1000s), let the task finish, check `hermes kanban show <id> | grep elapsed` for actual runtime, then use that to calibrate future tasks of the same class. The user explicitly preferred this approach: "met genre 1000 comme ça on est sûr que ça passe, et on regardera combien de temps la tâche a pris pour adapter pour la suite."
+**🎯 Strategy:** set 3600s (1h) by default. The heartbeat handles liveness — `max_runtime` is only a safety net for runaway loops. Over-estimating is safe and prevents false-positive timeouts.
 
 **`kanban create` syntax note:** title is a positional argument, NOT `--title`. This trips up agents coming from `gh issue create` conventions.
 
@@ -415,10 +530,24 @@ hermes kanban create --title "My Title" --assignee coder  # does not work
 
 The full flag set: `--assignee`, `--priority`, `--body`, `--parent` (repeatable), `--max-runtime`, `--max-retries`, `--workspace`, `--tenant`, `--triage`, `--idempotency-key`, `--skill`, `--json`. Positional `title` always comes last.
 
-### Board health check (manual diagnostics)
+**Board health check (manual diagnostics)**
 
 When the user asks "what's working?" or you suspect silent failures, follow the 5-step health check in `references/kanban-health-check.md`: boards overview → list running → show event history → verify worker PIDs → check diagnostics. The quick one-liner at the bottom of that reference produces a full table of running tasks × worker PID status across all boards in one shot.
 
+**CI-gated PR workflow:** For repos with GitHub Actions CI, use the label-based CI-watchdog pattern (`references/ci-watchdog.md`) instead of PR URLs in comments. Workers create PRs with `kanban:TASK_ID` labels; a cron watchdog merges green PRs. Avoids the 24h `active_pr` guard.
+
+**Pre-spawn health watchdog:** Scans all boards for `ready` tasks with issues (missing assignee, skills, max_runtime, PR URLs in comments). Notification-only, no modification. See `references/pre-spawn-health-watchdog.md` for setup and false-positive patterns (RECETTE, reviewer tasks, action-run URLs).
+
+**⛔ Workflow `name` MUST be `CI` — exact match.** The branch protection rule `contexts: ["CI"]` requires a check literally named `CI`. If the workflow is named `🚀 Deploy` (or anything else), `gh pr merge` fails even when all jobs are green, causing an infinite loop: merge fails → unblock → coder respawns → re-blocks → merge fails again. **Fix:** rename `name: 🚀 Deploy` to `name: CI` in `.github/workflows/deploy.yml` (or equivalent). Real case (shop + music-library 2026-05-20): both had `name: 🚀 Deploy`. All project repos verified 2026-05-20. See `references/ci-watchdog.md` for the full branch protection recipe and BOARD_REPOS verification table.
+
 ### Proactive recovery: Block Watchdog
 
-Instead of waiting for a human to notice stuck tasks in the dashboard, set up a **cron-based block watchdog** that scans all boards every 5 minutes, identifies tasks blocked by technical failures (crashes, OOM, iteration budget exhausted), and unblocks them automatically. Review-required and dependency-gate blocks are left alone. Uses a data-collection script (`~/.hermes/scripts/check-blocked-tasks.py`, 30s timeout per command, always exits 0) + LLM agent for classification. Full setup — script, cron config, classification rules — in `references/block-watchdog.md`.
+Instead of waiting for a human to notice stuck tasks in the dashboard, set up a **cron-based block watchdog** that scans all boards every 5 minutes, identifies tasks blocked by technical failures (crashes, OOM, iteration budget exhausted), and unblocks them automatically. Review-required and dependency-gate blocks are left alone. Uses a two-scanner wrapper (`~/.hermes/scripts/watchdog-all.py`) that runs `check-blocked-tasks.py` (blocked tasks, 30s timeout, always exits 0) + `check-crash-loops.py` (running tasks with ≥5 consecutive failures — invisible to the block scanner). An LLM agent classifies findings and acts. Full setup — scripts, cron config, classification rules, crash-loop auto-block — in `references/block-watchdog.md`.
+
+### Pre-Spawn Health Watchdog
+
+A lightweight no-agent watchdog that scans all boards for `ready` tasks with configuration
+issues that would cause dispatch failure (missing skills, missing max_runtime, PR URLs
+in comments/body, no assignee). Silent when clean. Full schema, false-positive rules
+(RECETTE merge targets, reviewer tasks), and the PR-URL regex-vs-LIKE pitfall in
+`references/pre-spawn-watchdog.md`.

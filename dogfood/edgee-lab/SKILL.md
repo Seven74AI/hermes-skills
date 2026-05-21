@@ -1,7 +1,7 @@
 ---
 name: edgee-lab
 description: "Edgee Lab project configuration — profiles, pipeline, cron jobs, strategy research."
-version: 2.0.0
+version: 2.1.0
 metadata:
   hermes:
     tags: [edgee, project, kanban, cron, reference, strategy]
@@ -79,6 +79,34 @@ The Docker setup in this repo is for the CLI tool only (optional, not needed for
 |-----|-----|----------|---------|
 | Daily Report | `b4e9989d4d72` | 0 9 * * * | Competitor & product digest → Discord #seven-ai |
 | Strategy Research | `cffd88539f6a` | every 3h | Rotates through strategy tickets, continues research, creates new tickets when done → Discord #seven-ai |
+
+## Monitoring Sources & Feeds
+
+The daily monitor cron (`b4e9989d4d72`) scans these sources via blogwatcher-cli. Feeds were discovered manually — standard auto-discovery fails for several sites.
+
+| Blog | URL | Feed/Scraper | Status |
+|------|-----|-------------|--------|
+| Edgee Blog | `https://www.edgee.ai/blog` | `--scrape-selector "article h3 a, article h2 a"` | No RSS (Next.js). HTML scrape. |
+| Cloudflare Blog | `https://blog.cloudflare.com` | RSS auto-detected ✓ | Working |
+| Fastly Blog | `https://www.fastly.com/blog` | RSS auto-detected ✓ | Working |
+| BunnyCDN Blog | `https://bunny.net/blog` | `--feed-url https://bunny.net/blog/rss/` | RSS at non-standard path |
+| Bytecode Alliance | `https://bytecodealliance.org/articles` | `--feed-url https://bytecodealliance.org/feed.xml` | Feed at non-standard path |
+
+To re-add after DB reset:
+```bash
+blogwatcher-cli add "Cloudflare Blog" https://blog.cloudflare.com
+blogwatcher-cli add "Fastly Blog" https://www.fastly.com/blog
+blogwatcher-cli add "BunnyCDN Blog" https://bunny.net/blog --feed-url https://bunny.net/blog/rss/
+blogwatcher-cli add "Bytecode Alliance (WASM)" https://bytecodealliance.org/articles --feed-url https://bytecodealliance.org/feed.xml
+blogwatcher-cli add "Edgee Blog" https://www.edgee.ai/blog --scrape-selector "article h3 a, article h2 a"
+```
+
+### Daily Monitor — Known Pitfalls
+
+- **Xurl OAuth2 silent expiry**: The xurl token can expire silently in headless/cron environments. `xurl auth status` may show a valid user but `xurl whoami` returns 401 — the refresh token on disk went stale. Schedule `xurl whoami` 30 minutes before the cron job to force a live refresh and keep on-disk tokens fresh. Re-auth requires browser OAuth: `ssh -L 8080:localhost:8080 user@server` then `xurl auth oauth2 --app my-app seven_dai74`.
+- **Web search/extract credits**: If Firecrawl returns "Payment Required" / "Insufficient credits", fall back to blog RSS + GitHub APIs. The monitoring pipeline is designed to function without web_search.
+- **Edgee.ai RSS**: Edgee's blog is Next.js with no RSS endpoint. The HTML scraper (`article h3 a`) works but is fragile — if Edgee changes their blog markup, posts will stop being detected. Check the HTML manually with `curl` if the scraper returns 0 posts for more than a week.
+- **Blogwatcher initial scan**: First scan after adding blogs will flag ALL historical posts as "new" (45+ articles). The `articles` listing is chronological; the daily monitor should focus on posts from the last 24h, not the full "new" list.
 
 ## Pipeline (Complete)
 

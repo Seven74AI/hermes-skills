@@ -23,6 +23,63 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
 | `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
 
+## ⛔ TOKEN ECONOMY — 90 TURNS, DON'T WASTE THEM
+
+You have ~90 turns (iterations) per run. Every tool call burns 1 turn. When you
+hit the limit, the gateway kills you with "iteration budget exhausted" — your
+work is LOST and the watchdog restarts you from zero. **This is the #1 cause of
+wasted kanban runs across all boards.**
+
+### The ONE rule: background+wait for ALL heavy work
+
+```
+# ❌ NEVER — burns 50-200 turns on output lines
+terminal("npx vitest run")
+terminal("npx playwright test")
+terminal("npm run build")
+terminal("godot4 --headless --quit --path .")
+
+# ✅ ALWAYS — burns 2-3 turns total
+terminal("npm test && npm run build", background=true, notify_on_complete=true)
+process(action="wait", timeout=3600)    # ← blocks WITHOUT burning turns
+read_file("test-results.json")
+```
+
+`process wait` is a single call that passively blocks — no polling, no
+sleep-loop. **One `process wait` replaces 50-100 polling iterations.**
+
+### Anti-patterns that kill your budget
+
+| ❌ Death pattern | ✅ Life pattern |
+|-----------------|-----------------|
+| `terminal("npm test")` inline | `terminal("npm test", background=true)` + `process wait` |
+| `while sleep 10; do tail log; done` (1 turn/poll) | `process(action="wait")` (0 turns) |
+| `for f in *.ts; do read_file "$f"; done` (1 turn/file) | `search_files` or batch reads |
+| Read 5 web pages one-by-one | `web_extract(urls=[...])` — 5 pages in 1 turn |
+| "Let me just run the tests real quick" inline | STOP. Background+wait. Every. Time. |
+
+### Multi-step iteration → self-contained script
+
+If your task needs test→fix→retest→fix cycles, write a SINGLE bash script that
+does ALL the work internally, call it ONCE with background+wait. The worker uses
+3 turns instead of 30. See `templates/e2e-iteration-loop.sh` for a starter.
+
+### Budget checkpoints
+
+- **30 turns (33%)** — heartbeat with "budget OK, X% used"
+- **60 turns (66%)** — ⛔ STOP immediately. Block with `kanban_block(reason="budget warning: partial <summary>")`. Partial work + clean block > dead worker.
+- **75+ turns** — you're about to die. Push to git NOW, block immediately.
+
+### Real case: t_8228590c on the-swarm (2026-05-20)
+
+Three consecutive runs failed identically — the worker ran Playwright E2E tests
+inline every time:
+- Run #571: 90/90 exhausted after 58min → killed
+- Run #573: protocol violation crash (worker finished but forgot complete/block)
+- Run #579: SAME mistake, idle 36min with no heartbeat → reclaimed
+- **3 runs, ~3h wasted, zero progress.** The worker's SOUL.md now has this
+  section verbatim. Don't be run #580.
+
 ## Tenant isolation
 
 If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading or writing persistent memory, prefix memory entries with the tenant so context doesn't leak across tenants:
@@ -46,6 +103,19 @@ kanban_complete(
     },
 )
 ```
+
+**Coding task that needs CI-gated review — use label-based PR workflow.**
+
+For code changes that need CI verification before merge, use the label-based PR
+pattern. The full workflow (fork model, direct model, review-gated alternative)
+is documented in `kanban-project-workflow`. Quick reference:
+
+1. Push branch, create PR on fork with label: `gh pr create --label "kanban:$HERMES_KANBAN_TASK"`
+2. Block with: `kanban_block(reason="awaiting CI: PR label kanban:$HERMES_KANBAN_TASK")`
+3. CI-watchdog merges if green, unblocks you
+4. Respawn → verify merge → `kanban_complete`
+
+NEVER post GitHub PR URLs in comments — triggers `respawn_guarded: active_pr` for 24h.
 
 **Coding task that needs review — DO NOT JUST BLOCK. Create the reviewer task THEN block.**
 
@@ -193,6 +263,35 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
 - Complete a task you didn't actually finish. Block it instead.
 
+### `gh issue create` quoting trap (execute_code → terminal)
+
+When batch-creating GitHub issues from `execute_code`, shell quoting is critical. `gh issue create --title` with spaces in file paths or titles breaks because the shell splits arguments. Observed on the-swarm board 2026-05-20: 3 consecutive failures before success.
+
+**Wrong:**
+```python
+path = f"/tmp/issue_{title[:20]}.txt"  # spaces in filename
+write_file(path, body)
+r = terminal(f"cd repo && gh issue create --title '{title}' --body-file {path} 2>&1")
+# FAILS: --body-file receives "Two" "competing.txt" (split by shell)
+```
+
+**Right — use safe filenames and quote all shell arguments:**
+```python
+import shlex
+safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', title[:40])
+path = f"/tmp/issue_{safe_name}.txt"
+write_file(path, body)
+r = terminal(f"cd repo && gh issue create --title {shlex.quote(title)} --body-file {shlex.quote(path)} --label {shlex.quote(labels)} 2>&1")
+```
+
+Or simpler — avoid special chars entirely in temp filenames:
+```python
+path = f"/tmp/issue_{i}.txt"  # just use the index
+r = terminal(f"cd repo && gh issue create --title '{title}' --body-file '{path}' --label '{labels}' 2>&1")
+```
+
+The key: filenames must not contain spaces. Labels and titles containing spaces are OK inside single quotes.
+
 **Continuous tasks (monitor → report → block → repeat):** Tasks that run in cycles rather than completing once have a different termination pattern. See `references/continuous-tasks.md` for the SOUL.md requirements, common failure modes, and circuit breaker reset.
 
 ## Pitfalls
@@ -200,6 +299,8 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 **Task state can change between dispatch and your startup.** Between when the dispatcher claimed and when your process actually booted, the task may have been blocked, reassigned, or archived. Always `kanban_show` first. If it reports `blocked` or `archived`, stop — you shouldn't be running.
 
 **No `cancel` command — use `archive` to remove dead tasks.** The CLI has `archive` but no `cancel`. When you need to clean up duplicate/spurious/obsolete tasks (e.g. multiple identical review tasks created for the same parent), use `hermes kanban --board <board> archive <task_id>`. Archived tasks still appear in counts but are excluded from `list` by default.
+
+**`respawn_guarded` / `active_pr` — 24h comment window blocks respawn.** The dispatcher blocks respawn when a task comment from the last 24 hours contains a GitHub PR URL (`_RESPAWN_GUARD_PR_WINDOW = 86400` in `hermes_cli/kanban_db.py`). This means: once a worker comments a PR URL (e.g. `https://github.com/Seven74AI/shop/pull/88`), the task is blocked from respawning for a full day — even after the PR is merged or closed. The guard checks task_comments, not the GitHub API. **Mitigation:** delete the PR URL comment after merge (`DELETE FROM task_comments WHERE task_id=? AND body LIKE '%github.com%pull%'`), or avoid putting PR URLs in comments (use the PR number as text instead: `"PR #88"`). Observed on shop board 2026-05-20: 10 tasks stuck in `respawn_guarded` loop despite all PRs being closed/merged, because the PR URL comments remained within the 24h window.
 
 **Prevent duplicate review tasks.** Before calling `kanban_create` for a review task, scan the board for an existing review of the same work. A task with a title like "Review: e2e fix checkout" in `ready`, `running`, `blocked`, or `todo` means the review already exists — link to it instead of creating a duplicate. Skipping this check causes 4× duplicate reviews (seen on music-library board 2026-05-18, 9 tasks archived).
 

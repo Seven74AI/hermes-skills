@@ -32,7 +32,7 @@ Edgee is an AI gateway that routes requests to various LLM providers (DeepSeek, 
 ```bash
 # In config.yaml, use DeepSeek as a standard provider:
 hermes config set model.provider deepseek
-hermes config set model.default deepseek/deepseek-v4-pro
+hermes config set model.default deepseek-v4-pro
 hermes config set model.base_url https://api.deepseek.com/v1
 ```
 
@@ -40,6 +40,43 @@ Store the key in `~/.hermes/.env`:
 ```bash
 DEEPSEEK_API_KEY=sk-...
 ```
+
+## Complete Edgee Removal (when migrating away)
+
+If Edgee was previously configured, three files need cleanup — not just config.yaml:
+
+### 1. config.yaml — model section
+```yaml
+model:
+  provider: deepseek           # was: edgee
+  base_url: https://api.deepseek.com/v1  # was: https://api.edgee.ai/v1
+  default: deepseek-v4-pro     # was: deepseek/deepseek-v4-pro
+```
+
+### 2. config.yaml — custom_providers
+```yaml
+custom_providers: {}           # remove the Edgee entry entirely
+```
+
+### 3. auth.json — credential_pool
+```json
+// Remove the entire "custom:edgee---deepseek" key from credential_pool.
+// This contains 2 entries (api_key + model_config) with Edgee tokens.
+// Watch for trailing commas — the JSON must remain valid after removal.
+```
+
+### 4. .env (optional)
+The `EDGEE_API_KEY` can be kept or removed — it's harmless if no provider references it.
+
+### 5. Verify
+```bash
+grep -in edgee ~/.hermes/config.yaml ~/.hermes/auth.json  # should return nothing
+python3 -c "import json; json.load(open('~/.hermes/auth.json'))"  # valid JSON
+hermes mcp list  # ensure no Edgee-related MCP servers remain
+```
+
+### Pitfall: auth.json JSON breakage
+Removing the last key from `credential_pool` leaves a trailing comma on the previous key. The resulting JSON is invalid. Fix: remove the trailing comma from the preceding `],` line so it becomes `]`.
 
 ## Bug Details (for reference)
 
