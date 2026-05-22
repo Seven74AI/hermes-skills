@@ -74,6 +74,34 @@ gh pr checks "$BRANCH"
 - **If task has reviewer profile:** post PR URL in handoff comment, block with `review-required`. Reviewer merges.
 - **If task has NO reviewer:** merge yourself: `gh pr merge "$BRANCH" --merge --delete-branch`
 
+### Fork repos — MUST merge to fork main BEFORE creating upstream PR
+
+When origin is a fork (Seven74AI/REPO) with upstream (mnlamart/REPO), the feature branch
+MUST be merged into fork main after review. Without this, code lives only on the feature
+branch — fork main stays stale, and branches can be lost.
+
+Correct fork workflow:
+```bash
+# 1. Push feature branch to fork
+git push origin "$BRANCH"
+
+# 2. Create internal PR on fork (branch -> main)
+gh pr create --title "$TITLE" --body "$BODY" --base main --head "$BRANCH"
+
+# 3. Wait for CI + review
+gh pr checks "$BRANCH"
+
+# 4. MERGE to fork main (MANDATORY — many workers skip this)
+gh pr merge "$BRANCH" --squash --delete-branch
+
+# 5. Create PR to upstream (from fork main or feature branch)
+gh pr create --repo mnlamart/REPO --title "$TITLE" --body "$BODY" --base main --head "Seven74AI:$BRANCH"
+```
+
+**WARNING:** The merge-to-fork-main step (step 4) was systematically skipped by workers on shop —
+5 PRs found open upstream with all review tasks done but ZERO merges into Seven74AI/shop main.
+Feature branches were 220 commits behind main. Always verify: `gh api repos/Seven74AI/REPO/compare/main...$(git rev-parse HEAD)` should show ahead:0 after merge.
+
 ## Pre-Review Gate (MANDATORY)
 
 Before marking any task as review-required, you MUST verify your code actually works:

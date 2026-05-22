@@ -21,7 +21,10 @@ Shop uses the **fork model** (`kanban-project-workflow` § GitHub Models):
 - Upstream: `mnlamart/shop` (consolidation PRs only, NEVER direct worker PRs)
 - Working copy: `/tmp/shop-original`
 - Git remote: `https://oauth2:TOKEN@github.com/Seven74AI/shop.git`
-- Last merged PRs: `mnlamart/shop#99` (Node 24, pnpm, a11y, e2e, seed config) merged 2026-05-19; `mnlamart/shop#100` (cleanup sweep) merged 2026-05-19
+- Last merged PRs: `mnlamart/shop#99` (Node 24, pnpm, a11y, e2e, seed config) merged 2026-05-19; `mnlamart/shop#100` (cleanup sweep) merged 2026-05-19; `mnlamart/shop#198` (consolidation fork→upstream, 226 commits) merged 2026-05-21
+- Ghost PRs closed: #197, #194, #184, #182 (all stale, 0 reviews)
+- CI context fix: `Seven74AI/shop#146` — removed emoji job names so status checks match branch protection (auto-merge pending reviewer)
+- Planner: `t_ed87eb45` — re-plan roadmap post-consolidation
 
 ## Git remote token (fork CI workflow)
 
@@ -33,13 +36,13 @@ git remote add upstream "https://github.com/mnlamart/shop.git"
 git config --unset credential.helper
 ```
 
-## ⛔ Reviewer account pitfall
+## ⛔ Reviewer account pitfall (RESOLVED)
 
-The reviewer agent uses the same `Seven74AI` GitHub account as the coder.
-On branch-protected repos, the PR author's own `gh pr review --approve` does
-NOT count toward required approvals. Either:
-1. Create a `hermes-reviewer` bot account with write access to the repos
-2. Disable required approvals and rely on CI only for auto-merge (less safe)
+The reviewer agent uses a **GitHub App** (`hermes-sevenai-reviewer`, App ID 3788528)
+which provides a separate identity from the coder (`Seven74AI`). The app must have
+`Contents: Write` permission — reviews show as `hermes-sevenai-reviewer[bot]` and
+count toward branch protection's required approval count. See `kanban-project-workflow`
+§ Reviewer agent and `references/github-app-reviewer-setup.md` for the full setup.
 
 ## PR workflow
 
@@ -68,10 +71,18 @@ Full CI: `vitest run + tsc --noEmit + lint + playwright test --workers=1`
 
 **Workflow MUST be named `CI`** (exact match for branch protection `contexts: ["CI"]`).
 
-**Pitfall: `|| true` regression.** The typecheck step had `pnpm typecheck || true`
-which silently swallows tsc errors. Fixed in `15f1d1e` (May 20) then re-introduced
-by consolidation `0774571`. After any PR consolidation, verify the workflow does
-NOT have `|| true` on typecheck/lint/test steps.
+**Pitfall: `|| true` / `--if-present` — silent CI bypass.** Two variants, same effect:
+
+- `pnpm typecheck || true` (shell) — swallows non-zero exit codes
+- `npm run typecheck --if-present` (npm) — skips silently if the script doesn't exist
+
+Both make CI report green while type errors pass through. Check for BOTH patterns.
+
+Fixed in `15f1d1e` (May 20) then re-introduced
+by consolidation `0774571` and again on the fork `Seven74AI/shop` (May 21, removed
+via commit `2dfdfce`). After any PR consolidation, verify the workflow does
+NOT have `|| true` on typecheck/lint/test steps. Also verify the fork stays in
+sync — the fork can drift from upstream and reintroduce old bugs.
 
 ### Pitfall: `|| true` regression in typecheck step
 
@@ -85,6 +96,53 @@ grep "typecheck" .github/workflows/deploy.yml
 # MUST show: pnpm typecheck
 # MUST NOT show: pnpm typecheck || true
 ```
+
+### Pitfall: Emoji CI job `name:` fields break branch protection
+
+GitHub uses the job-level `name:` field as the status check context. If a workflow has
+`name: ⬣ ESLint` on the `lint:` job, the check reports as `⬣ ESLint` — but branch
+protection requires `lint`. The contexts never match, auto-merge hangs forever on
+"waiting for status to be reported."
+
+**Fix:** remove ALL job-level `name:` fields from `.github/workflows/deploy.yml`.
+The YAML key becomes the context, matching branch protection exactly. Step-level
+emoji names are fine — they're cosmetic inside the job.
+
+Fixed in `Seven74AI/shop#146` (auto-merge pending) and `Seven74AI/music-library#2` (merged).
+
+Verification:
+```bash
+gh pr checks <N> --repo Seven74AI/shop
+# Must show: lint, typecheck, vitest, playwright (NOT ⬣ ESLint, etc.)
+```
+
+When consolidating PRs that touch the CI workflow, diff against the
+
+When consolidating PRs that touch the CI workflow, diff against the .github/workflows/deploy.yml
+# MUST show: pnpm typecheck
+# MUST NOT show: pnpm typecheck || true
+```
+
+### Pitfall: Emoji CI job `name:` fields break branch protection
+
+GitHub uses the job-level `name:` field as the status check context. If a workflow has
+`name: ⬣ ESLint` on the `lint:` job, the check reports as `⬣ ESLint` — but branch
+protection requires `lint`. The contexts never match, auto-merge hangs forever on
+"waiting for status to be reported."
+
+**Fix:** remove ALL job-level `name:` fields from `.github/workflows/deploy.yml`.
+The YAML key becomes the context, matching branch protection exactly. Step-level
+emoji names are fine — they're cosmetic inside the job.
+
+Fixed in `Seven74AI/shop#146` (auto-merge pending) and `Seven74AI/music-library#2` (merged).
+
+Verification:
+```bash
+gh pr checks <N> --repo Seven74AI/shop
+# Must show: lint, typecheck, vitest, playwright (NOT ⬣ ESLint, etc.)
+```
+
+When consolidating PRs that touch the CI workflow, diff against the
 
 When consolidating PRs that touch the CI workflow, diff against the
 pre-consolidation state to avoid reintroducing already-fixed bugs.
@@ -195,6 +253,9 @@ When multiple PRs overlap on `mnlamart/shop`:
 3. Full local CI: `CI=true pnpm lint && CI=true pnpm typecheck && CI=true pnpm test -- --run`
 4. Push to `Seven74AI/shop` fork, create PR to `mnlamart/shop`
 5. Close superseded PRs
+
+**Ghost PR cleanup:** stale worker-created PRs on upstream accumulate over time.
+See `kanban-profile-blueprint` → `references/ghost-pr-cleanup.md` for the recipe.
 
 **Pitfall:** `prisma generate` must run before tests. Run:
 ```bash

@@ -1,95 +1,79 @@
-# Light CI Watchdog — Design Notes
+# Light CI Watchdog — Simplified (unblock-only)
 
-With GitHub auto-merge (`gh pr merge --auto --squash`), the watchdog no longer
-merges PRs. Its only job: detect merged PRs → unblock kanban tasks.
+Replaces the old CI watchdog that merged PRs AND unblocked tasks.
+With GitHub native auto-merge (`gh pr merge --auto`), the watchdog
+only needs to detect merged PRs and unblock corresponding kanban tasks.
 
-## Implementation (~30 lines)
+## Why simpler
+
+Old watchdog did 3 things:
+1. Check CI status on PRs with kanban labels
+2. Merge if CI green
+3. Unblock kanban task
+
+GitHub auto-merge now handles #1 and #2. The watchdog only does #3.
+
+## Script (~30 lines)
 
 ```python
 #!/usr/bin/env python3
-"""Poll merged PRs with kanban labels and unblock the corresponding tasks."""
-import subprocess, re, os
+"""Detect merged PRs with kanban labels, unblock corresponding tasks."""
+import subprocess, re, sqlite3, json
 
-BOARDS_FILE = os.path.expanduser("~/.hermes/kanban/.ci-watchdog-boards")
-DEFAULT_BOARDS = ["shop", "the-swarm", "music-library", "baguette", "glance",
-                   "videogame-lab", "edgee-lab"]
+BOARDS = {
+    "shop": "Seven74AI/shop",
+    "the-swarm": "Seven74AI/the-swarm",
+}
 
-def get_boards():
-    if os.path.exists(BOARDS_FILE):
-        with open(BOARDS_FILE) as f:
-            return [l.strip() for l in f if l.strip()]
-    return DEFAULT_BOARDS
+for board, repo in BOARDS.items():
+    result = subprocess.run(
+        ["gh", "pr", "list", "--repo", repo, "--state", "merged",
+         "--limit", "20", "--json", "labels,number",
+         "--search", "label:kanban:"],
+        capture_output=True, text=True
+    )
+    prs = json.loads(result.stdout)
 
-def get_repo(board):
-    mapping = {
-        "shop": "Seven74AI/shop",
-        "the-swarm": "Seven74AI/the-swarm",
-        "music-library": "Seven74AI/music-library",
-        "baguette": "Seven74AI/baguette",
-        "glance": "Seven74AI/glance",
-        "videogame-lab": "Seven74AI/videogame-lab",
-        "edgee-lab": "Seven74AI/edgee-lab",
-    }
-    return mapping.get(board)
+    db = sqlite3.connect(f"/root/.hermes/kanban/boards/{board}/kanban.db")
 
-def main():
-    for board in get_boards():
-        repo = get_repo(board)
-        if not repo:
-            continue
-        # List merged PRs with kanban labels
-        r = subprocess.run(
-            ["gh", "pr", "list", "--repo", repo, "--state", "merged",
-             "--label", "kanban:", "--json", "labels,number", "--limit", "20",
-             "--search", "merged:>=1h"],
-            capture_output=True, text=True
-        )
-        import json
-        prs = json.loads(r.stdout) if r.stdout.strip() else []
-
-        for pr in prs:
-            for label in pr["labels"]:
-                m = re.match(r"^kanban:(t_[a-f0-9]{8})$", label["name"])
-                if m:
-                    task_id = m.group(1)
+    for pr in prs:
+        for label in pr["labels"]:
+            m = re.match(r"kanban:(t_[a-f0-9]+)", label["name"])
+            if m:
+                task_id = m.group(1)
+                cur = db.execute(
+                    "SELECT status FROM tasks WHERE id=? AND status='blocked'",
+                    (task_id,)
+                )
+                if cur.fetchone():
                     subprocess.run(
-                        ["hermes", "kanban", "--board", board, "unblock", task_id],
-                        capture_output=True
+                        ["hermes", "kanban", "--board", board,
+                         "unblock", task_id]
                     )
-                    print(f"Unblocked {task_id} on {board} (PR #{pr['number']})")
-
-if __name__ == "__main__":
-    main()
+                    print(f"Unblocked {task_id} (PR #{pr['number']} merged)")
+    db.close()
 ```
 
-## Deployment
+## Cron job
 
 ```bash
 hermes cron create \
-  --name "kanban CI unblock" \
+  --name "CI watchdog (light)" \
   --schedule "every 2m" \
-  --script kanban-ci-unblock.py \
+  --script ~/.hermes/scripts/ci-watchdog-light.py \
   --no-agent \
   --deliver local
 ```
 
-Uses `--no-agent` (script-only, no LLM) + `--deliver local` (no notification
-when clean — the old watchdog sent Discord pings, but a simple unblock doesn't
-need fanfare).
+`--no-agent`: pure script, no LLM call. `--deliver local`: silent when clean
+(empty stdout = no delivery).
 
-## Why `--search "merged:>=1h"`
+## Differences from old watchdog
 
-GitHub's auto-merge has a small delay between approval+CI passing and the actual
-merge. The 1h window is a safety buffer: merged in the last hour is recent
-enough that the coder's task is still blocked but old enough that the merge
-is definitely complete.
-
-## Migration from old CI watchdog
-
-Old cron: `10cb5de254d0`, every 2 min. Replace with this script.
-
-Key differences:
-- No `gh pr merge` call — GitHub auto-merge handles it
-- No `--auto` flag management — coder sets it at PR creation
-- No token tracking, no retry logic — unblock is idempotent
-- No Discord delivery — silent when clean
+| | Old | Light |
+|---|---|---|
+| Merges PRs | Yes (`gh pr merge`) | No (GitHub auto-merge) |
+| Checks CI status | Yes (poll checks API) | No |
+| Unblocks tasks | Yes | Yes |
+| Code size | ~200 lines | ~30 lines |
+| Rate limit risk | High (checks API per PR) | Low (one `gh pr list`) |

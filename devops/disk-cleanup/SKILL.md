@@ -14,7 +14,9 @@ When disk usage exceeds 80%, systematically analyze and clean up. Never delete p
 
 **Related references:**
 - `references/kanban-db-schema.md` — tasks table schema, query patterns, pitfalls
-- `references/watchdog-pattern.md` — no_agent watchdog + agent cleanup two-cron architecture
+- `references/watchdog-pattern.md` — no_agent watchdog + agent cleanup two-cron architecture (includes token cost analysis)
+- `references/cron-audit-methodology.md` — systematic technique for auditing cron jobs (waste detection, redundancy, token estimation)
+- `references/may-18-incident.md` — full incident report from the 2026-05-18 disk saturation event
 
 ## When to Use
 
@@ -416,4 +418,5 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **Archiving blocked tasks**: `hermes kanban transition <id> archive` silently fails from `blocked` state. Use direct SQL: `UPDATE tasks SET status='archived', completed_at=<unix_ts> WHERE id='<tid>'`.
 - Docker `system prune --volumes` deletes unused volumes — safe, but note it.
 - **Watchdog % may differ from live `df`.** The watchdog snapshot and the cleanup run are separated in time — transient files (temp builds, caches flushed by other processes) can drop usage between the watchdog check and the agent's `df`. When `CLEANUP_TRIGGER=true` is set, **trust the trigger** and run the full protocol. Do not short-circuit based on a lower current `df` reading — the watchdog fired for a reason, and storage can fill again quickly.
+- **🔴 CRITICAL: Trigger mismatch between watchdog and cleanup agent.** As of 2026-05-22, the Disk Cleanup Agent cron (`4423bee366e6`) checks for the literal string `CLEANUP_TRIGGER=true` in the watchdog output. However, the disk-watchdog (`9fbadfbd593e`) outputs "Cleanup required — run disk-cleanup skill or GC workspaces" without ever emitting the `CLEANUP_TRIGGER=true` string. Result: the agent responds "." every 10 minutes while disk stays at 95%. **Fix:** either (a) add `CLEANUP_TRIGGER=true` to the watchdog output when usage ≥80%, or (b) update the Disk Cleanup Agent prompt to trigger on "Cleanup required" or "CRITICAL" instead. Until fixed, run cleanup manually: `hermes cron run <cleanup_job_id>` or execute the skill steps directly.
 - **GC script silent output is normal.** The script prints nothing when 0 workspaces are removed. This can mean: (a) no done/archived tasks, (b) workspaces already deleted from disk in a prior run but DB records remain, or (c) all done/archived tasks completed <5 minutes ago. Verify by checking the DB directly before assuming failure.

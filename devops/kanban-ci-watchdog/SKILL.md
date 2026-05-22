@@ -1,68 +1,41 @@
 ---
 name: kanban-ci-watchdog
-description: CI-gated PR workflow for kanban boards — label-based PRs, CI-watchdog cron, respawn guard system, notification model, active_pr diagnosis and fix.
-version: 1.0.1
+description: Simplified CI watchdog for kanban boards — detects merged PRs with kanban labels and unblocks tasks. GitHub auto-merge handles the merge; this watchdog only unblocks. Includes respawn guard diagnosis, active_pr fix, and velocity tracking.
+version: 1.1.0
 metadata:
   hermes:
     tags: [kanban, ci, pr, watchdog, debugging]
 ---
 
-# Kanban CI Watchdog
+# Kanban CI Watchdog (Simplified — Unblock Only)
 
-CI-gated PR merge workflow for autonomous kanban boards. Avoids `respawn_guarded`
-by using GitHub labels instead of PR URLs in task comments.
+The CI watchdog no longer merges PRs. GitHub native auto-merge (`gh pr merge --auto`)
+handles merging when CI is green and the reviewer approves.
 
-## The Problem
+The watchdog's ONLY job: poll for merged PRs with kanban labels → unblock the task.
+
+## Why Simplified
+
+Previously the watchdog: (1) checked CI status, (2) merged PRs, (3) unblocked tasks.
+GitHub auto-merge now handles steps 1-2. The watchdog does step 3 only.
+
+## The Problem (Still Applies)
 
 The kanban dispatcher scans task comments for GitHub PR URLs. If ANY comment
-within the last 24 hours contains a PR URL (`https://github.com/.../pull/N`),
-the task is flagged `respawn_guarded` with reason `active_pr`. The worker
-cannot spawn until 24h pass or the URL comment is deleted.
+within the last 24 hours contains a PR URL, the task is flagged `respawn_guarded`
+with reason `active_pr`. Workers must use labels, not PR URLs.
 
-Source: `hermes_cli/kanban_db.py` line 4527 – `_RESPAWN_GUARD_PR_WINDOW = 86400`
+## Unified PR Workflow
 
-## The Solution: Label-Based PRs
+See `kanban-project-workflow` for the full flow. Summary:
 
-Workers use GitHub labels to link PRs to kanban tasks — NO PR URLs in comments.
+1. Coder creates PR with label `kanban:t_xxx`, enables auto-merge
+2. Coder creates reviewer task, blocks with `review-required`
+3. Reviewer approves → GitHub auto-merges when CI green
+4. **This watchdog detects the merge → unblocks the coder**
+5. Coder respawns → verifies → completes
 
-### Worker Workflow
-
-1. Implement feature, push branch to fork
-2. Create PR on fork with kanban task label:
-   ```bash
-   gh pr create --repo Seven74AI/REPO --base main --head feat/N \
-     --label "kanban:$HERMES_KANBAN_TASK"
-   ```
-3. **NEVER post the PR URL in a comment** — use the label reference only
-4. Block: `kanban_block(reason="awaiting CI: PR label kanban:$HERMES_KANBAN_TASK")`
-5. CI-watchdog finds PR via `gh pr list --label "kanban:"` → merges if green
-6. Worker respawns → verifies merge → `kanban_complete`
-
-If CI red → CI-watchdog comments error → unblocks → worker fixes → retry.
-
-### Project Skill Update
-
-Add this section to the project's skill:
-
-```markdown
-### ⛔ CRITICAL: Worker Git Workflow — Fork PRs only, label-based
-
-**PRs on `Seven74AI/REPO` (fork): OK.** PRs on upstream: NEVER (consolidation only).
-
-**Worker workflow (label-based — NO PR URLs in comments):**
-1. Clone fork, implement, push branch, run local CI in background
-2. Create PR on fork with label: `gh pr create --repo Seven74AI/REPO --base main --head feat/N --label "kanban:$HERMES_KANBAN_TASK"`
-3. ⛔ NEVER post the PR URL in a comment. The dispatcher scans comments for GitHub PR URLs → `active_pr` → blocks respawn for 24h.
-4. Block with: `kanban_block(reason="awaiting CI: PR label kanban:$HERMES_KANBAN_TASK")`
-5. CI-watchdog finds PR via `gh pr list --label "kanban:"` → merges if CI green → unblocks coder
-6. Coder respawns → verifies merge → kanban_complete
-
-If CI red → CI-watchdog comments error → unblocks → coder fixes → repush → re-PR.
-
-**Only consolidation merges to upstream.**
-```
-
-## Respawn Guard System
+## Respawn Guard System (Still Active)
 
 The dispatcher calls `check_respawn_guard()` on every `ready` task each tick (every 60s).
 Three checks in strict priority order — the first match wins:
@@ -90,56 +63,67 @@ stdout to Discord + Telegram. Silent means nothing to do.
 
 | State | Output | Notification |
 |---|---|---|
-| No "awaiting CI" tasks | silent | No |
-| CI still running | silent | No |
-| CI green → merge success | `merged PR #N` | Yes |
-| CI green → merge failed | `merge FAILED PR #N` | Yes |
-| CI red | `CI FAILED PR #N` | Yes |
+| No merged PRs with kanban label | silent | No |
+| PR merged → unblocked | `merged + unblocked t_xxx` | Yes |
+| PR merged but task not found | `orphan PR #N (label kanban:t_xxx) — task not found` | Yes |
 
-**Merge-failed despite CI green** happens when: another PR merged to `main`
-between CI completion and the watchdog's tick (conflict), branch protection
-blocks merge, or the PR was closed externally. The watchdog unblocks the task
-with `[CI-WATCHDOG] Merge failed — possible conflict.` so the worker can rebase.
+## Light Watchdog Script
 
-## CI-Watchdog Cron Setup
+Deployed at `~/.hermes/scripts/ci-watchdog-light.py`. Handles all active boards:
 
-The watchdog is a Python script running as a `--no-agent` cron job (no LLM needed).
+```python
+"""Light CI Watchdog — unblocks kanban tasks when their PRs are merged."""
+import subprocess, re, sqlite3, json
 
-### Script Template
+BOARDS = {
+    "shop": "Seven74AI/shop",
+    "the-swarm": "Seven74AI/the-swarm",
+    # Add new boards here
+}
 
-See `scripts/ci-watchdog-template.py` for the full script. Copy and fill in BOARD + REPO.
+for board, repo in BOARDS.items():
+    result = subprocess.run(
+        ["gh", "pr", "list", "--repo", repo, "--state", "merged",
+         "--limit", "20", "--json", "labels,number",
+         "--search", "label:kanban:"],
+        capture_output=True, text=True
+    )
+    if not result.stdout.strip():
+        continue
+    prs = json.loads(result.stdout)
 
-Key logic:
-1. `gh pr list --jq` client-side filter for kanban: labels (NOT `--label`, see pitfalls)
-2. `gh run list --branch <branch>` → check CI status
-3. If CI green → `gh pr merge --merge --delete-branch` → unblock task
-4. If CI red → comment error → unblock task
-5. Delete PR URL comments after merge to prevent `active_pr`
+    for pr in prs:
+        for label in pr["labels"]:
+            m = re.match(r"kanban:(t_[a-f0-9]+)", label["name"])
+            if not m:
+                continue
+            task_id = m.group(1)
 
-### Pitfalls (do NOT ship a watchdog with these bugs)
-
-1. **`gh pr list --label kanban:` returns empty.** `--label` does EXACT match, not prefix. A label `kanban:t_abc123` does NOT match `--label kanban:`. Use `--jq` with `startswith("kanban:")` instead: `'--jq', '[.[] | select(.labels[].name | startswith("kanban:")) | ...]'`
-
-2. **`WHERE t.status = 'blocked'` misses tasks.** The Kanban Block Watchdog can promote blocked tasks to `ready`, or workers can re-claim them to `running`. The CI watchdog must find tasks by BLOCK EVENT REASON, not current status. Query: `WHERE t.status NOT IN ('archived', 'completed', 'cancelled', 'done') AND te.kind = 'blocked' AND te.payload LIKE '%awaiting CI%'`
-
-3. **`gh run view --repo X --log-failed` prints help text.** `gh run view` requires a run ID or URL as a positional argument (not just `--repo`). Pass `ci_url` from the `check_ci()` output: `gh run view <ci_url> --repo X --log-failed`
-
-4. **SyntaxWarning `invalid escape sequence '\\('`.** Python string `"\\(.status)"` treats `\(` as an invalid escape. Use a raw string: `r'.[0] | "\(.status)|\(.conclusion)|\(.url)"'`
-
-### Deploy
-
-```bash
-# Save script
-cp ci-watchdog-<board>.py ~/.hermes/scripts/
-
-# Create cron (every 2 min, no agent, local delivery)
-hermes cron create \
-  --name "<board> CI watchdog" \
-  --schedule "every 2m" \
-  --script ci-watchdog-<board>.py \
-  --no-agent \
-  --deliver local
+            # Only unblock if the task currently exists and is blocked
+            db = sqlite3.connect(f"/root/.hermes/kanban/boards/{board}/kanban.db")
+            cur = db.execute(
+                "SELECT status FROM tasks WHERE id=? AND status='blocked'",
+                (task_id,)
+            )
+            if cur.fetchone():
+                subprocess.run(
+                    ["hermes", "kanban", "--board", board, "unblock", task_id],
+                    capture_output=True
+                )
+                print(f"Unblocked {task_id} on {board} (PR #{pr['number']} merged)")
+            db.close()
 ```
+
+Key differences from the old watchdog:
+- No `gh pr merge` call — GitHub auto-merge handles it
+- No CI status checks — branch protection enforces CI before merge
+- Multi-board with SQLite validation (only unblocks blocked tasks)
+- Silent when no work done (cron `--deliver local` with `--no-agent`)
+
+### Why `--label` doesn't work for prefix matching
+
+`gh pr list --label kanban:` does EXACT match, not prefix. A label `kanban:t_abc123`
+does NOT match `--label kanban:`. Use `--json` + `re.match("kanban:", ...)` instead.
 
 ## Diagnosis: Stuck Tasks (respawn_guarded)
 
@@ -251,100 +235,21 @@ hermes cron create \
 - **The block reason can also contain URLs.** If a worker blocks with `reason="PR #32 on ..."` and includes a URL, fix the skill so workers use labels instead.
 - **Non-label PRs still block.** An open PR without a `kanban:` label still has a PR URL in comments. The CI-watchdog only finds labeled PRs. Unlabeled PRs need manual intervention.
 
-## Pitfall: `WHERE t.status = 'blocked'` misses promoted tasks
+## Pitfall: `gh pr list --label` does exact match
 
-**The CI watchdog must NOT filter on `t.status = 'blocked'`.** The Kanban Block Watchdog (or the worker itself) can promote/unblock a task while CI is still running. The task status changes to `ready` or `running` but the block event with `"awaiting CI"` still exists. Filtering by status makes the CI watchdog blind to these tasks.
-
-**Wrong:**
-```sql
-WHERE t.status = 'blocked' AND te.kind = 'blocked' AND te.payload LIKE '%awaiting CI%'
-```
-
-**Correct:**
-```sql
-WHERE te.kind = 'blocked' AND te.payload LIKE '%awaiting CI%'
-  AND t.status NOT IN ('archived', 'completed', 'cancelled', 'done')
-```
-
-Exclude terminal tasks but include `ready`, `running`, and `blocked` — any task that has an awaiting-CI block event needs the CI watchdog's attention, regardless of what happened to its status since.
-
-### Symptoms of this bug
-
-- Open kanban-labeled PR with CI running/completed but watchdog never acts on it
-- Task has `blocked` event with "awaiting CI" but current status is `ready` or `running`
-- Task keeps getting re-spawned while CI is still red
-- Event timeline shows: `blocked → promoted → claimed → running` — watchdog missed it
-
-## Block Watchdog Interaction
-
-The Kanban Block Watchdog (`check-blocked-tasks.py`) does NOT auto-unblock "awaiting CI" tasks — it treats them as "unknown block type" (reports only, no action). This is correct behavior. The CI watchdog is the sole handler for CI-gated tasks.
-
-However, if a task is manually unblocked or unblocked by the worker itself, the status changes and the CI watchdog (if using the buggy `t.status = 'blocked'` filter) loses track. The fix above addresses this on the CI watchdog side.
-
-Add an `is_ci_blocked()` branch to `check-blocked-tasks.py` so "awaiting CI" blocks are categorized distinctly from "unknown block type" in Discord alerts:
-
+`gh pr list --label kanban:` does EXACT label name match, not prefix.
+A label `kanban:t_abc123` does NOT match `--label kanban:`.
+Use `--json labels` + regex in Python instead:
 ```python
-def is_ci_blocked(events):
-    for evt in events:
-        if evt.get("kind") == "blocked":
-            if "awaiting CI" in evt.get("payload", {}).get("reason", ""):
-                return True
-    return False
+import json, re
+prs = json.loads(subprocess.run(
+    ["gh", "pr", "list", "--state", "merged", "--json", "labels,number"],
+    capture_output=True, text=True
+).stdout)
+for pr in prs:
+    for label in pr["labels"]:
+        if re.match(r"kanban:", label["name"]):
+            # found one
 ```
 
-## Diagnostic: Stuck Worker — Alive PID, Zero Heartbeat
-
-A worker process can be alive (PID exists, claim auto-extended via `pid_alive`) but produce zero heartbeats. The process is stuck — typically blocked on an LLM call that never returns, or in a loop without checkpoint calls.
-
-**Key indicators:**
-- `status = 'running'`
-- `consecutive_failures = 0` (never crashed, so circuit breaker won't trip)
-- `last_heartbeat_at = NULL` (never sent a heartbeat)
-- `claim_extended` events with `reason: pid_alive` in event history
-- Process exists (`ps -p <pid>`) but state is `S` (sleeping)
-
-**Why the circuit breaker doesn't help:**
-`consecutive_failures` is incremented only on crash/timeout/failure. It resets to 0 on successful completion. A worker that never crashes and never completes keeps `consecutive_failures = 0` forever. The circuit breaker trips at `failure_limit` (default 3) — with 0 consecutive failures it never triggers.
-
-**What eventually reclaims it:**
-`dispatch_stale_timeout_seconds` (default 14400 = 4 hours). If no heartbeat is seen within that window, the dispatcher reclaims the task as stale. This is the ONLY mechanism that catches a zero-heartbeat-alive-PID worker.
-
-**Diagnosis:**
-```bash
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
-conn.row_factory = sqlite3.Row
-t = conn.execute('SELECT status, consecutive_failures, last_heartbeat_at, worker_pid FROM tasks WHERE id=?', ('<tid>',)).fetchone()
-if t:
-    print(f'status={t[\"status\"]}  cf={t[\"consecutive_failures\"]}  pid={t[\"worker_pid\"]}  hb={t[\"last_heartbeat_at\"]}')
-conn.close()
-"
-# If pid is set, check if it's alive:
-ps -p <pid> -o pid,state,etime,cmd --no-headers
-```
-
-## Queue Saturation: Guard-Cleared Tasks Not Spawning
-
-When `max_spawn` is saturated (all worker slots full) or higher-priority tasks consume the dispatch budget, lower-priority tasks may not be re-evaluated for many ticks — even after their `respawn_guarded` guard has cleared.
-
-**Symptoms:**
-- Task is `ready`, `claim_lock = NULL`, `check_respawn_guard()` returns `None`
-- But no new `spawned` or `respawn_guarded` events for 10+ minutes
-- Other tasks ARE being spawned in the same time window
-- The task is at the bottom of the priority queue, behind unassigned or higher-priority tasks
-
-**This is not a bug.** It's normal queue behavior. The task will spawn when the dispatcher reaches it. Check with:
-```bash
-# See how many ready tasks are ahead in the queue
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
-conn.row_factory = sqlite3.Row
-ready = conn.execute('SELECT id, title, priority, assignee FROM tasks WHERE status=\"ready\" ORDER BY priority DESC, created_at ASC').fetchall()
-for i, t in enumerate(ready):
-    marker = ' <--' if t['id'] == '<tid>' else ''
-    print(f'{i+1}. prio={t[\"priority\"]} {t[\"id\"][:16]} assignee={t[\"assignee\"]} {marker}')
-conn.close()
-"
-```
+## Pitfall: Non-label PRs still trigger active_pr

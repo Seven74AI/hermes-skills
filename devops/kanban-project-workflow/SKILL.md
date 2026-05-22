@@ -1,7 +1,7 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.3.0
+version: 1.4.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared]
@@ -9,36 +9,50 @@ metadata:
 
 # Kanban Project Workflow — Shared Patterns
 
-Universal kanban worker patterns for project boards (shop, the-swarm, music-library, etc.).
+Universal kanban worker patterns for all project boards (shop, the-swarm, music-library, etc.).
 Load this skill alongside the project-specific skill for every coder/reviewer task.
+
+## Unified Workflow
+
+ALL projects use the same flow — review-gated with auto-merge:
+
+```
+Coder → PR + auto-merge → block "review-required" → Reviewer approves → CI green → GitHub merges auto → CI watchdog unblocks → Coder completes
+```
+
+This replaces the previous two-model system (CI-gated for shop, review-gated for the-swarm).
+GitHub's native auto-merge (`gh pr merge --auto`) handles the merge — no custom merge logic needed.
+
+### Reviewer Identity (GitHub App)
+
+The reviewer agent must approve PRs as a DIFFERENT GitHub identity from the coder.
+GitHub does NOT count the PR author's own approve. The reviewer uses a **GitHub App**
+installed on the target repos, authenticating as `hermes-reviewer[bot]`.
+
+Setup reference: `references/github-app-reviewer-setup.md`
+Branch protection: require 1 approval, require CI checks, allow auto-merge.
 
 ## GitHub Models
 
-Two repo models are used across projects. Your project skill will tell you which one.
+Two repo models — your project skill tells you which one.
 
 ### Fork Model (shop, music-library)
 
-Push to `Seven74AI/<repo>` fork. PRs go to upstream (`mnlamart/<repo>`).
-Only consolidation merges go to upstream. Workers NEVER push directly to upstream.
+Push to `Seven74AI/<repo>` fork. Workers NEVER push directly to upstream (`mnlamart/<repo>`).
+Only consolidation PRs go to upstream. Coder PRs + reviews happen entirely on the fork.
 
 ```
-Worker branch → Seven74AI/<repo> fork → PR to mnlamart/<repo> upstream
+Worker branch → Seven74AI/<repo> fork → PR + auto-merge + review on fork
+Consolidation: fork main → PR to mnlamart/<repo> upstream (manual)
 ```
 
 ### Direct Model (the-swarm, videogame-lab)
 
-Push directly to `Seven74AI/<repo>`. No upstream fork. Code lives in one repo.
+Push directly to `Seven74AI/<repo>`. No upstream fork.
 
 ```
-Worker branch → Seven74AI/<repo> (direct push, no fork)
+Worker branch → Seven74AI/<repo> (direct push, one repo)
 ```
-
-## ⛔ CRITICAL: Label-Based PR Workflow — NO PR URLs in Comments
-
-The kanban dispatcher scans task comments for GitHub PR URLs. If ANY comment
-within the last 24 hours matches `https://github.com/.../pull/N`, the task is
-flagged `respawn_guarded` with reason `active_pr`. The worker cannot respawn
-for 24 hours.
 
 ## Unified PR Workflow (ALL project boards)
 
@@ -83,22 +97,42 @@ approves, GitHub merges automatically.
 
 ### Reviewer agent (step-by-step)
 
+The reviewer MUST authenticate as a DIFFERENT GitHub identity from the coder
+(Seven74AI). GitHub does NOT count the PR author's own approve. The reviewer
+uses a **GitHub App** (`hermes-sevenai-reviewer`, App ID 3788528) installed on
+the target repos. See `references/github-app-reviewer-setup.md`.
+
+**Token generation:** The reviewer generates a fresh installation token at the
+start of EACH run. A helper script is bundled at `scripts/gen-installation-token.py`
+and must also be present at `~/.config/gen-installation-token.py` in the reviewer
+profile's HOME.
+
 ```python
 # 1. Read coder's handoff from their task comment thread
 kanban_show()
 
-# 2. Review the PR (pull diff, read code, run tests)
-terminal(f"gh pr diff {PR_NUMBER} --repo {REPO}")
+# 2. Generate GitHub App installation token
+terminal("TOKEN=$(python3 ~/.config/gen-installation-token.py) && echo OK")
 
-# 3a. Approve — unblocks auto-merge
-terminal(f"gh pr review {PR_NUMBER} --repo {REPO} --approve")
+# 3. Review the PR (pull diff, read code, run tests)
+terminal(f"TOKEN=$(python3 ~/.config/gen-installation-token.py) && "
+         f"GH_TOKEN=$TOKEN gh pr diff {PR_NUMBER} --repo {REPO}")
+
+# 4a. Approve — unblocks auto-merge
+terminal(f"TOKEN=$(python3 ~/.config/gen-installation-token.py) && "
+         f"gh api repos/{REPO}/pulls/{PR_NUMBER}/reviews "
+         f"-H 'Authorization: Bearer $TOKEN' "
+         f"-f event=APPROVE -f body='LGTM — reviewed by agent'")
 kanban_complete(
     summary="Reviewed PR #N; approved — code correct, tests pass",
     metadata={"approved": True}
 )
 
-# 3b. Request changes — auto-merge blocked
-terminal(f"gh pr review {PR_NUMBER} --repo {REPO} --request-changes -b '...'")
+# 4b. Request changes — auto-merge blocked
+terminal(f"TOKEN=$(python3 ~/.config/gen-installation-token.py) && "
+         f"gh api repos/{REPO}/pulls/{PR_NUMBER}/reviews "
+         f"-H 'Authorization: Bearer $TOKEN' "
+         f"-f event=REQUEST_CHANGES -f body='<specific feedback>'")
 kanban_comment(body="Changes requested: <specific feedback>")
 kanban_block(reason="changes-requested: <summary> — coder must fix")
 ```
@@ -159,8 +193,27 @@ yellow/warning, not green.
 
 **Shop regression:** Commit `15f1d1e` (May 20) removed `|| true` from the
 typecheck step. A later consolidation commit (`0774571`) re-introduced it.
+Fixed on the Seven74AI fork via GitHub API commit `2dfdfce` (May 21).
 Always check the workflow file after consolidation PRs — `|| true` is a
 magnet for copy-paste regressions.
+
+**Pitfall: local working copy corruption.** When the repo at `/tmp/shop-original`
+accumulates `bad object` errors (corrupt git objects), `git push` fails with
+`fatal: bad object <sha>`. Fix: delete and re-clone the working copy. The
+GitHub API can be used for file edits in the meantime (as done for the
+`|| true` fix).
+
+## Pitfall: gh CLI Version Limitations
+
+Older `gh` versions (pre-2.60) lack `--app-id` in `gh auth login` and `--search`
+in `gh pr list`. Workarounds:
+
+- **No `--app-id`:** Use `gh api` with explicit `-H "Authorization: Bearer $TOKEN"`
+  instead of `gh pr review --approve`. The reviewer generates an installation token
+  via JWT, then calls `gh api repos/.../pulls/N/reviews -H "Authorization: Bearer $TOKEN"`.
+- **No `--search`:** Use `--json labels,number` + regex in Python to filter by label
+  prefix (`re.match(r"kanban:", label["name"])`). `gh pr list --label kanban:` does
+  exact match, not prefix — a label `kanban:t_abc123` does NOT match `--label kanban:`.
 
 ## Pitfall: Stale Fork Base — Unmerged Commits on Feature Branches
 
@@ -245,15 +298,16 @@ need `arxiv` or `polymarket`. A coder doesn't need `kanban-velocity` or
 **Sync strategy: role-based, not blanket.**
 
 1. Every profile gets the core: `kanban-worker`, `kanban-project-workflow`
-2. Every profile gets the project skills for its boards
-3. Beyond that, each role gets ONLY what it uses:
+2. **Exception:** `planner` gets `kanban-orchestrator` instead of `kanban-worker` — it never implements code
+3. Every profile gets the project skills for its boards (planner loads them on demand via `skill_view()` based on `HERMES_TENANT`)
+4. Beyond that, each role gets ONLY what it uses:
 
 | Role | Extra skills |
 |------|-------------|
 | `coder` | `tdd`, `systematic-debugging`, `github-pr-workflow`, `requesting-code-review`, `project-ci`, `long-running-tests`, `disk-cleanup`, `codebase-inspection`, `subagent-driven-development`, `writing-plans` |
 | `reviewer` | `github-code-review`, `systematic-debugging`, `codebase-inspection`, `project-ci`, `requesting-code-review` |
 | `researcher` | `arxiv`, `blogwatcher`, `llm-wiki` (if needed) |
-| `planner` | `writing-plans`, `plan`, `spike`, `subagent-driven-development` |
+| `planner` | `kanban-orchestrator`. Core: `kanban-project-workflow` only (NOT `kanban-worker`). Project skills (shop, the-swarm, etc.) loaded on-demand via `HERMES_TENANT` → `skill_view()`. Personality: `technical`. |
 | `hermes-devops` | `kanban-ci-watchdog`, `kanban-velocity`, `kanban-profile-blueprint`, `hermes-journal`, `disk-cleanup`, `webhook-subscriptions`, all `github-*`, `renovate-bulk-merge`, `hermes-agent`, `project-ci`, `long-running-tests` |
 
 External skill suites (Matt Pocock, etc.) are added only to roles that benefit:
@@ -322,29 +376,56 @@ consolidate into one PR:
 4. Push to fork, create a single consolidated PR
 5. Close superseded PRs with comment
 
-## Pitfall: Reviewer Agent Needs a Separate GitHub Account
+## Pitfall: Reviewer App Approval Not Counting (`authorAssociation: NONE`)
 
-The coder worker runs under the `coder` profile which uses the `Seven74AI`
-GitHub token. The reviewer worker ALSO uses `Seven74AI`'s token. GitHub's
-branch protection does NOT count a PR author's own approving review toward
-the required approval count — so `gh pr review --approve` from `Seven74AI`
-on a PR opened by `Seven74AI` will not unblock auto-merge.
+Even with `Contents: Read & Write` on the GitHub App, reviews can show
+`authorAssociation: "NONE"` and NOT count toward branch protection.
+**Symptom:** `mergeStateStatus: "BLOCKED"` with 1 APPROVED review, all CI green.
 
-**Symptom:** PR has CI green + reviewer approved, but auto-merge never triggers.
-`gh pr view --json autoMergeRequest` shows `mergeStateStatus: BLOCKED`.
-
-**Fix:** Create a separate GitHub machine account (e.g., `hermes-reviewer`) with
-write access to the target repos. Configure the `reviewer` Hermes profile to use
-that token. The reviewer's approve will then count as a distinct user.
-
+**Immediate fix:** Admin-merge the PR:
 ```bash
-# In reviewer profile's .env:
-GITHUB_TOKEN=ghp_reviewer_token_here
+gh pr merge N --repo <repo> --admin --squash --delete-branch
 ```
 
-**Alternative:** Disable required approvals in branch protection and rely on CI
-only for auto-merge. The reviewer still comments but doesn't gate the merge.
-Less safe — code lands without explicit approval.
+**Diagnosis:**
+```bash
+gh pr view N --repo <repo> --json reviews --jq '[.reviews[] | {state, authorAssociation}]'
+# authorAssociation: "NONE" → review doesn't count
+```
+
+Real case: music-library#4 (2026-05-21) — hermes-sevenai-reviewer approved, all CI green,
+but `authorAssociation: NONE` blocked auto-merge. Admin-merge was the workaround.
+
+## Pitfall: CI Status Check Names vs Branch Protection Required Contexts
+
+GitHub requires **exact match** between CI job context names and branch protection
+required contexts. Two common mismatches:
+
+### Emoji `name:` fields
+```yaml
+# WRONG — reports context "⬣ ESLint", branch protection expects "lint"
+lint:
+  name: ⬣ ESLint
+```
+**Fix:** Remove job-level `name:` fields. The YAML key (`lint:`) becomes the context.
+
+### Matrix sharding
+```yaml
+# Reports "playwright (1)" and "playwright (2)" — doesn't match "playwright"
+playwright:
+  strategy:
+    matrix:
+      shard: [1, 2]
+```
+**Fix:** Gate job (see § Playwright E2E Sharding Standard in `kanban-profile-blueprint`).
+
+**Audit command:**
+```bash
+# Required contexts vs actual CI job names
+gh api repos/<repo>/branches/main/protection --jq '.required_status_checks.contexts[]'
+gh pr checks <N> --repo <repo>
+```
+Found on shop + music-library (2026-05-21). Documented in `kanban-profile-blueprint`.
 
 ## Standard Pipeline
 
@@ -366,6 +447,11 @@ Researcher → Planner → Coder → Reviewer → Done
 All boards use the same unified PR workflow (CI + reviewer → auto-merge).
 No per-board variation. Project-specific details (GitHub model, tech stack,
 testing conventions) live in the project skill (`shop`, `the-swarm`, etc.).
+
+## Status Checks: PRs + Kanban Multi-Board
+
+Quick audit across all project boards — forks, upstream repos, and kanban tickets.
+See `references/cross-repo-pr-status.md` for the one-liner pattern.
 
 ## Health Checks
 

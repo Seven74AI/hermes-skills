@@ -27,10 +27,11 @@ The Swarm uses the **unified PR workflow** from `kanban-project-workflow`:
 PR → auto-merge → reviewer agent approves → CI green → GitHub native merge → unblock.
 No separate review-gated vs CI-gated — all boards use the same flow.
 
-## Reviewer account pitfall
+## Reviewer account pitfall (RESOLVED)
 
-The reviewer agent uses the same `Seven74AI` GitHub account as the coder.
-See `kanban-project-workflow` § Reviewer Agent Needs a Separate GitHub Account.
+The reviewer agent uses a **GitHub App** (`hermes-sevenai-reviewer`, App ID 3788528)
+which provides a separate identity from the coder (`Seven74AI`). See `kanban-project-workflow`
+§ Reviewer agent and `references/github-app-reviewer-setup.md` for the full setup.
 
 ## Kanban
 
@@ -43,14 +44,24 @@ See `kanban-project-workflow` § Reviewer Agent Needs a Separate GitHub Account.
 When creating swarm tasks, ensure:
 
 ```bash
+# Coder, reviewer, researcher:
 hermes kanban --board the-swarm create \
   --assignee <profile> \
   --max-runtime 3600s \
-  --skills "kanban-worker,kanban-project-workflow,the-swarm" \
+  --skill kanban-worker --skill kanban-project-workflow --skill the-swarm \
+  "<title>"
+
+# Planner (uses kanban-orchestrator, NOT kanban-worker):
+hermes kanban --board the-swarm create \
+  --assignee planner \
+  --max-runtime 3600s \
+  --skill kanban-orchestrator --skill kanban-project-workflow --skill the-swarm \
   "<title>"
 ```
 
-- **skills**: Must include `kanban-worker,kanban-project-workflow,the-swarm`. Workers without these operate without the shared PR workflow, respawn guard, and project-specific patterns.
+- **Flag is `--skill` (singular, repeatable)**, not `--skills`.
+- **skills**: Must include the role skill (`kanban-worker` or `kanban-orchestrator`), `kanban-project-workflow`, and `the-swarm`. Workers without these operate without the shared PR workflow, respawn guard, and project-specific patterns.
+- **Planner exception**: planner uses `kanban-orchestrator` instead of `kanban-worker` — it never implements code, it decomposes and delegates.
 - **max_runtime_seconds**: Set to 3600 (1h safety net). Heartbeat is the primary liveness signal.
 - **Task body**: NEVER include raw GitHub PR URLs (`https://github.com/.../pull/N`). The dispatcher scans all comments for these and blocks respawn for 24h (`active_pr` guard). Use text references like "PR #38" instead.
 
@@ -89,7 +100,8 @@ Access: `http://100.98.177.76:3456` (Tailscale IP, port 3456).
 - TDD mandatory — load `test-driven-development` skill
 - E2E seed: `page.addInitScript` → `localStorage.setItem('the_swarm_save', ...)` BEFORE `page.goto('/')`
 - DOM selectors: `references/dom-selectors.md`
-- Save version: 7 (migration v6→v7 in `src/persistence/migrations.ts`)
+- E2E selectors (post-ResourcePanel refactor): `references/e2e-selectors.md`
+- Save version: 10 (migrations cover v1→v10 in `src/persistence/migrations.ts`)
 
 ### Test Conventions: Invariants, NOT Hardcoded Values
 
@@ -109,6 +121,9 @@ See `references/test-conventions.md` for the full audit (891 exact vs 293 invari
 
 ### Test Pitfalls
 
+- **E2E seeds MUST be pipeline-aware:** eggs in `resources.eggs` are not processed — they must be fed into `eggPipeline.count`. Same for larvae → `larvaPipeline.count`. A seed with `eggs: 3, eggPipeline: { count: 0 }` will never hatch.
+- **E2E seeds with incomplete GameState:** old seeds only include a few fields (`version: 2` saves from before the deep-merge fix). `SaveManager.load()` now applies `migrateSave()` + `deepMerge(createInitialState())` so missing fields get defaults. Seeds still work, but always prefer seeding via `createInitialState()`-based overrides rather than raw partial objects.
+- **ResourcePanel selectors:** the panel was refactored to a multi-section HUD layout. Resource values use `.critical-item[data-stat="resources.eggs"] .critical-value` (not the old `NumberDisplay` format). Worker count uses `[data-stat="resources.workers"] .hud-resource-value`. See `references/e2e-selectors.md` for the full selector map.
 - **rAF fake timers:** Ticker uses `requestAnimationFrame`. `vi.useFakeTimers()` doesn't reliably trigger rAF. Test public API, not exact tick counts.
 - **Pre-push flaky tests:** Rerun `.githooks/pre-push` manually. If flaky, `git push --no-verify`.
 - **Sync tests after API changes:** Run `npx vitest run` after signature changes.
@@ -173,7 +188,7 @@ First spaceship costs only basic resources (food, wood, stone, nectar — zero s
 
 - `PhaseStateMachine.tick()` returns `{ phase, state }` (not just Phase)
 - `Transition.onEnter` returns modified state, doesn't mutate
-- `SaveManager.load()` chains migrations, returns `{ gameState, playTimeMs, timestamp? } | null`
+- `SaveManager.load()` chains `migrateSave(data, from, SAVE_VERSION)` then deep-merges with `createInitialState()` so any missing fields get defaults. Old/partial saves (e.g. E2E test seeds with only 10 fields) are safe.
 - Ticker uses rAF + 50ms accumulator (was `setInterval`)
 - `PLANETS` in shared `src/data/planets.ts`
 - `TerritoryBonuses` includes `wood`; FOREST produces wood (not food)
