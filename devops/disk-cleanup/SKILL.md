@@ -1,7 +1,7 @@
 ---
 name: disk-cleanup
 description: "Analyze disk usage and safely reclaim space when disk is critically full (≥80%). Systematic cleanup of caches, logs, temp files, and stale kanban workspaces."
-version: 1.5.0
+version: 1.6.0
 platforms: [linux]
 metadata:
   hermes:
@@ -16,6 +16,7 @@ When disk usage exceeds 80%, systematically analyze and clean up. Never delete p
 - `references/kanban-db-schema.md` — tasks table schema, query patterns, pitfalls
 - `references/watchdog-pattern.md` — no_agent watchdog + agent cleanup two-cron architecture (includes token cost analysis)
 - `references/cron-audit-methodology.md` — systematic technique for auditing cron jobs (waste detection, redundancy, token estimation)
+- `references/cron-consolidation.md` — merging overlapping cron jobs: pattern, prompt template, lessons from 4→1 reflector consolidation
 - `references/may-18-incident.md` — full incident report from the 2026-05-18 disk saturation event
 
 ## When to Use
@@ -180,6 +181,40 @@ PYEOF
 python3 /tmp/cleanup-2e.py
 ```
 
+### 2eb. /tmp project clones (stale git repos, build artifacts — NOT caught by 2e)
+
+Step 2e only removes orphaned **files** >24h. Full project directories with `.git/`, `node_modules/`, etc. survive indefinitely. In the 2026-05-22 incident these were 25G; in the 2026-05-22-cleanup run they were 1.2G (hermes-backup-repo + shop-* clones). Remove any directory in `/tmp/` that:
+- Contains `.git/` OR `package.json` OR `node_modules/` (project clone heuristic)
+- Is NOT in the allowlist below
+
+```bash
+cat > /tmp/cleanup-tmp-projects.py << 'PYEOF'
+import shutil, os
+
+ALLOWLIST = {
+    # Add paths of currently-active project clones here
+}
+targets = []
+for d in os.listdir('/tmp'):
+    dp = os.path.join('/tmp', d)
+    if not os.path.isdir(dp) or dp in ALLOWLIST:
+        continue
+    # Heuristic: project clone if it has .git/, package.json, or node_modules/
+    if (os.path.exists(os.path.join(dp, '.git')) or
+        os.path.exists(os.path.join(dp, 'package.json')) or
+        os.path.exists(os.path.join(dp, 'node_modules'))):
+        targets.append(dp)
+        size = sum(
+            os.path.getsize(os.path.join(r, f))
+            for r, _, files in os.walk(dp) for f in files
+        )
+        shutil.rmtree(dp, ignore_errors=True)
+        print(f'Removed: {dp} ({size/1024/1024:.0f}M)')
+print(f'Removed {len(targets)} project clones from /tmp')
+PYEOF
+python3 /tmp/cleanup-tmp-projects.py
+```
+
 ### 2f. Docker (if installed)
 
 `system prune` removes stopped containers, unused networks, and dangling images. `image prune -a` also removes all unused images (not just dangling). Run both for full coverage.
@@ -272,7 +307,7 @@ python3 /tmp/cleanup-playwright.py
 
 ### 2j. Profile package manager caches (safe — regeneratable via npm/pnpm/pip install)
 
-`.npm` directories and `.cache/pnpm`, `.cache/node-gyp`, `.cache/prisma` accumulate per-profile. All are safe to purge — reinstalled on next install/build. Observed accumulation: 5.2G across 6 profiles (2026-05-18).
+`.npm` directories and `.cache/pnpm`, `.cache/node-gyp`, `.cache/prisma` accumulate per-profile. All are safe to purge — reinstalled on next install/build. **Also cleans system-level `/root/.cache/pnpm`** (not covered by profile globs). Observed accumulation: 5.2G across 6 profiles (2026-05-18); missed 668M of system pnpm on 2026-05-22 before this fix.
 
 ```bash
 cat > /tmp/cleanup-profile-caches.py << 'PYEOF'
@@ -296,6 +331,14 @@ for cache_dir in glob.glob('/root/.hermes/profiles/*/home/.cache'):
             print(f'Removed {sp} ({size/1024/1024:.0f}M)')
 
 print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
+
+# Also clean system-level pnpm cache (not under any profile)
+sys_pnpm = '/root/.cache/pnpm'
+if os.path.isdir(sys_pnpm):
+    size = sum(os.path.getsize(os.path.join(dp,f)) for dp,_,files in os.walk(sys_pnpm) for f in files)
+    shutil.rmtree(sys_pnpm, ignore_errors=True)
+    total += size
+    print(f'Removed system pnpm cache ({size/1024/1024:.0f}M)')
 PYEOF
 python3 /tmp/cleanup-profile-caches.py
 ```
@@ -365,25 +408,44 @@ python3 /tmp/cleanup-camoufox.py
 
 ### 2n. Old Hermes state snapshots (safe — pre-update backups)
 
-Hermes creates state.db snapshots in `/root/.hermes/state-snapshots/` before updates. These backups are safe to remove after 7 days — the current state.db is not touched. Observed accumulation: 110M per snapshot.
+State snapshots are created by `hermes backup --quick` (typically via the "Hermes Quick Backup" cron job, every 2h) and also before Hermes updates. Each snapshot is a full copy of `state.db` + config files. These backups are safe to remove — the current state.db is not touched.
 
+**Preferred method — use the permanent retention script** (keeps last 2):
+```bash
+python3 /root/.hermes/scripts/prune-snapshots.py
+```
+
+**Fallback — age-based cleanup** (snapshots >7 days):
 ```bash
 cat > /tmp/cleanup-snapshots.py << 'PYEOF'
 import shutil, os, time, glob
-
 cutoff = time.time() - 7*86400
 for snap in glob.glob('/root/.hermes/state-snapshots/*/'):
     if os.path.isdir(snap) and os.path.getmtime(snap) < cutoff:
-        size = sum(
-            os.path.getsize(os.path.join(dp, f))
-            for dp, _, files in os.walk(snap) for f in files
-        )
+        size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, files in os.walk(snap) for f in files)
         shutil.rmtree(snap, ignore_errors=True)
         print(f'Removed snapshot: {snap} ({size/1024/1024:.0f}M)')
 print('Done')
 PYEOF
 python3 /tmp/cleanup-snapshots.py
 ```
+
+**Fallback — count-based pruning** (keep last N when age cutoff isn't enough):
+```bash
+cat > /tmp/cleanup-snapshots-count.py << 'PYEOF'
+import shutil, os, glob
+KEEP = 3
+snaps = sorted(glob.glob('/root/.hermes/state-snapshots/*/'), reverse=True)
+for snap in snaps[KEEP:]:
+    size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, files in os.walk(snap) for f in files)
+    shutil.rmtree(snap, ignore_errors=True)
+    print(f'Removed snapshot: {os.path.basename(snap.rstrip("/"))} ({size/1024/1024:.0f}M)')
+print(f'Done — kept {min(len(snaps), KEEP)}/{len(snaps)} snapshots')
+PYEOF
+python3 /tmp/cleanup-snapshots-count.py
+```
+
+Observed accumulation (2026-05-22): 306M per snapshot (state.db grows with session count). At the default 2h backup interval, this produces ~12 snapshots/day = ~3.6G/day. The retention script installed at `/root/.hermes/scripts/prune-snapshots.py` is also called by the quick backup cron after each run to prevent unbounded growth.
 
 ## Step 3 — Verify
 
@@ -418,5 +480,6 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **Archiving blocked tasks**: `hermes kanban transition <id> archive` silently fails from `blocked` state. Use direct SQL: `UPDATE tasks SET status='archived', completed_at=<unix_ts> WHERE id='<tid>'`.
 - Docker `system prune --volumes` deletes unused volumes — safe, but note it.
 - **Watchdog % may differ from live `df`.** The watchdog snapshot and the cleanup run are separated in time — transient files (temp builds, caches flushed by other processes) can drop usage between the watchdog check and the agent's `df`. When `CLEANUP_TRIGGER=true` is set, **trust the trigger** and run the full protocol. Do not short-circuit based on a lower current `df` reading — the watchdog fired for a reason, and storage can fill again quickly.
-- **🔴 CRITICAL: Trigger mismatch between watchdog and cleanup agent.** As of 2026-05-22, the Disk Cleanup Agent cron (`4423bee366e6`) checks for the literal string `CLEANUP_TRIGGER=true` in the watchdog output. However, the disk-watchdog (`9fbadfbd593e`) outputs "Cleanup required — run disk-cleanup skill or GC workspaces" without ever emitting the `CLEANUP_TRIGGER=true` string. Result: the agent responds "." every 10 minutes while disk stays at 95%. **Fix:** either (a) add `CLEANUP_TRIGGER=true` to the watchdog output when usage ≥80%, or (b) update the Disk Cleanup Agent prompt to trigger on "Cleanup required" or "CRITICAL" instead. Until fixed, run cleanup manually: `hermes cron run <cleanup_job_id>` or execute the skill steps directly.
+- **🔴 FIXED 2026-05-22: Trigger mismatch.** The disk-watchdog (`9fbadfbd593e`) now emits `CLEANUP_TRIGGER=true` in its action field at ≥75%, matching what the Disk Cleanup Agent (`4423bee366e6`) expects. Previously the watchdog only emitted "Cleanup required — run disk-cleanup skill..." without the trigger string, so the cleanup agent responded "." every 10 minutes while disk stayed at 95%.
 - **GC script silent output is normal.** The script prints nothing when 0 workspaces are removed. This can mean: (a) no done/archived tasks, (b) workspaces already deleted from disk in a prior run but DB records remain, or (c) all done/archived tasks completed <5 minutes ago. Verify by checking the DB directly before assuming failure.
+- **🔴 /tmp project clones are NOT caught by Step 2e.** Step 2e only removes orphaned files >24h, but kanban worker workspaces in `/tmp/` are full git clones (`.git/`, `node_modules/`, etc.) that are directories, not individual files. They survive 2e indefinitely. In the 2026-05-22 incident, `/tmp/` held 25G of stale workspace clones (shop ×12, music-library ×3, edgee-lab ×3, etc.) — the largest single disk consumer. To clean these: identify project dirs (those with `.git/` or `package.json`), verify they're not the active workspace, then remove. Keep an allowlist for the current working project(s).

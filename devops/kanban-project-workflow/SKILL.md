@@ -1,7 +1,7 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.4.0
+version: 1.8.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared]
@@ -299,7 +299,7 @@ need `arxiv` or `polymarket`. A coder doesn't need `kanban-velocity` or
 
 1. Every profile gets the core: `kanban-worker`, `kanban-project-workflow`
 2. **Exception:** `planner` gets `kanban-orchestrator` instead of `kanban-worker` — it never implements code
-3. Every profile gets the project skills for its boards (planner loads them on demand via `skill_view()` based on `HERMES_TENANT`)
+3. Every profile gets the project skills for its boards — **physical copies, not just on-demand.** The planner uses `HERMES_TENANT` → `skill_view()` to load the right project skill at runtime, but coders and reviewers need the SKILL.md file physically present in their profile (`--skills shop` is hardcoded in the task, not resolved from tenant). `HERMES_TENANT` is metadata only — it does NOT auto-inject skills.
 4. Beyond that, each role gets ONLY what it uses:
 
 | Role | Extra skills |
@@ -307,12 +307,24 @@ need `arxiv` or `polymarket`. A coder doesn't need `kanban-velocity` or
 | `coder` | `tdd`, `systematic-debugging`, `github-pr-workflow`, `requesting-code-review`, `project-ci`, `long-running-tests`, `disk-cleanup`, `codebase-inspection`, `subagent-driven-development`, `writing-plans` |
 | `reviewer` | `github-code-review`, `systematic-debugging`, `codebase-inspection`, `project-ci`, `requesting-code-review` |
 | `researcher` | `arxiv`, `blogwatcher`, `llm-wiki` (if needed) |
-| `planner` | `kanban-orchestrator`. Core: `kanban-project-workflow` only (NOT `kanban-worker`). Project skills (shop, the-swarm, etc.) loaded on-demand via `HERMES_TENANT` → `skill_view()`. Personality: `technical`. |
+| `planner` | `kanban-orchestrator`. Core: `kanban-project-workflow`, `writing-plans` (NOT `kanban-worker`). Project skills (shop, the-swarm, etc.) loaded on-demand via `HERMES_TENANT` → `skill_view()`. Personality: `technical`. |
 | `hermes-devops` | `kanban-ci-watchdog`, `kanban-velocity`, `kanban-profile-blueprint`, `hermes-journal`, `disk-cleanup`, `webhook-subscriptions`, all `github-*`, `renovate-bulk-merge`, `hermes-agent`, `project-ci`, `long-running-tests` |
 
 External skill suites (Matt Pocock, etc.) are added only to roles that benefit:
 `coder` might get `tdd`, `diagnose`, `triage`; `reviewer` might get `diagnose`;
 `researcher` and `planner` typically don't need them.
+
+**Dogfood project skills — loaded on-demand via tenant, NOT physically synced.**
+
+The tenant auto-injection (see below) eliminates the need to physically sync
+dogfood SKILL.md files to every worker profile. When a task carries `--tenant shop`,
+the dispatcher resolves the skill from `~/.hermes/skills/` at spawn time.
+**Do NOT bulk-sync dogfood skills into all profiles** — they waste tokens in
+the `available_skills` block. Only the `planner` profile needs them pre-synced
+(because it uses `skill_view()` on-demand, not `--skills`).
+
+The sole exception: new dogfood project skills must be synced to the `planner`
+profile immediately (`cp -r` the whole skill directory).
 
 **To sync a skill to specific profiles (NOT all):**
 
@@ -324,9 +336,41 @@ for p in coder planner; do
 done
 ```
 
+**Dispatcher tenant auto-injection (safety net, 2026-05-22):** The dispatcher now
+auto-resolves `--tenant <name>` into `--skills <name>` at spawn time. When a task
+has `tenant=shop`, the dispatcher searches `~/.hermes/skills/` for a matching
+skill, syncs it into the worker profile if missing, and injects `--skills shop`.
+This means tasks no longer need the project skill listed explicitly — the tenant
+is enough. The auto-injection is a defence-in-depth measure; tasks with
+`--skills shop` still work fine (dedup prevents double-loading).
+
 Missing profile copies cause "Unknown skill(s): <name>" crashes on worker spawn.
 If a task's `--skills` references a skill not in the worker's profile, the spawn
-fails.
+fails. The pre-spawn watchdog only scans `ready` tasks for NO-SKILLS (NULL/empty)
+— it does NOT detect skills that exist in the main profile but are missing from
+the worker's profile copy. The only symptom is the dispatch error log.
+**The tenant auto-injection above eliminates this class of error for project
+skills, but only when tasks carry `--tenant`.**
+
+**Pre-spawn watchdog blind spot:** a task with `skills=["shop", "kanban-project-workflow"]`
+passes the NO-SKILLS check because the column is non-NULL. But if `shop` was
+removed from the `coder` profile during a skill-curation pass, every coder task
+with `--skills shop` will crash on dispatch with "Unknown skill(s): shop".
+The pre-spawn watchdog never sees this — it's a profile-level gap, not a
+task-level gap. Audit profile skill coverage with:
+
+```bash
+# List dogfood skills a profile is missing
+for ds in shop the-swarm music-library videogame-lab baguette glance; do
+  [ -d "/root/.hermes/profiles/coder/skills/dogfood/$ds" ] || echo "MISSING: $ds"
+done
+```
+
+**Pitfall: new dogfood project skill → sync to ALL profiles before creating tasks.**
+When you create a SKILL.md for a new board (e.g. `edgee-lab`), sync it to
+`coder`, `reviewer`, `planner`, `researcher`, and `hermes-devops` profiles
+immediately. Any task with `--skills <new-skill>` will fail on dispatch until
+the profile copy exists.
 
 ## Worker Tuning
 
@@ -365,6 +409,57 @@ filters `WHERE max_runtime_seconds IS NOT NULL`. Tasks with NULL
 indefinitely — only the stale-heartbeat check (4h no heartbeat) reclaims them.
 Always create tasks with `--max-runtime 3600` or backfill via SQL above.
 
+## Closing Upstream Issues After Work Completes
+
+The kanban pipeline (Researcher → Planner → Coder → Reviewer → Done) tracks
+implementation, but the upstream GitHub issues that motivated the work are a
+**separate lifecycle**. Kanban tasks can all be `done` while upstream issues
+remain `open` — the two are not coupled.
+
+**After a consolidation PR merges to upstream, close the corresponding
+upstream issues.** This is manual. No kanban automation bridges the gap.
+
+### Token permissions (fork model)
+
+Closing issues on upstream (`mnlamart/<repo>`) requires write access to that repo:
+
+| Token | Can close? | Notes |
+|-------|-----------|-------|
+| Seven74AI (coder) | ❌ 403 | `repo` scope, but not a collaborator on upstream |
+| hermes-sevenai-reviewer (GitHub App) | ❌ 403 | Has Contents + PR write; lacks Issues: Write |
+| mnlamart personal token | ✅ | Full owner access to upstream |
+
+The GitHub App can be granted Issues: Write in its installation settings on
+upstream repos, avoiding the need for a personal token.
+
+### Bulk-close recipe (when token is available)
+
+```bash
+TOKEN="<mnlamart or app token with issues:write>"
+for n in $(seq <first> <last>); do
+  curl -s -X PATCH \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/<owner>/<repo>/issues/$n" \
+    -d '{"state":"closed","state_reason":"completed"}'
+done
+```
+
+`gh issue close` works too, but requires the authenticated user to have push
+access — same permission constraint applies.
+
+### When to close
+
+- After a consolidation PR merges (fork → upstream): close all issues whose
+  work was included in that consolidation.
+- After a direct-model PR merges (no upstream fork): close the issue immediately.
+- Don't close issues prematurely — only when the code is on upstream main and
+  CI is green.
+
+Real case: shop board (2026-05-22) — 262 kanban tasks done, consolidation PR #198
+merged 226 commits to upstream, but all 66 upstream issues (#101–#167) remained
+open. Seven74AI and the reviewer app both got 403 on close.
+
 ## PR Consolidation
 
 When multiple open PRs overlap (e.g., dep bumps + CI fixes + migration),
@@ -375,6 +470,7 @@ consolidate into one PR:
 3. Run full local CI in background + wait
 4. Push to fork, create a single consolidated PR
 5. Close superseded PRs with comment
+6. Close upstream issues corresponding to the consolidated work (see § Closing Upstream Issues)
 
 ## Pitfall: Reviewer App Approval Not Counting (`authorAssociation: NONE`)
 
@@ -437,6 +533,9 @@ Researcher → Planner → Coder → Reviewer → Done
 
 - **Researcher:** Investigate, compare approaches, produce recommendations.
   Handoff: `kanban_complete(summary=..., metadata={recommendation, benchmarks})`
+  **After completing, post results as a comment on the originating GitHub issue**
+  (e.g. `gh issue comment N --repo <repo> --body "..."`). The kanban task summary
+  is ephemeral (workspace GC'd); the GitHub issue is durable.
 - **Planner:** Break work into concrete implementation steps. May `kanban_create`
   subtasks for the coder. Handoff: wireframe, task list, or child tasks.
 - **Coder:** Implement, test, open PR, enable auto-merge, create reviewer task,
@@ -448,13 +547,127 @@ All boards use the same unified PR workflow (CI + reviewer → auto-merge).
 No per-board variation. Project-specific details (GitHub model, tech stack,
 testing conventions) live in the project skill (`shop`, `the-swarm`, etc.).
 
+### Gap Analysis Sub-Pipeline
+
+When a big consolidation or bulk merge lands, a gap analysis is needed to detect
+features that were marked "done" on the board but never reached upstream:
+
+```
+Researcher (gap audit) → Planner (ticket creation) → Coder (re-implement gaps) → Reviewer → Done
+```
+
+See `references/gap-analysis-workflow.md` for the full methodology (SQL query
+kanban.db → grep upstream code → categorize LANDED/MISSING/PARTIAL).
+
+### Recurring Task Templates
+
+- **CI fix "0 flaky"** — `references/ci-fix-template.md` — task body + create command
+
 ## Status Checks: PRs + Kanban Multi-Board
 
 Quick audit across all project boards — forks, upstream repos, and kanban tickets.
 See `references/cross-repo-pr-status.md` for the one-liner pattern.
 
-## Health Checks
+## Pitfall: Promoted Children Stuck as `scheduled`
 
+When a coder creates a reviewer child and the parent is blocked, the child is
+deferred as `scheduled`. The parent→child auto-promotion (`scheduled → ready`)
+can silently fail when the parent completes. The task stays `scheduled` forever
+— invisible to the dispatcher AND to the pre-spawn watchdog (which only scans
+`ready`). Also invisible to the block watchdog (the task isn't `blocked`).
+
+**Detection & fix:** see `references/scheduled-task-stuck.md`.
+
+## Pause/Resume All Boards
+
+When the user wants to pause ALL kanban activity (maintenance, OOM, deployment):
+
+### Pause
+
+```bash
+# 1. Kill all running worker processes
+pkill -f "hermes.*kanban task" 2>/dev/null
+ps aux | grep 'kanban/boards/.*workspaces' | grep -v grep | awk '{print $2}' | xargs -r kill 2>/dev/null
+
+# 2. Block ALL non-done tasks on all active boards (via DB — faster than CLI per-task)
+python3 -c "
+import sqlite3, os, glob
+for db_path in glob.glob('/root/.hermes/kanban/boards/*/kanban.db'):
+    db = sqlite3.connect(db_path)
+    n = db.execute(\"UPDATE tasks SET status='blocked' WHERE status NOT IN ('done','archived','blocked')\").rowcount
+    if n: print(f'{os.path.basename(os.path.dirname(db_path))}: blocked {n}')
+    db.commit()
+    db.close()
+"
+
+# 3. Pause watchdogs (CRITICAL — they unblock tasks otherwise)
+hermes cron pause 7ad8ddd5b9c9   # Kanban Block Watchdog
+hermes cron pause 10cb5de254d0   # CI Watchdog (light)
+```
+
+### Resume
+
+```bash
+# 1. Resume watchdogs
+hermes cron resume 7ad8ddd5b9c9   # Block watchdog
+hermes cron resume 10cb5de254d0   # CI watchdog
+
+# 2. Unblock specific tasks the user wants to work on
+hermes kanban --board <board> unblock <task_id>
+
+# 3. Dispatch
+hermes kanban --board <board> dispatch
+```
+
+### Pitfall: Block Watchdog Unblocks Manual Blocks
+
+Direct DB `UPDATE tasks SET status='blocked'` can be reverted by the block
+watchdog (cron `7ad8ddd5b9c9`, every 5 min). The watchdog sees a blocked
+task with no known blocker reason and unblocks it. **Always pause the
+block watchdog BEFORE blocking tasks**, or use `hermes kanban block` with
+## OOM Prevention
+
+Multiple parallel kanban workers can exhaust memory on constrained VMs.
+Each worker spawns heavy subprocesses: TypeScript tsserver (800MB-1GB RSS),
+pnpm dev servers (200-500MB), playwright/vitest runners.
+
+### Root causes
+
+1. **Too many parallel workers** — `max_spawn` in config.yaml limits
+   simultaneous dispatches. With `max_spawn=3`, at most 3 workers per
+   profile run at once. But when multiple boards are active, the total
+   can still exceed memory.
+2. **TypeScript tsserver per workspace** — each worker clones the repo into
+   its own workspace, each with its own `node_modules` and tsserver instance.
+   A single tsc process can consume 838MB RSS.
+3. **Orphaned workspace servers** — Vite dev servers, mock servers, and
+   tsserver daemons from completed/crashed tasks accumulate. The workspace
+   GC cron (every 15 min) cleans directories but not orphaned processes.
+4. **No cgroup memory limit** — `MemoryMax=infinity` on the hermes-gateway
+   systemd service. Set a limit: `systemctl set-property hermes-gateway MemoryMax=6G`.
+
+### Detection
+
+```bash
+# Check cgroup memory
+systemctl show hermes-gateway | grep -E 'Memory(Current|Peak|Swap)'
+
+# Check OOM kills in dmesg
+dmesg -T | grep -i 'oom.*killed' | tail -5
+
+# Count stale workspace processes
+ps aux | grep 'kanban/boards/.*workspaces' | grep -v grep | wc -l
+
+# Current memory pressure
+free -h
+```
+
+### Mitigation
+
+- Keep `max_spawn` low (3 for coder, 2 for reviewer)
+- Run `hermes kanban gc` periodically to clean workspace directories
+- Kill orphaned workspace processes: `ps aux | grep 'kanban/boards/.*workspaces' | grep -v grep | awk '{print $2}' | xargs -r kill`
+- Set a cgroup memory limit on the gateway
 ### Pre-Spawn Watchdog (automated)
 
 A notification-only cron (`pre-spawn-watchdog.py`, every 5 min) scans all boards
@@ -467,6 +680,38 @@ for ready tasks with issues. It reports to Discord but takes NO action:
 - `NO-ASSIGNEE` — no assignee (expected for RECETTE bookmarks)
 
 Silent when clean. Created 2026-05-20 (cron `ceead0ca5089`).
+
+### Pre-Spawn False Positives: Gap-Recreated Tasks
+
+When a planner recreates implementation tasks from a gap analysis, the new
+tasks may carry stale PR URLs from the gap report. These trigger
+`PR-URL-IN-BODY` / `PR-URL-COMMENTS` in the pre-spawn watchdog AND the
+`active_pr` respawn guard — blocking dispatch.
+
+**Cleanup after gap ticket creation:**
+
+```python
+import sqlite3
+db = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+
+# Delete PR URL comments
+db.execute("DELETE FROM task_comments WHERE body LIKE '%github.com%pull%'")
+
+# Strip PR URLs from task bodies (replace with benign marker)
+import re
+for row in db.execute("SELECT id, body FROM tasks WHERE body LIKE '%github.com%pull%'"):
+    clean = re.sub(r'https?://github\.com/\S+', '[PR URL removed — pre-consolidation]', row[1])
+    db.execute("UPDATE tasks SET body=? WHERE id=?", (clean, row[0]))
+
+# Fix NULL skills and MRT
+db.execute("UPDATE tasks SET skills='[\"shop\",\"kanban-project-workflow\"]' WHERE skills IS NULL")
+db.execute("UPDATE tasks SET max_runtime_seconds=3600 WHERE max_runtime_seconds IS NULL")
+
+db.commit()
+db.close()
+```
+
+This is also covered in `references/cleanup-ready-tasks.md`.
 
 ### One-Shot Cleanup (manual, after major updates)
 
