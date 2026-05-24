@@ -7,7 +7,7 @@ Backup strategy for a Hermes Agent installation. Covers both quick backups (conf
 
 ## Trigger
 
-Use when setting up, troubleshooting, or modifying Hermes backup cron jobs, or when backup size explodes or Git LFS quotas are at risk.
+Use when setting up, troubleshooting, or modifying Hermes backup cron jobs, when backup size explodes or Git LFS quotas are at risk, or when planning a VPS migration / server rebuild. See `references/pre-migration-discovery.md` for the full server inventory checklist.
 
 ## Backup types
 
@@ -72,6 +72,10 @@ The disk watchdog + cleanup agent should keep snapshots trimmed.
 
 See `references/backup-failure-may2026.md` for a real-world debugging trace (May 2026 state-snapshot explosion).
 
+## See also
+
+- **vps-migration** — Full VPS migration workflow (rsync to bridge host, system config backup, restore sequence). Use when the entire VPS is being destroyed/replaced, not for routine backups.
+
 ## Debugging cron errors
 
 When a backup cron shows `last_status: error`:
@@ -80,6 +84,17 @@ When a backup cron shows `last_status: error`:
 2. `session_search(query="backup PR", limit=5)` — find related sessions (cron sessions are named `cron_<job_id>_<timestamp>`)
 3. Scroll into the cron session: `session_search(session_id="...", around_message_id=<id>, window=10)`
 4. Look for: timeouts (300s foreground cap), disk-full errors, approval-needed blocks on `rm`, or 0-message sessions (agent crash/infra failure)
+
+## What `hermes backup` does NOT cover
+
+`hermes backup` preserves Hermes itself: config, state.db, .env, auth, cron definitions, sessions. It does **not** back up:
+
+- **MinIO data** — source files (epubs, PDFs, videos, audio, transcripts) live in `/data/minio/` or wherever MinIO is configured. These must be backed up separately (rsync, S3 sync, etc.).
+- **Docker volumes** — container data (e.g., Firecrawl Postgres, Redis) lives under `/var/lib/docker/volumes/`. Not touched by `hermes backup`.
+- **System packages and services** — installed packages (apt), systemd unit files outside Hermes, Docker itself, Tailscale config.
+- **Obsidian vault** — synced via Git, but uncommitted changes are not captured.
+
+Before a VPS migration or full restore, audit all external stores. A `hermes backup` restore alone will not give you a working system.
 
 ## Pitfalls
 

@@ -67,8 +67,10 @@ does ALL the work internally, call it ONCE with background+wait. The worker uses
 ### Budget checkpoints
 
 - **30 turns (33%)** — heartbeat with "budget OK, X% used"
-- **60 turns (66%)** — ⛔ STOP immediately. Block with `kanban_block(reason="budget warning: partial <summary>")`. Partial work + clean block > dead worker.
+- **60 turns (66%)** — ⛔ STOP immediately. Trigger the Memento Pattern: load the `handoff` skill, create a structured handoff document (see Memento Pattern below), then block with `kanban_block(reason="budget checkpoint: handoff created")`. Partial work + clean block > dead worker.
 - **75+ turns** — you're about to die. Push to git NOW, block immediately.
+
+**IMPORTANT: Turn budget ≠ Token budget (Smart/Dumb Zone).** These checkpoints track *iteration count*, not token accumulation. Matt Pocock's "smart zone" concept (~100K tokens) is about the LLM's attention window degrading — a completely different failure mode. A worker doing `background=true` + `process wait` burns very few tokens but still accumulates turns via heartbeats. Hitting the 60-turn checkpoint does NOT mean the worker is in the dumb zone — it may have a tiny context. Conversely, a worker that opens 10 large files in 20 turns can enter the dumb zone well before any turn checkpoint fires. The checkpoint system is a safety net against iteration exhaustion, NOT a token-budget guard. See `references/smart-zone-vs-turn-budget.md` for the full analysis and Matt Pocock's original recommendations from the hermes-ops audit.
 
 ### Real case: t_8228590c on the-swarm (2026-05-20)
 
@@ -79,6 +81,43 @@ inline every time:
 - Run #579: SAME mistake, idle 36min with no heartbeat → reclaimed
 - **3 runs, ~3h wasted, zero progress.** The worker's SOUL.md now has this
   section verbatim. Don't be run #580.
+
+### Memento Pattern — structured handoff at budget checkpoints
+
+When you hit the 60% budget checkpoint, don't just block — create a structured
+"memento" for the next worker. This is the **Memento Pattern**: a formalized
+handoff that lets a fresh worker resume exactly where you left off.
+
+**Step-by-step:**
+
+1. **Load the `handoff` skill:** `skill_view(name="handoff")` — follow its template
+2. **Create a handoff document** in the workspace (write to `handoff.md`):
+   - Current task state: what's done, what's in progress
+   - Key files changed (paths only — do NOT paste full file contents)
+   - Branch name and PR URL (if any)
+   - Explicit next steps for the next worker
+   - **Do NOT duplicate** content from PRDs, ADRs, design docs, or tickets —
+     reference them by absolute path or URL instead. The handoff is a pointer, not
+     a copy. Duplication creates staleness: the PRD updates, the handoff stays frozen.
+3. **Push everything to git:** `git add -A && git commit -m "memento: budget checkpoint at ~60 turns" && git push origin $BRANCH`
+4. **Block:** `kanban_block(reason="budget checkpoint: handoff created — next worker: read handoff.md in workspace, checkout $BRANCH, continue from Next steps")`
+
+**Why structured handoff > bare block:**
+
+| Bare block | Memento Pattern |
+|------------|-----------------|
+| Next worker sees "budget warning: partial X" — no context | Next worker has exact file list, branch, next steps |
+| Worker re-discovers state from git + comments (10-15 turns) | Worker resumes in 2-3 turns |
+| Repeated budget exhaustion = repeated rediscovery | Each handoff advances the task |
+| Progress lost between runs | Progress checkpointed between runs |
+
+The `handoff` skill's "reference, don't duplicate" rule is critical here — it prevents
+the memento from accumulating stale content. Every artifact referenced (PRD, ADR, ticket
+body) is the canonical source; the memento is just a trail of breadcrumbs.
+
+**Matt Pocock's guidance:** clean resets via structured handoffs beat compacting because
+compacting accumulates "sediments" of errors across runs. A fresh worker with a clear
+memento makes better decisions than a worker reading stale mid-conversation context.
 
 ## Tenant isolation
 
@@ -338,6 +377,8 @@ kanban_create(
 **Overspawn: too many workers = lock contention + CPU saturation.** If the system feels slow, `hermes profile list` hangs, or you see 40+ hermes processes in `ps aux`, the autoscale may have over-cloned profiles. The root cause is usually `MAX_PROFILES_PER_ROLE` set too high. See `references/kanban-autoscale.md` for diagnosis and recovery.
 
 **Even with moderate worker counts, CPU saturation is a distinct failure mode:** when multiple boards run CPU-intensive CI steps simultaneously (`tsc --noEmit` + `vitest`), each worker's CI can consume 100-400% CPU (tsc ~130%, vitest with 3 workers ~300% combined). On shared hosts with `max_spawn=5` and 10 active boards, this easily saturates a 4-core VM (load avg 8+ on 4 CPUs). Symptoms: workers timing out, `ps aux --sort=-%cpu` showing multiple tsc/vitest processes across different boards, `/proc/pressure/cpu some` values > 10. Mitigation: reduce `max_spawn` to match CPU cores available, or add admission control (check loadavg before spawning CI steps — see `project-ci` skill pitfalls).
+
+**False-positive budget blocks from background waits.** A worker that uses `background=true` + heartbeats while waiting for a long CPU task (transcription, large build, video encode) can hit the 60-turn checkpoint despite having minimal token context (< 5K tokens). The turn counter doesn't distinguish "working turns" from "waiting turns." This is NOT the smart/dumb zone problem Matt Pocock warned about — it's a false positive of the turn-based checkpoint system. When the transcription/build finishes right after the block, just re-dispatch. See `references/smart-zone-vs-turn-budget.md`.
 
 **Project .env tokens are NOT git tokens.** Many project `.env` files contain `GITHUB_TOKEN="MOCK_GITHUB_TOKEN"` (or similar mock values) for the application's GitHub OAuth feature (`api.github.com` API calls). These are NOT the token needed for `git push`. When a task requires pushing to GitHub:
 - Use the git remote URL — it should already be configured with a real token (`https://oauth2:TOKEN@github.com/...`). Run `git remote -v` to verify.

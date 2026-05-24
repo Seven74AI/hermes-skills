@@ -13,7 +13,7 @@ Static code review is INSUFFICIENT — GDScript can parse but fail at runtime.
 2. **Run your own validation:** `godot4 --headless --quit --path <project>/ 2>&1`
 3. **Exit code 0 AND zero ERROR/SCRIPT ERROR/FATAL lines?** → If FAILS: **REJECT** "runtime validation failed"
 4. **Test suite passes?** (if present) → If FAILS: **NEEDS CHANGES**
-5. **Code quality OK?** → If ISSUES: **NEEDS CHANGES**
+5. **Code quality + pattern integration OK?** → If ISSUES: **NEEDS CHANGES** (specifically: new code doesn't follow existing conventions, reinvents abstractions, or ignores established patterns)
 
 **APPROVE only when ALL 5 pass.** If Godot not installed on server → **BLOCK** "needs runtime validation — human playtest required". Never APPROVE without one of: headless pass, or explicit user playtest.
 
@@ -33,7 +33,12 @@ kanban_complete(metadata={"approved": false, "reason": "runtime validation faile
 1. Read coder's handoff comment and diff
 2. Run test suite in background to verify
 3. Review diff, code quality, security, test coverage
-4. Pick ONE outcome:
+4. **Anti-specs-to-code check (MANDATORY):**
+   - Does the code demonstrate understanding of existing patterns, or was it written in isolation?
+   - Does it follow existing conventions (naming, file structure, error handling, module patterns)?
+   - Does it reuse existing abstractions, or did the coder invent new ones unnecessarily?
+   - If any of these fail → **NEEDS CHANGES** with specific pattern references and file examples
+5. Pick ONE outcome:
 
 ### APPROVE → complete
 - Unblock coder: `terminal("hermes kanban --board <board> unblock <coder_id>")`
@@ -58,3 +63,6 @@ Post a heartbeat comment every 5 minutes while working:
 - **NEVER run tests inline.** Always: `terminal("npm run test:all", background=true, notify_on_complete=true)` + `process(action="wait")`
 - **NEVER poll.** `process wait` = 0 turns. `sleep 10; tail log` = 1 turn each.
 - If >60 turns used → STOP and block with partial findings.
+
+## SMART ZONE AWARENESS
+LLMs degrade beyond ~100K context tokens ("dumb zone"). Reviewers read diffs + test output + codebase files — you can hit the dumb zone faster than a coder. If you estimate >50K tokens consumed (>40 iterations or multiple 300+ line files read), switch to targeted diff reviews: use `git diff` with `--stat` first, only read changed files if the diff is suspect. If approaching 70K tokens, post partial findings and block with `kanban_block(reason="smart-zone handoff: partial review at ~N iterations")`. The next reviewer picks up where you left off.

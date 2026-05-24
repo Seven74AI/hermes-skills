@@ -314,8 +314,15 @@ db.close()
 
 **Common bootstrap failures**:
 - **Missing skill in profile**: Skill exists in main `~/.hermes/skills/` but not in `~/.hermes/profiles/<profile>/skills/`. The `.skills_prompt_snapshot.json` cache can mask this — other workers use the cached snapshot that still lists the skill, but a snapshot regeneration reveals the missing directory.
+
+  **Diagnostic signal (crucial)**: When the root cause is a missing skill, the agent doesn't just crash — it DERAILS. The journal shows the agent doing completely unrelated work: cloning hermes-backup repos, writing Notion entries, running random git commands on non-existent repos. This is the #1 tell that distinguishes "missing skill" from "OOM/segfault" — OOM kills the process silently with no journal activity, while missing-skill causes visible derailment in `journalctl` before the crash. Check:
+  ```bash
+  journalctl -u hermes-gateway --since "10 min ago" --no-pager | grep -i "tool_executor"
+  ```
+  If you see commands unrelated to the task (backup repos, Notion API, random `hermes` CLI calls), it's a missing-skill derailment, not an OOM.
 - **Corrupt workspace**: `kanban/boards/<board>/workspaces/<task_id>/` doesn't exist or is unreadable.
 - **Profile config error**: Profile's `config.yaml` has wrong provider/model → API auth fails → process exits code 1.
+- **approvals.mode: manual is NORMAL for worker profiles** — do NOT change it to `auto`. The kanban dispatcher handles auto-approval for dispatched workers independently of this setting. Worker profiles (coder, reviewer, researcher) should all have `mode: manual`.
 
 **Fix**:
 1. Diagnose root cause from `last_failure_error` in kanban.db

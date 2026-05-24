@@ -1,7 +1,7 @@
 ---
 name: disk-cleanup
-description: "Analyze disk usage and safely reclaim space when disk is critically full (≥80%). Systematic cleanup of caches, logs, temp files, and stale kanban workspaces."
-version: 1.7.0
+description: "Analyze disk usage and safely reclaim space when disk is critically full (≥75%). Systematic cleanup of caches, logs, temp files, and stale kanban workspaces."
+version: 1.10.0
 platforms: [linux]
 metadata:
   hermes:
@@ -10,7 +10,7 @@ metadata:
 
 # Disk Cleanup — Safe Space Reclamation
 
-When disk usage exceeds 80%, systematically analyze and clean up. Never delete project source code, git repos, or user data.
+When disk usage exceeds 75%, systematically analyze and clean up. Never delete project source code, git repos, or user data.
 
 **Related references:**
 - `references/kanban-db-schema.md` — tasks table schema, query patterns, pitfalls
@@ -19,6 +19,7 @@ When disk usage exceeds 80%, systematically analyze and clean up. Never delete p
 - `references/cron-consolidation.md` — merging overlapping cron jobs: pattern, prompt template, lessons from 4→1 reflector consolidation
 - `references/may-18-incident.md` — full incident report from the 2026-05-18 disk saturation event
 - `references/post-update-recovery.md` — recovery checklist when `hermes update` ran on a full disk (git OK, npm/web-build/gateway failed)
+- `references/pnpm-store-deduplication.md` — deduplicate pnpm stores across Hermes profiles via `PNPM_HOME` sharing (6.7G saved, concurrent-safe)
 
 ## When to Use
 
@@ -29,7 +30,7 @@ When disk usage exceeds 80%, systematically analyze and clean up. Never delete p
 
 Run each command as a separate `terminal()` call. Do NOT combine into one block — multi-command blocks trigger `shell command via -c/-lc` rejection. The two shell-loop constructs (workspace count and profile cache subdirs) use Python scripts to avoid `-exec sh -c` and `for` loop blockers.
 
-**Escape hatch — skip analysis when ≥95% full:** At critical fullness, `du` and `find` will time out (I/O starvation). Confirmed 2026-05-23 at 100% (72G/72G, 361M free) — every `du -sh`, `find -size`, and `sort` command hung. Don't waste turns retrying. Jump straight to high-impact cleanup steps: 2ea (/tmp cache dirs), 2eb (/tmp project clones — often 15-25G), 2n (snapshots), 2j (profile caches), 2i (Playwright). Run `df -h /` after each batch. Resume analysis only after usage drops below ~90%.
+**Escape hatch — skip analysis when ≥95% full:** At critical fullness, `du` and `find` will time out (I/O starvation). Confirmed 2026-05-23 at 100% (72G/72G, 361M free) — every `du -sh`, `find -size`, and `sort` command hung. Don't waste turns retrying. Jump straight to high-impact cleanup steps: 2ea (/tmp cache dirs), 2eb (/tmp project clones — often 15-25G), 2ec (/tmp media files — often 3-4G), 2ed (/tmp pip build artifacts — often 1-3G per `pip-unpack-*` dir), 2o (system caches — often 1-2G), 2ma (profile HF caches — often 1-2G), 2p (/tmp backup archives — often 1-3G), 2n (snapshots), 2j (profile caches), 2i (Playwright). Run `df -h /` after each batch. Resume analysis only after usage drops below ~90%.
 
 ```bash
 df -h /
@@ -200,7 +201,7 @@ python3 /tmp/cleanup-2e.py
 
 ### 2ea. /tmp non-project cache directories (NOT caught by 2e or 2eb)
 
-Step 2e removes orphaned files >24h. Step 2eb removes project clones. But `/tmp/` also accumulates large regeneratable cache directories that match neither heuristic: camoufox browser profile temp dirs (`/tmp/camoufox-*`, ~680M each) and Node.js compile cache (`/tmp/node-compile-cache/`, ~320M). These are safe to purge — fully regeneratable. Observed accumulation: 1.68G in a single run (2026-05-23).
+Step 2e removes orphaned files >24h. Step 2eb removes project clones. But `/tmp/` also accumulates large regeneratable cache directories that match neither heuristic: camoufox browser profile temp dirs (`/tmp/camoufox-*`, ~680M each), Node.js compile cache (`/tmp/node-compile-cache/`, ~320M), and Playwright transform cache (`/tmp/playwright-transform-cache-*`, typically <10M but safe to purge). These are safe to purge — fully regeneratable. Observed accumulation: 1.68G in a single run (2026-05-23).
 
 ```bash
 cat > /tmp/cleanup-tmp-caches.py << 'PYEOF'
@@ -216,6 +217,11 @@ for d in os.listdir('/tmp'):
 ncc = '/tmp/node-compile-cache'
 if os.path.isdir(ncc):
     targets.append(ncc)
+
+# Playwright transform cache
+for d in os.listdir('/tmp'):
+    if d.startswith('playwright-transform-cache-') and os.path.isdir(os.path.join('/tmp', d)):
+        targets.append(os.path.join('/tmp', d))
 
 for dp in targets:
     size = sum(os.path.getsize(os.path.join(r,f)) for r,_,files in os.walk(dp) for f in files)
@@ -264,6 +270,91 @@ for d in os.listdir('/tmp'):
 print(f'Removed {len(targets)} project clones from /tmp')
 PYEOF
 python3 /tmp/cleanup-tmp-projects.py
+```
+
+### 2ec. /tmp orphaned media files & tool artifact dirs (NOT caught by 2e, 2ea, or 2eb)
+
+Steps 2e/2ea/2eb cover stale files >24h, cache dirs, and project clones. But `/tmp/` also accumulates large media files (mp4, mp3, wav) from video/audio processing pipelines (e.g., researcher-videos extracting frames and transcoding audio) and tool-specific directories (e.g., `megapy_*` from audio analysis). These are temporary processing artifacts — safe to delete after a 1h grace period.
+
+- Media files: mp4, mp3, wav, webm, avi — often 300-500M each, can total 3-4G from a single pipeline run
+- Tool dirs: `megapy_*` — audio processing tool output directories, can be 200-500M
+
+Observed accumulation: 3.66G (media: 3.36G + megapy: 296M) on 2026-05-24. These were all <24h so 2e missed them.
+
+```bash
+cat > /tmp/cleanup-tmp-media-artifacts.py << 'PYEOF'
+import shutil, os, time
+
+cutoff = time.time() - 3600  # 1h grace period
+total = 0
+
+# Media files
+for f in os.listdir('/tmp'):
+    fp = os.path.join('/tmp', f)
+    if not os.path.isfile(fp):
+        continue
+    if f.endswith(('.mp4', '.mp3', '.wav', '.webm', '.avi')):
+        if os.path.getmtime(fp) < cutoff:
+            sz = os.path.getsize(fp)
+            os.remove(fp)
+            total += sz
+            print(f'Removed media: {f} ({sz/1024/1024:.0f}M)')
+
+# Tool artifact directories
+TOOL_PATTERNS = ['megapy_']
+for d in os.listdir('/tmp'):
+    dp = os.path.join('/tmp', d)
+    if not os.path.isdir(dp):
+        continue
+    for pat in TOOL_PATTERNS:
+        if d.startswith(pat):
+            if os.path.getmtime(dp) < cutoff:
+                size = 0
+                try:
+                    for r, _, files in os.walk(dp):
+                        for f in files:
+                            try:
+                                size += os.path.getsize(os.path.join(r, f))
+                            except (OSError, FileNotFoundError):
+                                pass
+                except (OSError, FileNotFoundError):
+                    pass
+                shutil.rmtree(dp, ignore_errors=True)
+                total += size
+                print(f'Removed tool dir: {dp} ({size/1024/1024:.0f}M)')
+            break
+
+print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-tmp-media-artifacts.py
+```
+
+### 2ed. /tmp pip build artifacts (NOT caught by 2e, 2ea, 2eb, or 2ec)
+
+Steps 2e/2ea/2eb/2ec cover orphaned files, cache dirs, project clones, and media artifacts. But `/tmp/` also accumulates pip build artifacts from interrupted or failed `pip install` runs: `pip-unpack-*` directories (extracted wheels — a single dir can be 2G+), `pip-build-env-*` (isolated build environments, ~10M each), and `pip-metadata-*` (metadata extraction temp dirs). These use random suffixes, so hundreds can pile up if pip is used heavily. They match NO existing heuristic — they're directories, not project clones, not cache dirs, not media. Fully regeneratable by re-running pip. Use a 10-min grace period (pip builds are fast; anything older than 10 min is abandoned).
+
+Observed accumulation: 2.2G in a single `pip-unpack-*` dir (2026-05-24), plus dozens of smaller `pip-build-env-*` (7M) and `pip-metadata-*` dirs.
+
+```bash
+cat > /tmp/cleanup-pip-artifacts.py << 'PYEOF'
+import shutil, os, time
+
+cutoff = time.time() - 600  # 10 min grace period
+total = 0
+for d in os.listdir('/tmp'):
+    dp = os.path.join('/tmp', d)
+    if not os.path.isdir(dp):
+        continue
+    if d.startswith(('pip-unpack-', 'pip-build-env-', 'pip-metadata-')):
+        if os.path.getmtime(dp) < cutoff:
+            size = sum(os.path.getsize(os.path.join(r,f)) for r,_,files in os.walk(dp) for f in files)
+            shutil.rmtree(dp, ignore_errors=True)
+            total += size
+            print(f'Removed: {dp} ({size/1024/1024:.0f}M)')
+
+print(f'\nPip artifacts reclaimed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-pip-artifacts.py
 ```
 
 ### 2f. Docker (if installed)
@@ -333,6 +424,52 @@ PYEOF
 python3 /tmp/cleanup-stale-ws.py
 ```
 
+### 2ha. Orphaned kanban workspaces — dirs with NO matching task in DB
+
+Sometimes workspace directories survive on disk even after the task record is deleted from the DB — or the directory was renamed with a `_new` or `.old` suffix during workspace recreation. These are truly orphaned (NOT blocked, NOT ready — they don't exist in the DB at all). Safe to delete. Observed accumulation: 176M across 4 orphans (2026-05-24).
+
+```bash
+cat > /tmp/cleanup-orphan-ws.py << 'PYEOF'
+import sqlite3, shutil, os, glob
+
+total = 0
+for board_dir in sorted(glob.glob('/root/.hermes/kanban/boards/*/')):
+    db = os.path.join(board_dir, 'kanban.db')
+    ws_dir = os.path.join(board_dir, 'workspaces')
+    if not os.path.isfile(db) or not os.path.isdir(ws_dir):
+        continue
+    board = os.path.basename(os.path.dirname(board_dir))
+    conn = sqlite3.connect(db)
+    try:
+        task_ids = set(r[0] for r in conn.execute('SELECT id FROM tasks').fetchall())
+    except sqlite3.Error:
+        conn.close()
+        continue
+    conn.close()
+    for d in os.listdir(ws_dir):
+        dp = os.path.join(ws_dir, d)
+        if not os.path.isdir(dp):
+            continue
+        if d not in task_ids:
+            size = 0
+            try:
+                for r, _, files in os.walk(dp):
+                    for f in files:
+                        try:
+                            size += os.path.getsize(os.path.join(r, f))
+                        except (OSError, FileNotFoundError):
+                            pass
+            except (OSError, FileNotFoundError):
+                pass
+            shutil.rmtree(dp, ignore_errors=True)
+            total += size
+            print(f'[{board}] Removed orphan: {d} ({size/1024/1024:.0f}M)')
+
+print(f'\nTotal orphan workspaces removed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-orphan-ws.py
+```
+
 ### 2i. Playwright browser caches (safe — regeneratable via `playwright install`)
 
 Playwright browser binaries accumulate in Hermes profiles and system cache. They are reinstalled on next `playwright install` — safe to purge.
@@ -360,6 +497,8 @@ python3 /tmp/cleanup-playwright.py
 
 `.npm` directories and `.cache/pnpm`, `.cache/node-gyp`, `.cache/prisma` accumulate per-profile. All are safe to purge — reinstalled on next install/build. **Also cleans system-level `/root/.cache/pnpm`** (not covered by profile globs). Observed accumulation: 5.2G across 6 profiles (2026-05-18); missed 668M of system pnpm on 2026-05-22 before this fix.
 
+**Preventive: deduplicate pnpm stores across profiles.** Each profile's isolated `$HOME` causes pnpm to create redundant stores (up to 4-7G wasted). Set `PNPM_HOME=/root/.local/share/pnpm` in each profile's `.env` to share a single store. pnpm's store is confirmed atomic and concurrent-safe by the maintainer. See `references/pnpm-store-deduplication.md` for full instructions and a table of which tools CANNOT be shared (rustup, cargo builds). This is a one-time fix that prevents re-accumulation after cleanup.
+
 ```bash
 cat > /tmp/cleanup-profile-caches.py << 'PYEOF'
 import shutil, os, glob
@@ -373,7 +512,7 @@ for npm_dir in glob.glob('/root/.hermes/profiles/*/home/.npm'):
         print(f'Removed {npm_dir} ({size/1024/1024:.0f}M)')
 
 for cache_dir in glob.glob('/root/.hermes/profiles/*/home/.cache'):
-    for sub in ['pnpm', 'node-gyp', 'prisma']:
+    for sub in ['pnpm', 'node-gyp', 'prisma', 'node', 'gh', 'pip']:
         sp = os.path.join(cache_dir, sub)
         if os.path.isdir(sp):
             size = sum(os.path.getsize(os.path.join(dp,f)) for dp,_,files in os.walk(sp) for f in files)
@@ -457,6 +596,59 @@ PYEOF
 python3 /tmp/cleanup-camoufox.py
 ```
 
+### 2mb. Profile Rustup toolchains (safe — regeneratable via `rustup toolchain install`)
+
+Rustup toolchains accumulate in profile homes (`~/.rustup/toolchains/`). Each `stable-x86_64-unknown-linux-gnu` toolchain is ~1.2G (LLVM + rustc_driver + stdlib). Fully regeneratable via `rustup toolchain install stable` — same class as Playwright/Puppeteer/Camoufox. Observed accumulation: 2.5G across 2 profiles (coder + reviewer, 2026-05-24).
+
+```bash
+cat > /tmp/cleanup-rustup.py << 'PYEOF'
+import shutil, os, glob
+
+total = 0
+for rustup in glob.glob('/root/.hermes/profiles/*/home/.rustup'):
+    if os.path.isdir(rustup):
+        size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, files in os.walk(rustup) for f in files)
+        shutil.rmtree(rustup, ignore_errors=True)
+        total += size
+        print(f'Removed: {rustup} ({size/1024/1024:.0f}M)')
+
+# Also clean system-level
+sys_rustup = '/root/.rustup'
+if os.path.isdir(sys_rustup):
+    size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, files in os.walk(sys_rustup) for f in files)
+    shutil.rmtree(sys_rustup, ignore_errors=True)
+    total += size
+    print(f'Removed system rustup ({size/1024/1024:.0f}M)')
+
+print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-rustup.py
+```
+
+### 2ma. Profile HuggingFace model caches (safe — regeneratable via Hub download)
+
+Per-profile `.cache/huggingface/` directories store downloaded model weights and tokenizers. These are regenerated on first `model.from_pretrained()` call — fully safe to purge, same class as Playwright/Puppeteer/Camoufox. System-level `/root/.cache/huggingface` is covered by 2o, but profile-level caches are NOT. Observed accumulation: 1.2G across 2 profiles — 927M (researcher-videos) + 282M (researcher) on 2026-05-24.
+
+```bash
+cat > /tmp/cleanup-hf-caches.py << 'PYEOF'
+import shutil, os, glob
+
+total = 0
+for hf in glob.glob('/root/.hermes/profiles/*/home/.cache/huggingface'):
+    if os.path.isdir(hf):
+        size = sum(
+            os.path.getsize(os.path.join(dp, f))
+            for dp, _, files in os.walk(hf) for f in files
+        )
+        shutil.rmtree(hf, ignore_errors=True)
+        total += size
+        print(f'Removed: {hf} ({size/1024/1024:.0f}M)')
+
+print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-hf-caches.py
+```
+
 ### 2n. Old Hermes state snapshots (safe — pre-update backups)
 
 State snapshots are created by `hermes backup --quick` (typically via the "Hermes Quick Backup" cron job, every 2h) and also before Hermes updates. Each snapshot is a full copy of `state.db` + config files. These backups are safe to remove — the current state.db is not touched.
@@ -498,6 +690,67 @@ python3 /tmp/cleanup-snapshots-count.py
 
 Observed accumulation (2026-05-22): 306M per snapshot (state.db grows with session count). At the default 2h backup interval, this produces ~12 snapshots/day = ~3.6G/day. The retention script installed at `/root/.hermes/scripts/prune-snapshots.py` is also called by the quick backup cron after each run to prevent unbounded growth.
 
+### 2o. System-level regeneratable caches (safe — reinstalled on next use)
+
+`/root/.cache/` accumulates framework and package manager caches at the system level (distinct from per-profile caches in 2j). These are all safe to purge — regenerated on next build/install/download. Observed accumulation: 1.6G across huggingface (1.2G), uv (442M), prisma (21M), typescript (9M) — 2026-05-24.
+
+```bash
+cat > /tmp/cleanup-system-caches.py << 'PYEOF'
+import shutil, os
+
+targets = [
+    '/root/.cache/huggingface',
+    '/root/.cache/uv',
+    '/root/.cache/prisma',
+    '/root/.cache/typescript',
+]
+
+total = 0
+for p in targets:
+    if os.path.isdir(p):
+        size = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, files in os.walk(p) for f in files)
+        shutil.rmtree(p, ignore_errors=True)
+        total += size
+        print(f'Removed: {p} ({size/1024/1024:.0f}M)')
+
+print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-system-caches.py
+```
+
+### 2p. Backup archives — /tmp + /root (safe — already uploaded to remote)
+
+The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–2.6G each. They're not caught by 2e (<24h old) nor 2ea/2eb (they're files, not dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan both `/tmp` and `/root`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) that was missed by a `/tmp`-only scan.
+
+```bash
+cat > /tmp/cleanup-backup-zips.py << 'PYEOF'
+import os
+
+PREFIXES = ['hermes-backup', 'hermes-critical', 'hermes-final']
+EXTENSIONS = ['.zip', '.tar.gz']
+total = 0
+
+for base in ['/tmp', '/root']:
+    try:
+        for f in os.listdir(base):
+            fp = os.path.join(base, f)
+            if not os.path.isfile(fp):
+                continue
+            matches_prefix = any(f.startswith(p) for p in PREFIXES)
+            matches_ext = any(f.endswith(e) for e in EXTENSIONS)
+            if matches_prefix and matches_ext:
+                sz = os.path.getsize(fp)
+                os.remove(fp)
+                total += sz
+                print(f'Removed: {fp} ({sz/1024/1024:.0f}M)')
+    except (OSError, PermissionError):
+        pass
+
+print(f'Total: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-backup-zips.py
+```
+
 ## Step 3 — Verify
 
 ```bash
@@ -513,7 +766,7 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 | ≥50% | Alert only (watchdog) |
 | ≥60% | Alert only (watchdog) |
 | ≥70% | Alert only (watchdog) |
-| ≥80% | Full cleanup protocol (this skill) |
+| ≥75% | Full cleanup protocol (this skill) — watchdog emits CLEANUP_TRIGGER=true |
 
 ## Pitfalls
 
@@ -533,6 +786,11 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **Watchdog % may differ from live `df`.** The watchdog snapshot and the cleanup run are separated in time — transient files (temp builds, caches flushed by other processes) can drop usage between the watchdog check and the agent's `df`. When `CLEANUP_TRIGGER=true` is set, **trust the trigger** and run the full protocol. Do not short-circuit based on a lower current `df` reading — the watchdog fired for a reason, and storage can fill again quickly.
 - **🔴 FIXED 2026-05-22: Trigger mismatch.** The disk-watchdog (`9fbadfbd593e`) now emits `CLEANUP_TRIGGER=true` in its action field at ≥75%, matching what the Disk Cleanup Agent (`4423bee366e6`) expects. Previously the watchdog only emitted "Cleanup required — run disk-cleanup skill..." without the trigger string, so the cleanup agent responded "." every 10 minutes while disk stayed at 95%.
 - **GC script silent output is normal.** The script prints nothing when 0 workspaces are removed. This can mean: (a) no done/archived tasks, (b) workspaces already deleted from disk in a prior run but DB records remain, or (c) all done/archived tasks completed <5 minutes ago. Verify by checking the DB directly before assuming failure.
+- **Blocked and ready workspaces can become the largest disk consumers.** Blocked and ready tasks are NOT cleaned by any automated step (2g only targets done/archived, 2h only targets in_progress/running). When many tasks get stuck in `blocked` or `ready` state (e.g. shop board with 3 ready workspaces at ~370M avg, ~1.1G total lingering since May 22 — 2026-05-24, or 25 blocked workspaces at ~160M avg, ~4G total), manual intervention is required. **The GC script has a 5-minute grace period** (`completed_at < now - 300`), so re-running 2g immediately after archiving will produce empty output — the workspaces are too fresh. The correct workflow: (1) Archive blocked/ready tasks via SQL: `UPDATE tasks SET status='archived', completed_at=<unix_ts> WHERE id='<tid>'`. (2) Delete the workspaces directly with a temp script that queries `SELECT id FROM tasks WHERE status='archived' AND completed_at IS NOT NULL` and calls `shutil.rmtree()` for each workspace on disk. (3) Then re-run 2g to catch any done/archived tasks from other boards that may have accumulated. See the 2026-05-24 session for the exact temp script pattern.
+- **🔴 Media processing pipelines leave large residue in /tmp.** Researcher-videos and similar profiles that extract frames, transcode audio, or run media analysis tools can accumulate 3-4G of `.mp4`/`.mp3`/`.wav` files in `/tmp/` in a single run, plus tool-specific directories like `megapy_*` (200-500M). These are not caught by Step 2e (<24h cutoff) — use Step 2ec for media artifacts with a 1h grace period. Check with `du -sh /tmp` when /tmp appears oversized but 2e/2ea/2eb found nothing.
+- **🔴 Pip build artifacts in /tmp are NOT caught by 2e/2ea/2eb/2ec.** Failed or interrupted `pip install` runs leave `pip-unpack-*` directories (extracted wheels, single dirs can be 2G+), `pip-build-env-*` (isolated build environments), and `pip-metadata-*` (metadata extraction temp dirs) with random suffixes. These are directories — not caught by 2e (files-only), not project clones — not caught by 2eb, not cache dirs — not caught by 2ea, not media — not caught by 2ec. Observed: 2.2G in one `pip-unpack-*` dir + 7M in `pip-build-env-*` (2026-05-24). Use Step 2ed with a 10-min grace period. When `/tmp` is oversized but all other /tmp steps found nothing, run `ls /tmp/ | grep '^pip-'` to check for these.
+- **🔴 Pipeline-specific data-processing residue in /tmp is NOT caught by any step.** Data extraction/scraping pipelines (Instagram transcripts, video frame extraction, audio analysis) leave behind named directories like `ig_lot4`, `ig_transcripts_lot3`, `ig_slides`, `reels_transcripts` that contain JSON/CSV/media files. These are NOT project clones (no `.git`/`package.json`), NOT cache dirs (not `camoufox-*`/`node-compile-cache`), NOT media artifacts (they're dirs, not bare files), and NOT pip artifacts. Observed: 190M across 5 directories (2026-05-24). No universal pattern exists — when `/tmp` is oversized but all 2e–2ed steps found nothing, run `du -sh /tmp/*/ | sort -rh` and inspect remaining dirs. Safe to delete with `shutil.rmtree()` if they're >1h old and clearly pipeline output.
 - **🔴 /tmp project clones are NOT caught by Step 2e.** Step 2e only removes orphaned files >24h, but kanban worker workspaces in `/tmp/` are full git clones (`.git/`, `node_modules/`, etc.) that are directories, not individual files. They survive 2e indefinitely. In the 2026-05-22 incident, `/tmp/` held 25G of stale workspace clones (shop ×12, music-library ×3, edgee-lab ×3, etc.) — the largest single disk consumer. To clean these: identify project dirs (those with `.git/` or `package.json`), verify they're not the active workspace, then remove. Keep an allowlist for the current working project(s).
+- **`find /root -type f -size +100M` can time out on busy or large filesystems.** Give it at least 60s timeout; if it still times out, skip it — rely on `du -sh` of known directories instead. The escape hatch doesn't mention this but the same logic applies: I/O starvation at high usage makes filesystem walks slow.
 - **`du -sh` on workspace directories can time out even at moderate usage.** The escape hatch in Step 1 says to skip `du` only at ≥95%, but `du -sh /root/.hermes/kanban/boards/*/workspaces` timed out at 180s on a 79%-full disk with 38 shop workspaces (2026-05-23). The workspace count script (`ws-count.py`) is fast — prefer it. If `du` times out, skip it and rely on `ws-count.py` + `find /root -type f -size +100M` to identify large consumers.
-- **`du -sh /tmp/*/` undercounts vs `df`.** The glob `/tmp/*/` only matches top-level subdirectories — it misses files directly in `/tmp/`, dot-directories (`/tmp/.cache/`), and files inside directories that `du` can't traverse (permissions). When `df` reports 7.8G in `/tmp` but `du -sh /tmp/*/ | sort -rh` only shows ~2G, the rest is in non-globbed locations. Use a full Python walk (`os.walk('/tmp')`) for accurate accounting, or run `du -sh /tmp` for the true total. `hermes update` ran on a full disk, the git part succeeds but npm install, web build, and stash pop fail silently. The gateway won't restart. After disk cleanup, run the recovery checklist in `references/post-update-recovery.md` (pop stash → npm install → web build → restart gateway).
+- **`du -sh /tmp/*/` undercounts vs `df`.** The glob `/tmp/*/` only matches top-level subdirectories — it misses files directly in `/tmp/` (notably `hermes-backup-*.zip`/`.tar.gz` archives, 1.6G+ each, and orphaned media files `.mp4`/`.mp3`/`.wav` that can total 3-4G), dot-directories (`/tmp/.cache/`), and files inside directories that `du` can't traverse (permissions). When `df` reports 7.8G in `/tmp` but `du -sh /tmp/*/ | sort -rh` only shows ~2G, the rest is in non-globbed locations — always run a full Python walk (`os.walk('/tmp')`) for accurate accounting, or at minimum `du -sh /tmp`. `hermes update` ran on a full disk, the git part succeeds but npm install, web build, and stash pop fail silently. The gateway won't restart. After disk cleanup, run the recovery checklist in `references/post-update-recovery.md` (pop stash → npm install → web build → restart gateway).

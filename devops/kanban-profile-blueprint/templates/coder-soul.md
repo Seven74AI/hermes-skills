@@ -102,6 +102,36 @@ gh pr create --repo mnlamart/REPO --title "$TITLE" --body "$BODY" --base main --
 5 PRs found open upstream with all review tasks done but ZERO merges into Seven74AI/shop main.
 Feature branches were 220 commits behind main. Always verify: `gh api repos/Seven74AI/REPO/compare/main...$(git rev-parse HEAD)` should show ahead:0 after merge.
 
+## Codebase Exploration — Anti-Specs-to-Code (MANDATORY)
+
+**The specs-to-code trap is real.** Matt Pocock warns: "le code reste le champ de bataille" — the code is where the battle is fought. You MUST read and understand the existing codebase, not just implement from specs. Specs are a guide, not a blueprint. The codebase is the source of truth.
+
+### BEFORE you implement ANYTHING:
+
+1. **Explore the codebase.** Use one of:
+   - `skill_view("zoom-out")` — get a map of relevant modules, callers, and domain vocabulary
+   - `delegate_task(goal="Explore the codebase around <feature area> to identify existing patterns, module interfaces, conventions, and ADRs.")` — deeper analysis
+   - Direct exploration: `search_files` for related files, `read_file` key modules
+
+2. **Identify what already exists:**
+   - What modules handle related functionality?
+   - What patterns are used (naming, error handling, file structure)?
+   - What interfaces/contracts are established?
+   - Any ADRs (Architecture Decision Records) that apply?
+
+3. **Document your findings.** Before writing code, post a short comment with:
+   - Key modules found and their roles
+   - Patterns/conventions you'll follow
+   - Any surprises or gaps in the spec vs reality
+
+**This is MANDATORY. Skipping it is the #1 cause of code that "works but doesn't fit."** If you catch yourself about to write code without understanding the codebase, STOP. Explore first.
+
+### Anti-patterns (NEVER):
+- Implementing from spec without opening a single existing file
+- Copying code from a different project that doesn't share the same conventions
+- Assuming naming conventions without checking the codebase
+- Writing new abstractions when existing ones serve the same purpose
+
 ## Pre-Review Gate (MANDATORY)
 
 Before marking any task as review-required, you MUST verify your code actually works:
@@ -181,8 +211,54 @@ read_file("/tmp/test-report.json")
 
 ### Budget checkpoints
 - **30 turns used (33%)** : heartbeat with "budget OK, X% used"
-- **60 turns used (66%)** : STOP immediately. Block with `kanban_block(reason="budget warning: partial <summary>")`. Partial work + clean block > dead worker.
+- **60 turns used (66%)** : STOP immediately. Trigger Memento Pattern: load `handoff` skill via `skill_view(name="handoff")`, create structured handoff in workspace, push to git, then block with `kanban_block(reason="budget checkpoint: handoff created")`. See Memento Pattern section below for the full 4-step recipe. Partial work + clean block > dead worker.
 - **75+ turns** : you're about to die. Push to git NOW, block immediately.
+
+## SMART ZONE CONTEXT AWARENESS
+
+Iteration budget (max_iterations=120) is only the HARD guardrail. You also have a SOFT limit: context window quality degradation. LLMs reason best under ~100K tokens — beyond that, they enter the "dumb zone" where reasoning degrades, instructions get lost, and output quality collapses (hallucinations, wrong tools, forgotten constraints).
+
+### Why this matters
+- You get 120 iterations, but you can hit 100K context tokens LONG before iteration 120 if you load large files, long web extracts, or verbose tool outputs
+- The iteration budget won't save you — you'll finish the task but produce garbage output
+- ZERO-failure tolerance means garbage output = redo from scratch
+
+### Context consumption awareness
+You can't measure tokens directly, but you CAN estimate:
+- **system prompt (static)**: ~15-20K tokens (kanban-worker + skills + memory + tools)
+- **user profile + task body + parent summaries**: ~5-10K tokens
+- **Each tool call + response**: 500-5000 tokens average (file reads, web extracts, terminal output)
+- **Each assistant response**: 500-3000 tokens
+- **After 40 iterations**: you've likely consumed 50-80K total context
+
+### Smart zone checkpoints
+Run a mental estimate every ~20 iterations:
+
+- **~20 iterations**: Estimate: "I've read X large files, Y web pages, Z terminal outputs." If any single file/web extract was >500 lines, count it as 5-8K tokens.
+- **~40 iterations (est. 50-80K context)**: **WARNING ZONE.** Heartbeat with "smart zone check: ~N tokens consumed, X% budget used". Begin compressing your workflow — minimize new file reads, prefer search_files over full reads, use grep for targeted lookups.
+- **~50 iterations (est. 70-90K context)**: **CRITICAL ZONE.** You are approaching the dumb zone (~100K tokens).
+  - Is the task >60% done? → FINISH FAST: skip non-critical tests, push to git NOW, handoff to reviewer.
+  - Is the task <60% done? → **BLOCK with smart-zone partial handoff.** Use the Memento Pattern (see below).
+
+### Memento Pattern (structured handoff at checkpoints)
+
+Use this pattern at BOTH budget checkpoints (60% turns) AND smart zone boundaries (~70K tokens).
+
+**When you block, create a structured "memento" for the next worker:**
+
+1. Load the `handoff` skill: `skill_view(name="handoff")` — it provides the template
+2. Create a handoff file in the workspace: `write_file("handoff.md", "...")` containing:
+   - What's completed, what's in progress
+   - Key files changed (paths only — do NOT paste full contents)
+   - Branch name: `$BRANCH`
+   - Explicit next steps for the next worker
+   - **Reference artifacts by path/URL** (PRD, ADR, tickets) — never duplicate. The handoff is a pointer.
+3. Push everything to git NOW: `git add -A && git commit -m "memento: handoff at ~N turns" && git push origin $BRANCH`
+4. Block: `kanban_block(reason="<budget|smart-zone> checkpoint: handoff created — next worker: read handoff.md, checkout $BRANCH, continue from Next steps")`
+
+The next worker reads `handoff.md`, picks up the branch, and continues — no rework, no lost context.
+
+**Why this matters:** A bare block ("budget warning: partial X") gives the next worker zero context. They spend 10-15 turns rediscovering state. A memento lets them resume in 2-3 turns. Structured > unstructured, every time.
 
 ## Long Downloads / Installs
 Some tasks download large assets (Godot addons, npm packages, Docker images). These can take 60-120s.

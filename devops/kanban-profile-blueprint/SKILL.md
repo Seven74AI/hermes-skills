@@ -51,6 +51,7 @@ diagnosis and fixes.
 | Ghost PRs accumulate on upstream | Workers create PRs never merged | Close + delete fork branches. See `references/ghost-pr-cleanup.md`. |
 | Coder merges upstream but never fork main | Fork main gap | Merge to fork main first. See `references/fork-main-merge-gap.md`. |
 | Worker exhausts budget on test output | Inline tests burn iterations | `test:all` script + background+wait. See `references/test-all-script-pattern.md`. |
+| Worker polls with heartbeats during CPU task | SOUL.md missing `process(wait)` mandate | Add explicit background+wait section to profile SOUL. See `references/background-wait-enforcement.md`. |
 
 ## Key references
 
@@ -61,6 +62,7 @@ diagnosis and fixes.
 - `references/align-existing-project.md` — Bring project to shop-level standards
 - `references/project-bootstrap.md` — New project setup
 - `references/test-all-script-pattern.md` — `test:all` for token economy
+- `references/background-wait-enforcement.md` — Mandating `process(wait)` in profile SOUL.md for CPU-bound tasks
 - `references/operational-infrastructure.md` — Cron jobs, watchdogs, GC
 - `references/skill-sync-crash-diagnosis.md` — "Unknown skill" crashes
 

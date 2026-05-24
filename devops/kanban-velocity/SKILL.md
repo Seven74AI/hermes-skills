@@ -62,6 +62,33 @@ hermes cron create \
 | Tokens (total) | Total tokens across all completions in the snapshot |
 | Per-board breakdown | Each board's progress + velocity |
 
+## Daily Health Monitor
+
+Lightweight ops script combining velocity + system health + blocked task count. Designed for `no_agent=true` cron delivery to Discord.
+
+```bash
+python3 ~/.hermes/scripts/kanban-daily-monitor.py
+```
+
+**Cron setup (daily at 03:00, Discord delivery):**
+```bash
+hermes cron create \
+  --name "kanban daily health" \
+  --schedule "0 3 * * *" \
+  --script kanban-daily-monitor.py \
+  --no-agent \
+  --deliver discord:#general
+```
+
+**Helper: count blocked tasks across all boards:**
+```bash
+python3 ~/.hermes/scripts/count-blocked-tasks.py
+```
+
+Both scripts live in `scripts/`:
+- `scripts/kanban-daily-monitor.py` — velocity + system + blocked count report
+- `scripts/count-blocked-tasks.py` — count blocked tasks across all boards
+
 ## Pitfalls
 
 - The registry is JSON-based and loaded entirely into memory. For 90 days of daily snapshots across 10+ boards, this is ~100KB — negligible.

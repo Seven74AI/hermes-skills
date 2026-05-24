@@ -1,10 +1,10 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.8.0
+version: 1.10.0
 metadata:
   hermes:
-    tags: [kanban, workflow, pr, ci, shared]
+    tags: [kanban, workflow, pr, ci, shared, anti-specs-to-code]
 ---
 
 # Kanban Project Workflow — Shared Patterns
@@ -305,7 +305,7 @@ need `arxiv` or `polymarket`. A coder doesn't need `kanban-velocity` or
 | Role | Extra skills |
 |------|-------------|
 | `coder` | `tdd`, `systematic-debugging`, `github-pr-workflow`, `requesting-code-review`, `project-ci`, `long-running-tests`, `disk-cleanup`, `codebase-inspection`, `subagent-driven-development`, `writing-plans` |
-| `reviewer` | `github-code-review`, `systematic-debugging`, `codebase-inspection`, `project-ci`, `requesting-code-review` |
+| `reviewer` | `github-code-review`, `github-pr-workflow`, `systematic-debugging`, `codebase-inspection`, `project-ci`, `requesting-code-review` |
 | `researcher` | `arxiv`, `blogwatcher`, `llm-wiki` (if needed) |
 | `planner` | `kanban-orchestrator`. Core: `kanban-project-workflow`, `writing-plans` (NOT `kanban-worker`). Project skills (shop, the-swarm, etc.) loaded on-demand via `HERMES_TENANT` → `skill_view()`. Personality: `technical`. |
 | `hermes-devops` | `kanban-ci-watchdog`, `kanban-velocity`, `kanban-profile-blueprint`, `hermes-journal`, `disk-cleanup`, `webhook-subscriptions`, all `github-*`, `renovate-bulk-merge`, `hermes-agent`, `project-ci`, `long-running-tests` |
@@ -326,13 +326,33 @@ the `available_skills` block. Only the `planner` profile needs them pre-synced
 The sole exception: new dogfood project skills must be synced to the `planner`
 profile immediately (`cp -r` the whole skill directory).
 
-**To sync a skill to specific profiles (NOT all):**
+**To sync a skill to specific profiles (NOT all):** use `rsync -a --delete` — it
+handles directories, references, scripts, and cleans stale files that `cp -r` leaves behind:
 
 ```bash
 for p in coder planner; do
-  mkdir -p "/root/.hermes/profiles/$p/skills/<category>/<skill-name>"
-  cp /root/.hermes/skills/<category>/<skill-name>/SKILL.md \
-     "/root/.hermes/profiles/$p/skills/<category>/<skill-name>/SKILL.md"
+  rsync -a --delete \
+    /root/.hermes/skills/<category>/<skill-name>/ \
+    /root/.hermes/profiles/$p/skills/<category>/<skill-name>/
+done
+```
+
+**After updating the source skill, sync to all profiles that have a copy:**
+
+**Pitfall: `rsync --delete` overwrites profile-local changes silently.** Before
+syncing, diff first to see what would be lost:
+```bash
+diff -r ~/.hermes/skills/<category>/<skill>/ ~/.hermes/profiles/<profile>/skills/<category>/<skill>/
+```
+Profile copies may have intentional divergences (SOUL.md instructions, custom
+references, different defaults). Review the diff before running `rsync --delete`.
+
+```bash
+for p in researcher researcher-videos coder reviewer planner; do
+  [ -d "/root/.hermes/profiles/$p/skills/<category>/<skill-name>" ] && \
+    rsync -a --delete \
+      /root/.hermes/skills/<category>/<skill-name>/ \
+      /root/.hermes/profiles/$p/skills/<category>/<skill-name>/
 done
 ```
 
@@ -528,24 +548,266 @@ Found on shop + music-library (2026-05-21). Documented in `kanban-profile-bluepr
 All project boards follow the same role pipeline:
 
 ```
-Researcher → Planner → Coder → Reviewer → Done
+Researcher → Planner (PRD + to-issues) → Coder → Reviewer → Done
 ```
 
 - **Researcher:** Investigate, compare approaches, produce recommendations.
-  Handoff: `kanban_complete(summary=..., metadata={recommendation, benchmarks})`
-  **After completing, post results as a comment on the originating GitHub issue**
-  (e.g. `gh issue comment N --repo <repo> --body "..."`). The kanban task summary
-  is ephemeral (workspace GC'd); the GitHub issue is durable.
-- **Planner:** Break work into concrete implementation steps. May `kanban_create`
-  subtasks for the coder. Handoff: wireframe, task list, or child tasks.
-- **Coder:** Implement, test, open PR, enable auto-merge, create reviewer task,
-  block. Handoff: PR auto-merge enabled, reviewer task created.
+  Handoff: `kanban_complete(summary=..., metadata={recommendation, benchmarks})`.
+  **Deliverable by board type:**
+  - **Project boards (shop, the-swarm, etc.)** — post results as a comment on the
+    originating GitHub issue (e.g. `gh issue comment N --repo <repo> --body "..."`).
+    The kanban task summary is ephemeral (workspace GC'd); the GitHub issue is durable.
+  - **Ops boards (hermes-ops, hermes-skills)** — no GitHub repo. Post the full
+    analysis as a **kanban comment** + create follow-up tickets for P0/P1 items.
+    Do NOT write deliverables to the Obsidian vault — the kanban board IS the
+    authoritative record for ops work.
+- **Planner:** Generate PRD via `to-prd` skill, then decompose into vertical slice
+  tickets via `to-issues` skill. Handoff: PRD + child tasks as tracer-bullet slices.
+  Each slice traverses ALL layers (DB → logic → UI → tests) and is independently
+  verifiable. Tasks are classified HITL (Human In The Loop) or AFK (Away From Keyboard).
+- **Coder:** First, explore the codebase with `skill_view("zoom-out")` to understand existing patterns and module interfaces. Then implement, test, open PR, enable auto-merge, create reviewer task, block. Handoff: PR auto-merge enabled, reviewer task created with codebase exploration findings.
 - **Reviewer:** Pull PR diff, review code, approve or request changes. Approve
   unblocks auto-merge; request-changes requires coder fix + re-review.
 
 All boards use the same unified PR workflow (CI + reviewer → auto-merge).
 No per-board variation. Project-specific details (GitHub model, tech stack,
 testing conventions) live in the project skill (`shop`, `the-swarm`, etc.).
+
+### Anti-Specs-to-Code Guardrails
+
+Our pipeline (Researcher → Planner → Coder → Reviewer) risks the "specs-to-code trap"
+identified by Matt Pocock: a coder implements directly from the planner's vertical
+slice ticket without understanding the existing codebase. The result is code that
+"works" but doesn't fit — wrong patterns, duplicate abstractions, ignored conventions.
+
+Matt's rule: **"le code reste le champ de bataille"** — the code is where the battle
+is fought. Specs are a guide; the codebase is the source of truth.
+
+**Proactive guardrails (applied BEFORE implementation, not caught in review):**
+
+1. **Coder MUST explore the codebase before writing code:**
+   - Load `zoom-out` skill: `skill_view("zoom-out")` — maps relevant modules and domain vocabulary
+   - Use `delegate_task` for deeper analysis of related modules and patterns
+   - Document findings in a kanban comment: key modules, patterns identified, conventions to follow
+
+2. **Reviewer MUST check integration, not just correctness:**
+   - "Does this code demonstrate understanding of existing patterns?" (not isolation)
+   - "Does it follow existing conventions: naming, file structure, error handling?"
+   - "Does it reuse existing abstractions rather than inventing new ones?"
+   - If any fail → NEEDS CHANGES with specific file references showing the correct pattern
+
+3. **PRD "Implementation Decisions" section should reference existing modules:**
+   - The planner's `to-prd` output should name relevant modules and interfaces
+   - This bridges the gap between abstract spec and concrete codebase
+   - Coders use these references to start their exploration
+
+**Why CI + review catches errors AFTER they're made (reactive), but codebase**
+**exploration prevents them (proactive). Both are needed. CI gates correctness;**
+**reviewer gates quality; codebase exploration gates fit.**
+
+4. **Periodic architecture review (`improve-codebase-architecture`):**
+   - Run on the project after enough work has accumulated to make shallowness visible
+   - The skill produces an HTML report with deepening opportunities, Mermaid diagrams, and before/after visualizations
+   - Prerequisites: `CONTEXT.md` (domain glossary) and `docs/adr/` (or `docs/decisions/`) must exist
+
+### Architecture Review Triggers (improve-codebase-architecture)
+
+The `improve-codebase-architecture` skill finds "deepening opportunities" — refactors
+that turn shallow modules (interface nearly as complex as implementation) into deep
+modules (large behaviour behind a small interface). It produces an HTML report with
+Mermaid diagrams and before/after visualizations.
+
+**When to trigger — Coder:**
+
+| Trigger | Condition |
+|---------|-----------|
+| Module churn | 3-5 PRs merged touching the same module (e.g., `order.server.ts`, checkout flow) |
+| Tight coupling felt | Working on a module and bouncing between 5+ files just to understand one concept |
+| God module touched | PR touches `order.server.ts` (1309 lines), `misc.tsx` (20+ functions), or any file >800 lines |
+| New domain concept | Adding a new domain entity — run before implementation to find the right seam |
+| Ad-hoc | User asks "should we refactor this?" — run the skill instead of guessing |
+
+**When to trigger — Reviewer:**
+
+| Trigger | Condition |
+|---------|-----------|
+| Cross-module PR | PR touches files in 3+ distinct `app/utils/` modules or 2+ route areas |
+| Shallow module pattern | PR adds a new file that's a thin pass-through (interface ≈ implementation) |
+| Duplication detected | PR copy-pastes logic that already exists elsewhere (e.g., `getStoreAddress`, search/filter UI) |
+| Post-merge cleanup | After a consolidation PR merges 20+ commits — run to catch accumulated shallowness |
+| Periodic | Every ~30 merged PRs on a project board — schedule as a recurring task |
+
+**Skill location:** `software-development/improve-codebase-architecture` — deployed to
+`coder` and `reviewer` profiles. The skill uses the project's `CONTEXT.md` for domain
+vocabulary and `docs/adr/` (or `docs/decisions/`) to avoid re-proposing rejected designs.
+
+**Running the skill (coder or reviewer profile):**
+```bash
+skill_view("improve-codebase-architecture")
+# Step 1: Explore — walk the codebase, note friction, apply deletion test
+# Step 2: Generate HTML report to /tmp/architecture-review-<timestamp>.html
+# Step 3: Grilling loop — user picks candidates, deepens interactively
+```
+
+**First-pass validation:** Shop project (2026-05-24) — found 10 candidates: 6 Strong,
+2 Worth Exploring, 1 Speculative, plus 5 ADR-003-deferred carrier candidates.
+Report: `/tmp/architecture-review-20260524.html`. Top recommendation: request-scoped
+currency cache (1 file, 19 callers, zero interface change).
+
+### Planner Pipeline: Grill → PRD → Issues
+
+The planner's workflow has three phases:
+
+```
+Phase 1: grill-with-docs → to-prd (PRD Generation)
+Phase 2: to-issues (Vertical Slice Decomposition)
+Phase 3: kanban_create + Audit (Ticket Creation)
+```
+
+#### Phase 1: PRD Generation (`to-prd`)
+
+After the researcher produces recommendations, the planner MUST generate a
+formal PRD before creating implementation tickets. The PRD bridges "what to
+build" and "how to build it" — giving the coder user stories, implementation
+decisions, testing decisions, and out-of-scope boundaries.
+
+**Step-by-step:**
+
+1. **Load context** — `skill_view("grill-with-docs")` to interview/stress-test
+   the plan against the project's domain model
+2. **Generate PRD** — `skill_view("to-prd")` to synthesize the interview into a
+   structured PRD using the template below
+3. **Publish** — post the PRD to the project issue tracker with the
+   `ready-for-agent` triage label (no additional triage needed)
+4. **Handoff** — the PRD issue URL becomes the "Parent" reference in all
+   child kanban tickets
+
+**PRD publication mechanics:**
+
+- The `to-prd` skill publishes via the project's configured issue tracker
+  (GitHub `gh issue create`, GitLab `glab issue create`, or local markdown)
+- Apply the `ready-for-agent` label — this signals that the PRD is fully
+  specified and an AFK agent can pick it up
+- Do NOT apply `needs-triage` — the PRD has already been triaged during
+  grilling
+
+#### PRD Template
+
+Every PRD MUST contain these five sections. The template is defined in the
+`to-prd` skill and reproduced here for reference:
+
+```markdown
+## Problem Statement
+
+The problem that the user is facing, from the user's perspective.
+
+## Solution
+
+The solution to the problem, from the user's perspective.
+
+## User Stories
+
+A LONG, numbered list of user stories. Each user story should be in the format of:
+
+1. As an <actor>, I want a <feature>, so that <benefit>
+
+This list of user stories should be extremely extensive and cover all aspects of
+the feature.
+
+## Implementation Decisions
+
+A list of implementation decisions that were made. This can include:
+
+- The modules that will be built/modified
+- The interfaces of those modules that will be modified
+- Technical clarifications from the developer
+- Architectural decisions
+- Schema changes
+- API contracts
+- Specific interactions
+
+Do NOT include specific file paths or code snippets. They may end up being
+outdated very quickly.
+
+Exception: if a prototype produced a snippet that encodes a decision more
+precisely than prose can (state machine, reducer, schema, type shape), inline
+it within the relevant decision and note briefly that it came from a prototype.
+Trim to the decision-rich parts — not a working demo, just the important bits.
+
+## Testing Decisions
+
+A list of testing decisions that were made. Include:
+
+- A description of what makes a good test (only test external behavior, not
+  implementation details)
+- Which modules will be tested
+- Prior art for the tests (i.e. similar types of tests in the codebase)
+
+## Out of Scope
+
+A description of the things that are out of scope for this PRD.
+
+## Further Notes
+
+Any further notes about the feature.
+```
+
+**PRD quality rules:**
+
+- User stories must be exhaustive — cover happy path, edge cases, error states,
+  and all actor roles
+- Implementation decisions should mention modules and interfaces but not file
+  paths
+- Testing decisions must reference prior art in the codebase (similar test
+  files, patterns) so the coder knows where to look
+- Out of Scope is mandatory — prevents scope creep during implementation
+- The PRD is NOT a kanban task — it's a reference document that child tasks
+  link back to
+
+### Vertical Slice Ticket Guidelines
+
+Since deployment of `to-issues` (2026-05-24), ALL new AFK kanban tasks MUST
+use the vertical slice format:
+
+```markdown
+## Parent
+PRD: [link or reference to the PRD ticket]
+
+## What to build
+
+[A concise description of this vertical slice. Describe the end-to-end BEHAVIOR,
+not layer-by-layer implementation. Avoid specific file paths or code snippets
+— they go stale fast.]
+
+## Acceptance criteria
+
+- [ ] Criterion 1 — independently verifiable
+- [ ] Criterion 2 — demoable/screenshotable
+- [ ] Criterion 3 — testable in isolation
+
+## Blocked by
+
+- None - can start immediately
+```
+
+**Vertical slice rules:**
+- Each ticket traverses ALL layers (DB → logic → UI → tests)
+- Each ticket is independently verifiable — a completed slice is demoable on its own
+- Prefer many thin slices over few thick ones
+- Prefer AFK over HITL
+- Dependencies should be minimal — use "Blocked by" only for true blockers
+- HITL slices require human interaction (architectural decisions, design reviews)
+  and are created with `--triage` or `--blocked` status
+- AFK slices can be implemented and merged without human interaction
+
+**Anti-patterns to avoid:**
+- Horizontal slices: "Build the database layer" / "Build the API layer" / "Build the UI"
+- Multi-phase tickets: "Phase 1: setup, Phase 2: core, Phase 3: polish" in one ticket
+- Layer-specific tickets: "Add the Prisma schema" (no UI, no tests, not verifiable alone)
+- Analysis + implementation in one ticket: mixing research with coding
+
+See `references/vertical-slice-example.md` for a worked example (Shop VAT/Tax feature)
+showing how 5 vertical slices decompose a PRD into independently verifiable tickets.
 
 ### Gap Analysis Sub-Pipeline
 
@@ -585,6 +847,23 @@ Full column reference for the `tasks` table (and related tables) in
 kanban.db — column names, types, timestamp conventions, and common query patterns.
 **No `updated_at` column** — use `started_at`, `completed_at`, or `last_heartbeat_at`.
 **Heartbeat column is `last_heartbeat_at`**, not `heartbeat_at`.
+
+### Pitfall: Default Board Uses Root DB
+
+Most boards live at `/root/.hermes/kanban/boards/<slug>/kanban.db`. The **`default`**
+board is the exception — it uses `/root/.hermes/kanban.db` at the repository root.
+There is no `/root/.hermes/kanban/boards/default/` directory.
+
+```bash
+# Project boards
+python3 -c "import sqlite3; db=sqlite3.connect('/root/.hermes/kanban/boards/shop/kanban.db')"
+
+# Default board (KB, general tasks)
+python3 -c "import sqlite3; db=sqlite3.connect('/root/.hermes/kanban.db')"
+```
+
+Glob patterns like `glob.glob('/root/.hermes/kanban/boards/*/kanban.db')` will NOT
+match the default board. Include the root DB explicitly when scanning all boards.
 
 ## Pause/Resume All Boards
 
