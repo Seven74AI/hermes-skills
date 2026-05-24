@@ -55,9 +55,15 @@ Pas de généralités type "c'est important", "il faut écouter son corps".
 - Contradictions internes ou affirmations extraordinaires non étayées
 
 ## Extractions utiles
-- **Citations marquantes** — verbatim avec timestamp approximatif
-- **Protocoles / Méthodes** — dosages, techniques, exercices mentionnés
-- **Références** — chercheurs, livres, études cités
+
+### Citations
+> "citation exacte" (HH:MM:SS)
+
+### Protocoles / Méthodes
+- Dosages, routines, pratiques concrètes mentionnées
+
+### Références externes
+- Chercheurs, livres, études, institutions cités
 
 ## Voir aussi
 - [[Note liée]]

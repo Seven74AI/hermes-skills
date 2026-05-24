@@ -45,7 +45,15 @@ For video files hosted outside YouTube: `references/mega-video-pipeline.md` cove
 
 ### YouTube Videos
 
-See `references/youtube-extraction.md` for the full pipeline: yt-dlp download (WebM VP9+Opus, max 720p) → faster-whisper `small` transcription → chapitrage (YouTube native chapters, NLP fallback) → chapter summaries + key points → video + MP3 audio + transcript JSON archived in MinIO → note in `Connaissances/videos/`. Note template in `references/youtube-note-template.md`.
+Same two-phase kanban pattern as Mega (see above). Both pipelines use `references/resume-prompt.md`
+for the Phase B summarization — a two-pass LLM prompt producing 7-section deep notes
+(Résumé → Métadonnées → Concepts clés → Chapitres → Points clés → Nuances & Limites →
+Extractions utiles).
+
+Phase A (mécanique): `references/youtube-extraction.md` — yt-dlp download (WebM VP9+Opus,
+max 720p) → faster-whisper `small` transcription → chapitrage (YouTube native chapters,
+NLP fallback). Phase B (LLM): `references/resume-prompt.md` → note in
+`Connaissances/videos/` via `references/youtube-note-template.md` → MinIO → git push.
 
 Design decisions (grill session 2026-05-23):
 - faster-whisper ONLY (no youtube-transcript-api). Quality over speed.
@@ -197,7 +205,7 @@ When the user asks "qu'est-ce qu'on a sur X ?":
 - After creating or updating a note, push to Git so the user's Obsidian syncs: `cd "$OBSIDIAN_VAULT_PATH" && git add -A && git commit -m "add: <slug>" && git push`
 - For books (PDF/ePub), see `references/books-pipeline.md` — includes extraction scripts, summarization strategy, and book-specific note template
 - For YouTube video extraction (download, transcribe, chapter, archive to MinIO), see `references/youtube-extraction.md` and the note template at `references/youtube-note-template.md`
-- For the video summarization prompt used by `researcher-videos` workers, see `references/resume-prompt.md`
+- For the video summarization prompt used by `researcher-videos` workers in BOTH YouTube and Mega Phase B, see `references/resume-prompt.md` — two-pass LLM, 7-section deep notes
 - For external video files (Mega.nz, direct URLs), see `references/mega-video-pipeline.md` — two-phase kanban pattern with context-isolated LLM summarization
 - For Instagram image carousel extraction, run `scripts/ig-carousel-extract.py URL`
 - For free web search backends (DuckDuckGo, Brave, SearXNG), see `references/web-providers.md`
