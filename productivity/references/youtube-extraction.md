@@ -177,6 +177,43 @@ if current_text:
 print(json.dumps(chapters, indent=2))
 ```
 
+## Commandes techniques (Phase B)
+
+Ces commandes sont utilisées par le worker dans le ticket RESUME+NOTE+ARCHIVE.
+
+### 7. Résumé approfondi (LLM)
+
+Le worker charge la skill `knowledge-base` et suit le prompt dans
+`references/resume-prompt.md` (deux passes). Template de note :
+`references/youtube-note-template.md`. Note → `Connaissances/videos/<slug>.md`.
+
+### 8. Uploader vers MinIO
+
+```bash
+# Extraire MP3 depuis le WebM
+ffmpeg -y -i /tmp/yt_SLUG.webm -vn -acodec libmp3lame -q:a 2 /tmp/yt_SLUG.mp3
+
+# Uploader les 3 fichiers
+mc cp /tmp/yt_SLUG.webm minio/knowledge-base/videos/<slug>.webm
+mc cp /tmp/yt_SLUG.mp3 minio/knowledge-base/videos/<slug>.mp3
+mc cp /tmp/yt_SLUG_transcript.json minio/knowledge-base/videos/<slug>.json
+```
+
+### 9. Créer la note dans le vault
+
+Template (voir `references/youtube-note-template.md`). Sauvegarder dans
+`Connaissances/videos/<slug>.md`, puis push Git :
+
+```bash
+cd "$OBSIDIAN_VAULT_PATH" && git add -A && git commit -m "add: <slug>" && git push
+```
+
+### 10. Nettoyage
+
+```bash
+rm /tmp/yt_SLUG.webm /tmp/yt_SLUG.mp3 /tmp/yt_SLUG_transcript.json
+```
+
 ## Rate limiting
 
 - **Toujours** utiliser `--sleep-requests 1 --sleep-interval 3 --max-sleep-interval 10 --limit-rate 4M`
