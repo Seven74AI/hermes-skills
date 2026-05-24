@@ -314,6 +314,8 @@ hermes kanban --board <board> reclaim <id>
 
 **Real case (2026-05-20):** planner on the-swarm and coder on videogame-lab both timed out at 120s despite profile `max_runtime_seconds: 600`. Root cause: the per-task DB column was `max_runtime_seconds = 120` and took precedence. 717 cumulative timeout runs across 3 tasks, all invisible to both watchdogs until `check-crash-loops.py` was upgraded with Phase 2 detection.
 
+**Dispatcher DB corruption — silent dispatch failure.** If the gateway log shows `kanban dispatcher: board default database /root/.hermes/kanban.db is not a valid SQLite database`, the dispatcher has disabled itself. No new tasks are dispatched; watchdogs stop. Board DBs and `hermes kanban boards list` still work normally. The dispatcher DB (`/root/.hermes/kanban.db`) is a coordination cache — all real data is in per-board DBs. Fix: `rm /root/.hermes/kanban.db && hermes gateway restart`. Full diagnosis and recovery in `references/kanban-db-architecture.md`.
+
 **Budget exhaustion on migration/refactoring tasks.** When a task asks a worker to apply a migration AND re-verify the full test suite inline, the worker exhausts its iteration budget on test output (e.g. 90 iterations burned on 283 test logs in 95s). Fix: split verification from application. Reference prior benchmark results in the task body and explicitly tell workers to SKIP tests — CI will catch regressions. Seen on shop pnpm migration (2026-05-18): task blocked at 90/90 after 20min because it ran `pnpm test` inline despite a prior benchmark proving 283/283 pass.
 
 **Reassignment vs. new task.** If a reviewer blocks with "needs changes," create a NEW task linked from the reviewer's task — don't re-run the same task with a stern look. The new task is assigned to the original implementer profile.
@@ -530,13 +532,15 @@ hermes kanban create --title "My Title" --assignee coder  # does not work
 
 The full flag set: `--assignee`, `--priority`, `--body`, `--parent` (repeatable), `--max-runtime`, `--max-retries`, `--workspace`, `--tenant`, `--triage`, `--idempotency-key`, `--skill`, `--json`. Positional `title` always comes last.
 
+**Kanban DB architecture & disaster recovery:** See `references/kanban-db-architecture.md` — two-tier architecture (dispatcher DB vs per-board DBs), corruption diagnosis, safe deletion, and header-fix recovery. Dispatcher DB is a coordination cache; all real data lives in board DBs.
+
 **Board health check (manual diagnostics)**
 
 When the user asks "what's working?" or you suspect silent failures, follow the 5-step health check in `references/kanban-health-check.md`: boards overview → list running → show event history → verify worker PIDs → check diagnostics. The quick one-liner at the bottom of that reference produces a full table of running tasks × worker PID status across all boards in one shot.
 
 **CI-gated PR workflow:** For repos with GitHub Actions CI, use the label-based CI-watchdog pattern (`references/ci-watchdog.md`) instead of PR URLs in comments. Workers create PRs with `kanban:TASK_ID` labels; a cron watchdog merges green PRs. Avoids the 24h `active_pr` guard.
 
-**Pre-spawn health watchdog:** Scans all boards for `ready` tasks with issues (missing assignee, skills, max_runtime, PR URLs in comments). Notification-only, no modification. See `references/pre-spawn-health-watchdog.md` for setup and false-positive patterns (RECETTE, reviewer tasks, action-run URLs).
+**Pre-spawn health watchdog:** Scans all boards for tasks with dispatch-blocking issues (NO-ASSIGNEE, PR-URL-COMMENTS, PR-URL-IN-BODY, STUCK-SCHEDULED, NO-BODY, NO-ASSIGNEE-BLOCKED). NO-SKILLS and NO-MRT checks retired May 2026 — dispatcher injects skills at spawn, heartbeat-first with 3600s safety net. Notification-only, no modification. See `references/pre-spawn-health-watchdog.md` for full schema and script location.
 
 **⛔ Workflow `name` MUST be `CI` — exact match.** The branch protection rule `contexts: ["CI"]` requires a check literally named `CI`. If the workflow is named `🚀 Deploy` (or anything else), `gh pr merge` fails even when all jobs are green, causing an infinite loop: merge fails → unblock → coder respawns → re-blocks → merge fails again. **Fix:** rename `name: 🚀 Deploy` to `name: CI` in `.github/workflows/deploy.yml` (or equivalent). Real case (shop + music-library 2026-05-20): both had `name: 🚀 Deploy`. All project repos verified 2026-05-20. See `references/ci-watchdog.md` for the full branch protection recipe and BOARD_REPOS verification table.
 
@@ -546,8 +550,7 @@ Instead of waiting for a human to notice stuck tasks in the dashboard, set up a 
 
 ### Pre-Spawn Health Watchdog
 
-A lightweight no-agent watchdog that scans all boards for `ready` tasks with configuration
-issues that would cause dispatch failure (missing skills, missing max_runtime, PR URLs
-in comments/body, no assignee). Silent when clean. Full schema, false-positive rules
-(RECETTE merge targets, reviewer tasks), and the PR-URL regex-vs-LIKE pitfall in
-`references/pre-spawn-watchdog.md`.
+A no-agent watchdog that scans all boards for tasks with dispatch-blocking issues
+(NO-ASSIGNEE, PR-URL-COMMENTS, PR-URL-IN-BODY, STUCK-SCHEDULED, BODY-IS-NULL, NO-ASSIGNEE-BLOCKED).
+Silent when clean. Full schema and setup in `references/pre-spawn-health-watchdog.md`.
+Script: `~/.hermes/scripts/pre-spawn-watchdog.py`.

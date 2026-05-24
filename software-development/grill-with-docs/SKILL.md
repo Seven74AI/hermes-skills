@@ -91,3 +91,7 @@ Only offer to create an ADR when all three are true:
 If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
 
 </supporting-info>
+
+## Relationship to `grill-me`
+
+This skill supersedes `grill-me`. The core interviewing loop is identical, but `grill-with-docs` adds domain-model integration: it reads `CONTEXT.md` for the project's glossary, challenges terminology against it, updates it inline as decisions crystallize, and offers ADRs for load-bearing reversals. Prefer `grill-with-docs` for any project that has (or should have) a domain glossary.

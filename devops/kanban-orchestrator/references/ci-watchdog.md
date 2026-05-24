@@ -159,6 +159,32 @@ To stop or manage this job...
 
 **Real case (2026-05-20):** The header was printed before `main()`, causing an empty notification every 2 minutes. Fixed by moving the header inside `process_board()`, gated behind `first` flag so it only prints when actual work starts.
 
+### Auto-cleanup of PR URL comments (added 2026-05-23)
+
+When the CI watchdog detects a merged PR with a `kanban:` label, it now also
+deletes PR URL comments from the task to clear the `respawn_guarded` / `active_pr`
+guard. Without this cleanup, the dispatcher refuses to respawn the coder for 24h,
+even though the PR is merged and the task is ready to complete.
+
+The cleanup is a simple SQL DELETE executed right after unblock:
+
+```python
+db.execute(
+    "DELETE FROM task_comments "
+    "WHERE task_id = ? AND body LIKE '%github.com%pull%'",
+    (task_id,),
+)
+db.commit()
+```
+
+This is safe because:
+- The CI watchdog only runs when the PR is already merged — no PR URL needs to remain
+- The `kanban:TASK_ID` label is the canonical PR→task link, preserved in the PR metadata
+- If needed, the PR number is still recoverable from the task's block reason or kanban label
+
+Tasks without `kanban:` labels are not affected — they still need manual comment deletion
+if they're stuck on `active_pr`.
+
 ### Pitfall: `gh run view` needs `databaseId`, not `url`
 
 `gh run list --json url` returns the HTML page URL (e.g. `https://github.com/.../actions/runs/26193477898`). Passing this to `gh run view <url> --log-failed` causes a malformed API URL with double-nesting:

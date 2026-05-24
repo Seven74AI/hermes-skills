@@ -578,6 +578,14 @@ can silently fail when the parent completes. The task stays `scheduled` forever
 
 **Detection & fix:** see `references/scheduled-task-stuck.md`.
 
+## Kanban DB Schema
+
+Full column reference for the `tasks` table (and related tables) in
+`references/kanban-db-schema.md`. Use this when writing SQLite queries against
+kanban.db — column names, types, timestamp conventions, and common query patterns.
+**No `updated_at` column** — use `started_at`, `completed_at`, or `last_heartbeat_at`.
+**Heartbeat column is `last_heartbeat_at`**, not `heartbeat_at`.
+
 ## Pause/Resume All Boards
 
 When the user wants to pause ALL kanban activity (maintenance, OOM, deployment):
