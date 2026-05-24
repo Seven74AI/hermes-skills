@@ -1,6 +1,8 @@
 # YouTube Video Extraction Pipeline
 
-Pipeline complet pour télécharger, transcrire et archiver une vidéo YouTube dans le knowledge base.
+Pipeline complet pour télécharger, transcrire, résumer et archiver une vidéo YouTube
+dans le knowledge base. Utilise un pattern kanban **two-phase** (comme Mega) pour
+isoler le travail CPU (whisper) du travail LLM (résumé).
 
 ## Prérequis
 
@@ -11,7 +13,56 @@ Pipeline complet pour télécharger, transcrire et archiver une vidéo YouTube d
 - `node` ≥ v20 (système) — requis par yt-dlp pour le n-sig challenge solver
 - Cookies YouTube : `/tmp/yt_cookies.txt` (exportés depuis le navigateur desktop de l'utilisateur)
 
-## Pipeline — étapes
+## Kanban two-phase pattern
+
+Chaque vidéo = 2 tickets chaînés avec `--parent` :
+
+```
+Ticket 1: KB: Series Name — Ep.X [DOWNLOAD+TRANSCRIBE]  → Phase A (mécanique)
+Ticket 2: KB: Series Name — Ep.X [RESUME+NOTE+ARCHIVE]  → Phase B (LLM)
+```
+
+Tous chaînés en série avec `--parent` : `1A → 1B → 2A → 2B → ...`
+Assignee : `researcher-videos`. Max 2 vidéos par worker session.
+
+Slug format : `chaine_titre-simplifie`. Exemple : `matt-pocock_ai-coding-workflow`.
+
+### Phase A : Download + Transcribe (mécanique, pas de LLM)
+
+```
+Ticket: KB: Series Name — Ep.X [DOWNLOAD+TRANSCRIBE]
+Assignee: researcher-videos
+Body:
+  1. Extraire métadonnées YouTube (titre, chaîne, durée, vues, date)
+  2. Lister les chapitres YouTube natifs (si dispos)
+  3. Télécharger vidéo : WebM VP9+Opus 720p → /tmp/yt_SLUG.webm
+  4. Extraire audio MP3 : ffmpeg → /tmp/yt_SLUG.mp3
+  5. Transcrire : faster-whisper small int8 → /tmp/yt_SLUG_transcript.json
+  6. Chapitrage : chapitres natifs YouTube OU fallback NLP (gap > 3s)
+  7. Cleanup : rm /tmp/yt_SLUG.mp3 /tmp/yt_audio_16k.wav
+     (GARDER /tmp/yt_SLUG.webm + /tmp/yt_SLUG_transcript.json)
+  DO NOT: summarize, create note, upload MinIO, or push git.
+```
+
+### Phase B : Resume + Note + Archive (LLM, contexte propre)
+
+```
+Ticket: KB: Series Name — Ep.X [RESUME+NOTE+ARCHIVE]
+Assignee: researcher-videos
+Parent: <phase A ticket ID>
+Body:
+  1. Charger /tmp/yt_SLUG_transcript.json
+  2. Charger la skill knowledge-base et suivre le prompt dans
+     references/resume-prompt.md (deux passes)
+  3. Note : Connaissances/videos/SLUG.md
+  4. Upload MinIO : .webm, .mp3 (extrait), _transcript.json
+  5. Cleanup ALL yt_SLUG.* from /tmp/
+  6. Git push vault
+```
+
+## Commandes techniques (Phase A)
+
+Ces commandes sont utilisées par le worker dans le ticket DOWNLOAD+TRANSCRIBE.
 
 ### 1. Lister les chapitres YouTube natifs
 
@@ -124,40 +175,6 @@ if current_text:
     })
 
 print(json.dumps(chapters, indent=2))
-```
-
-### 7. Générer résumé approfondi + points clés par chapitre
-
-Le LLM (dans le worker researcher-videos) suit le prompt en deux passes
-documenté dans `references/resume-prompt.md` :
-
-- **Passe 1** — Extraction des concepts clés (titres, mécanismes, timestamps, type d'évidence)
-- **Passe 2** — Note complète en 7 sections : Résumé → Métadonnées → Concepts clés →
-  Chapitres → Points clés → Nuances & Limites → Extractions utiles → Voir aussi
-
-Ne pas improviser : suivre le prompt structuré pour garantir densité et profondeur.
-Template de note dans `references/youtube-note-template.md`.
-
-### 8. Uploader vers MinIO
-
-```bash
-# Configurer le client MinIO
-mc alias set minio http://vmi3304846.tail5c02a1.ts.net:9000 ACCESS_KEY SECRET_KEY
-
-# Uploader les 3 fichiers
-mc cp /tmp/yt_VIDEO_ID.webm minio/knowledge-base/videos/<slug>.webm
-mc cp /tmp/yt_VIDEO_ID.mp3 minio/knowledge-base/videos/<slug>.mp3
-mc cp /tmp/yt_VIDEO_ID_transcript.json minio/knowledge-base/videos/<slug>.json
-```
-
-### 9. Créer la note dans le vault
-
-Template (voir `references/youtube-note-template.md`). Sauvegarder dans `Connaissances/videos/<slug>.md`, puis push Git.
-
-### 10. Nettoyage
-
-```bash
-rm /tmp/yt_VIDEO_ID.webm /tmp/yt_VIDEO_ID.mp3 /tmp/yt_audio_16k.wav /tmp/yt_VIDEO_ID_transcript.json
 ```
 
 ## Rate limiting
