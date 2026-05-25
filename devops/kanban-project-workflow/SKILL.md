@@ -1,7 +1,7 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.10.0
+version: 1.11.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared, anti-specs-to-code]
@@ -346,6 +346,39 @@ diff -r ~/.hermes/skills/<category>/<skill>/ ~/.hermes/profiles/<profile>/skills
 ```
 Profile copies may have intentional divergences (SOUL.md instructions, custom
 references, different defaults). Review the diff before running `rsync --delete`.
+
+**Pitfall: Nested duplicate skill directory from rsync — "Unknown skill(s)" crash-loop.** When the target directory already exists, `rsync -a --delete source/ target/` copies the source directory INSIDE the target instead of replacing its contents, creating a nested duplicate like `target/skill-name/SKILL.md` alongside the original `target/SKILL.md`. This is a **trailing-slash trap**: `rsync ... source/ target` (no trailing slash on target) copies source into target, while `rsync ... source/ target/` (trailing slash on both) merges contents correctly.
+
+**Symptoms:**
+- Worker starts and dies in ~60s (startup time) — consistent crash at the 1-minute mark
+- `hermes kanban log <task>` shows "Error: Unknown skill(s): <name>" repeated
+- `tail errors.log` shows `WARNING tools.skills_tool: Skill name collision for '<name>': 2 candidates`
+- Task diagnostics show `consecutive_crashes=N` climbing rapidly with `pid X not alive` or `pid X exited with code 1`
+- The skill appears in `hermes skills list` (from the main profile) but the worker can't load it due to collision
+
+**Detection:**
+```bash
+find /root/.hermes/profiles/<profile>/skills/ -mindepth 2 -name "SKILL.md" -path "*/<skill-name>/<skill-name>/SKILL.md"
+```
+
+**Fix:**
+```bash
+# Remove the nested duplicate subdirectory
+rm -rf /root/.hermes/profiles/<profile>/skills/<category>/<skill-name>/<skill-name>/
+# Then reclaim crashed tasks
+hermes kanban --board <board> reclaim <task_id>
+```
+
+**Prevention:** Always use trailing slashes on BOTH source and target in rsync commands:
+```bash
+# ✅ CORRECT — merges contents, doesn't nest
+rsync -a --delete /root/.hermes/skills/<category>/<skill>/ /root/.hermes/profiles/<p>/skills/<category>/<skill>/
+
+# ❌ WRONG — copies source into target, creates nested duplicate
+rsync -a --delete /root/.hermes/skills/<category>/<skill>/ /root/.hermes/profiles/<p>/skills/<category>/<skill>
+```
+
+**Real case (hermes-ops 2026-05-25):** Reviewer profile had `kanban-project-workflow/kanban-project-workflow/SKILL.md` nested inside the skill directory. Both reviewer tasks (t_e9e783a1, t_0c9c3182) crash-looped for 25h — 208 and 318 runs respectively, all dying in ~60s with "Unknown skill(s): kanban-project-workflow". The block watchdog escalated as "Reviewer profile systemic crash — 25h outage."
 
 ```bash
 for p in researcher researcher-videos coder reviewer planner; do
