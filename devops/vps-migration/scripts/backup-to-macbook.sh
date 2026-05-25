@@ -81,27 +81,15 @@ cp -r /root/edgee-lab/* "$STAGING/edgee-lab/" 2>/dev/null || true
 mkdir -p "$STAGING/hermes-scripts"
 cp -r /root/.hermes/scripts/* "$STAGING/hermes-scripts/" 2>/dev/null || true
 
-# Root-level configs (NOT in ~/.hermes/ so NOT in Hermes backup)
-mkdir -p "$STAGING/root-config"
-cp /root/.xurl "$STAGING/root-config/" 2>/dev/null || true
-cp /root/.gitconfig "$STAGING/root-config/" 2>/dev/null || true
-cp -r /root/.config/gh "$STAGING/root-config/" 2>/dev/null || true
-cp -r /root/.ssh "$STAGING/root-config/" 2>/dev/null || true
-
-tar -czf "$STAGING/configs.tar.gz" -C "$STAGING" system-config/ edgee-lab/ hermes-scripts/ root-config/
+tar -czf "$STAGING/configs.tar.gz" -C "$STAGING" system-config/ edgee-lab/ hermes-scripts/
 CONF_SIZE=$(du -h "$STAGING/configs.tar.gz" | cut -f1)
 echo "  Done: configs.tar.gz ($CONF_SIZE)"
 
 # ===================================================================
-# 4. Hermes backup zip (pre-requisite — must exist)
+# 4. Hermes backup zip (already done)
 # ===================================================================
 echo ""
 echo ">>> [4/5] Staging Hermes backup..."
-if [ ! -f /root/hermes-final-backup.zip ]; then
-    echo "ERROR: /root/hermes-final-backup.zip not found"
-    echo "Run: hermes backup -o /root/hermes-final-backup.zip"
-    exit 1
-fi
 cp /root/hermes-final-backup.zip "$STAGING/"
 HERMES_SIZE=$(du -h "$STAGING/hermes-final-backup.zip" | cut -f1)
 echo "  Done: hermes-final-backup.zip ($HERMES_SIZE)"

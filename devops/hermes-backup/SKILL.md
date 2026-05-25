@@ -70,7 +70,7 @@ The disk watchdog + cleanup agent should keep snapshots trimmed.
 | `enabled_toolsets` | `["terminal"]` | Backup is a pure shell operation |
 | `deliver` | `local` | Errors stay in the job log, no spam |
 
-See `references/hermes-backup-gaps.md` for a complete inventory of files NOT covered by `hermes backup` (root-level dotfiles, systemd units, MinIO data, Docker volumes) — important for VPS migrations.
+See `references/backup-failure-may2026.md` for a real-world debugging trace (May 2026 state-snapshot explosion).
 
 ## See also
 

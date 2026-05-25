@@ -10,6 +10,20 @@ hermes kanban boards list
 
 Look at the COUNTS column. Boards with `running=N` or `blocked=N` need investigation. Boards with only `done` and `archived` are idle.
 
+## Dashboard access (web UI)
+
+The web dashboard runs on port 9119. First launch does `npm ci` + `npm run build` (~30s), subsequent starts are instant with `--skip-build`.
+
+```bash
+# Local only
+hermes dashboard
+
+# Tailscale / remote access — bind to all interfaces
+hermes dashboard --host 0.0.0.0 --insecure --skip-build
+```
+
+Access via Tailscale IP (e.g. `http://100.122.244.70:9119`). Use `--stop` and `--status` to manage.
+
 ## Step 2 — List running tasks per board
 
 For each board with `running>0`:

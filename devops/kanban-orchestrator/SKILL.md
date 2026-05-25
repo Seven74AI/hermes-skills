@@ -266,6 +266,8 @@ done
 
 **Real case (2026-05-19):** hermes-skills board had 19 `ready` tasks all `(unassigned)` — zero progress until batch-reassigned to `coder`. After reassignment, the dispatcher picked them up within seconds.
 
+**Never guess task body content when the user is about to supply it.** If the user says "add a task for X" and X involves a URL, file, or data the user hasn't provided yet, do NOT fill the task body with assumed content from context. Wait for the user to give you the actual source. Creating a task with guessed content wastes a task slot (the dispatcher picks it up immediately) and forces an archive+recreate cycle. **Real case (2026-05-25):** user said "on va lancer un ticket pour ajouter un reel" — agent created a task for the Rich Sol Foods reel from earlier KB context instead of waiting for the URL the user was about to send. Task archived 30s later and recreated with the correct URL.
+
 **Bundling independent lanes into one card.** If the user asks for two independent outcomes, create two cards. Example: "fix blockers and check model variants" is not one fixer task; create a fixer/engineer card for the fixes and an explorer/researcher card for the variant check, then optionally gate review on both.
 
 **Over-linking because of wording.** "Finally check X" may still be parallel with implementation if X is static config, docs, or source discovery. Link it after implementation only when the check depends on the implementation result.
@@ -537,6 +539,8 @@ The full flag set: `--assignee`, `--priority`, `--body`, `--parent` (repeatable)
 **Board health check (manual diagnostics)**
 
 When the user asks "what's working?" or you suspect silent failures, follow the 5-step health check in `references/kanban-health-check.md`: boards overview → list running → show event history → verify worker PIDs → check diagnostics. The quick one-liner at the bottom of that reference produces a full table of running tasks × worker PID status across all boards in one shot.
+
+**Web dashboard:** `hermes dashboard --host 0.0.0.0 --insecure --skip-build` (port 9119). See `references/dashboard.md` for full setup. The dashboard provides a visual board view with task details, recovery actions, and diagnostics — use it when the user wants to "see" the boards rather than CLI output.
 
 **CI-gated PR workflow:** For repos with GitHub Actions CI, use the label-based CI-watchdog pattern (`references/ci-watchdog.md`) instead of PR URLs in comments. Workers create PRs with `kanban:TASK_ID` labels; a cron watchdog merges green PRs. Avoids the 24h `active_pr` guard.
 

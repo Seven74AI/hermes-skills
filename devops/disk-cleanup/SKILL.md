@@ -1,7 +1,7 @@
 ---
 name: disk-cleanup
 description: "Analyze disk usage and safely reclaim space when disk is critically full (≥75%). Systematic cleanup of caches, logs, temp files, and stale kanban workspaces."
-version: 1.11.0
+version: 1.10.0
 platforms: [linux]
 metadata:
   hermes:
@@ -40,11 +40,6 @@ du -sh /root/.hermes/kanban/boards/*/workspaces 2>/dev/null | sort -rh | head -1
 ```
 ```bash
 du -sh /root/.hermes/cron/output /root/.hermes/logs /root/.hermes/audio_cache /root/.cache /tmp 2>/dev/null | sort -rh
-```
-```bash
-# /tmp subdirectory breakdown — catches pipeline staging dirs, migration residue, etc.
-# that don't match any cleanup heuristic. PREFER this over blind /tmp walks.
-du -sh /tmp/*/ 2>/dev/null | sort -rh | head -10
 ```
 ```bash
 # Workspace count per board (Python — avoids -exec sh -c blocker)
@@ -725,17 +720,16 @@ python3 /tmp/cleanup-system-caches.py
 
 ### 2p. Backup archives — /tmp + /root (safe — already uploaded to remote)
 
-The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–2.6G each. They're not caught by 2e (<24h old) nor 2ea/2eb (they're files, not dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan top-level and one level deep in `/tmp` subdirectories** — observed 2.0G `hermes-final-backup.zip` + 7.0G `minio.tar.gz` inside `/tmp/vps-backup-staging/` (2026-05-24) that was missed by top-level-only scan. Also scans `/root/` top-level (2.6G `hermes-final-backup.zip` 2026-05-24).
+The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–2.6G each. They're not caught by 2e (<24h old) nor 2ea/2eb (they're files, not dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan both `/tmp` and `/root`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) that was missed by a `/tmp`-only scan.
 
 ```bash
 cat > /tmp/cleanup-backup-zips.py << 'PYEOF'
 import os
 
-PREFIXES = ['hermes-backup', 'hermes-critical', 'hermes-final', 'minio']
+PREFIXES = ['hermes-backup', 'hermes-critical', 'hermes-final']
 EXTENSIONS = ['.zip', '.tar.gz']
 total = 0
 
-# Scan top-level files in /root and /tmp
 for base in ['/tmp', '/root']:
     try:
         for f in os.listdir(base):
@@ -751,26 +745,6 @@ for base in ['/tmp', '/root']:
                 print(f'Removed: {fp} ({sz/1024/1024:.0f}M)')
     except (OSError, PermissionError):
         pass
-
-# Also scan one level deep in /tmp subdirectories (catches staging dirs like vps-backup-staging/)
-try:
-    for d in os.listdir('/tmp'):
-        dp = os.path.join('/tmp', d)
-        if not os.path.isdir(dp):
-            continue
-        for f in os.listdir(dp):
-            fp = os.path.join(dp, f)
-            if not os.path.isfile(fp):
-                continue
-            matches_prefix = any(f.startswith(p) for p in PREFIXES)
-            matches_ext = any(f.endswith(e) for e in EXTENSIONS)
-            if matches_prefix and matches_ext:
-                sz = os.path.getsize(fp)
-                os.remove(fp)
-                total += sz
-                print(f'Removed: {fp} ({sz/1024/1024:.0f}M)')
-except (OSError, PermissionError):
-    pass
 
 print(f'Total: {total/1024/1024:.0f}M')
 PYEOF
@@ -815,7 +789,7 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **Blocked and ready workspaces can become the largest disk consumers.** Blocked and ready tasks are NOT cleaned by any automated step (2g only targets done/archived, 2h only targets in_progress/running). When many tasks get stuck in `blocked` or `ready` state (e.g. shop board with 3 ready workspaces at ~370M avg, ~1.1G total lingering since May 22 — 2026-05-24, or 25 blocked workspaces at ~160M avg, ~4G total), manual intervention is required. **The GC script has a 5-minute grace period** (`completed_at < now - 300`), so re-running 2g immediately after archiving will produce empty output — the workspaces are too fresh. The correct workflow: (1) Archive blocked/ready tasks via SQL: `UPDATE tasks SET status='archived', completed_at=<unix_ts> WHERE id='<tid>'`. (2) Delete the workspaces directly with a temp script that queries `SELECT id FROM tasks WHERE status='archived' AND completed_at IS NOT NULL` and calls `shutil.rmtree()` for each workspace on disk. (3) Then re-run 2g to catch any done/archived tasks from other boards that may have accumulated. See the 2026-05-24 session for the exact temp script pattern.
 - **🔴 Media processing pipelines leave large residue in /tmp.** Researcher-videos and similar profiles that extract frames, transcode audio, or run media analysis tools can accumulate 3-4G of `.mp4`/`.mp3`/`.wav` files in `/tmp/` in a single run, plus tool-specific directories like `megapy_*` (200-500M). These are not caught by Step 2e (<24h cutoff) — use Step 2ec for media artifacts with a 1h grace period. Check with `du -sh /tmp` when /tmp appears oversized but 2e/2ea/2eb found nothing.
 - **🔴 Pip build artifacts in /tmp are NOT caught by 2e/2ea/2eb/2ec.** Failed or interrupted `pip install` runs leave `pip-unpack-*` directories (extracted wheels, single dirs can be 2G+), `pip-build-env-*` (isolated build environments), and `pip-metadata-*` (metadata extraction temp dirs) with random suffixes. These are directories — not caught by 2e (files-only), not project clones — not caught by 2eb, not cache dirs — not caught by 2ea, not media — not caught by 2ec. Observed: 2.2G in one `pip-unpack-*` dir + 7M in `pip-build-env-*` (2026-05-24). Use Step 2ed with a 10-min grace period. When `/tmp` is oversized but all other /tmp steps found nothing, run `ls /tmp/ | grep '^pip-'` to check for these.
-- **🔴 Pipeline-specific data-processing residue in /tmp is NOT caught by any step.** Data extraction/scraping pipelines (Instagram transcripts, video frame extraction, audio analysis) leave behind named directories like `ig_lot4`, `ig_transcripts_lot3`, `ig_slides`, `reels_transcripts` that contain JSON/CSV/media files. VPS migration staging (`vps-backup-staging/` — 9.1G, 2026-05-24) and data dumps (`minio.tar.gz` — 7G) fall in the same category. These are NOT project clones (no `.git`/`package.json`), NOT cache dirs (not `camoufox-*`/`node-compile-cache`), NOT media artifacts (they're dirs, not bare files), and NOT pip artifacts. No universal pattern exists — when `/tmp` is oversized but all 2e–2ed steps found nothing, run `du -sh /tmp/*/ | sort -rh` and inspect remaining dirs. Safe to delete with `shutil.rmtree()` if they're >1h old and clearly pipeline output. Step 2p now scans one level deep for backup archives inside such dirs.
+- **🔴 Pipeline-specific data-processing residue in /tmp is NOT caught by any step.** Data extraction/scraping pipelines (Instagram transcripts, video frame extraction, audio analysis) leave behind named directories like `ig_lot4`, `ig_transcripts_lot3`, `ig_slides`, `reels_transcripts` that contain JSON/CSV/media files. These are NOT project clones (no `.git`/`package.json`), NOT cache dirs (not `camoufox-*`/`node-compile-cache`), NOT media artifacts (they're dirs, not bare files), and NOT pip artifacts. Observed: 190M across 5 directories (2026-05-24). No universal pattern exists — when `/tmp` is oversized but all 2e–2ed steps found nothing, run `du -sh /tmp/*/ | sort -rh` and inspect remaining dirs. Safe to delete with `shutil.rmtree()` if they're >1h old and clearly pipeline output.
 - **🔴 /tmp project clones are NOT caught by Step 2e.** Step 2e only removes orphaned files >24h, but kanban worker workspaces in `/tmp/` are full git clones (`.git/`, `node_modules/`, etc.) that are directories, not individual files. They survive 2e indefinitely. In the 2026-05-22 incident, `/tmp/` held 25G of stale workspace clones (shop ×12, music-library ×3, edgee-lab ×3, etc.) — the largest single disk consumer. To clean these: identify project dirs (those with `.git/` or `package.json`), verify they're not the active workspace, then remove. Keep an allowlist for the current working project(s).
 - **`find /root -type f -size +100M` can time out on busy or large filesystems.** Give it at least 60s timeout; if it still times out, skip it — rely on `du -sh` of known directories instead. The escape hatch doesn't mention this but the same logic applies: I/O starvation at high usage makes filesystem walks slow.
 - **`du -sh` on workspace directories can time out even at moderate usage.** The escape hatch in Step 1 says to skip `du` only at ≥95%, but `du -sh /root/.hermes/kanban/boards/*/workspaces` timed out at 180s on a 79%-full disk with 38 shop workspaces (2026-05-23). The workspace count script (`ws-count.py`) is fast — prefer it. If `du` times out, skip it and rely on `ws-count.py` + `find /root -type f -size +100M` to identify large consumers.

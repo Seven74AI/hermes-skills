@@ -38,9 +38,17 @@ Set to 0 to replay from the beginning, or to the current max event id to start f
 hermes kanban --board <board> notify-subscribe <task_id> \
   --platform telegram --chat-id 1811944606
 
+# --chat-id also accepts display names (e.g. "Lieutner") resolved from send_message targets
+hermes kanban --board <board> notify-subscribe <task_id> \
+  --platform telegram --chat-id Lieutner
+
 # With Telegram topic
 hermes kanban --board <board> notify-subscribe <task_id> \
   --platform telegram --chat-id -1001234567890 --thread-id 17585
+
+# Telegram DM by display name (resolves to chat_id automatically)
+hermes kanban --board <board> notify-subscribe <task_id> \
+  --platform telegram --chat-id "Lieutner 7D"
 
 # Discord
 hermes kanban --board <board> notify-subscribe <task_id> \

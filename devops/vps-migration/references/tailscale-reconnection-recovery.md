@@ -1,43 +1,39 @@
-# Tailscale Reconnection Recovery (May 2026)
+# Tailscale Reconnection After Accidental Node Deletion
 
-## What happened
+## What happened (2026-05-24)
 
-The VPS node (`vmi3304846`) was removed from the Tailscale admin console BEFORE the backup was complete. This killed the Tailscale connection immediately — ping and SSH to the MacBook (100.112.19.124) both failed with 100% packet loss and "Connection refused".
+During VPS migration prep, the old VPS node `vmi3304846` was deleted from the
+Tailscale admin console BEFORE the backup script ran. This killed the VPS's
+Tailscale identity immediately — the daemon was still running but `Online: false`.
 
-## Root cause
-
-Removing a node from the admin console revokes its machine key. The `tailscaled` daemon stays `active` but the node shows `Online: False` in `tailscale status --json`. The `tailscale up` command without `--reset` also fails because the existing identity is invalid.
-
-## Recovery procedure
+## Recovery steps
 
 ```bash
-# 1. Reset Tailscale identity (force re-auth)
+# 1. Force re-auth (generates login URL)
 tailscale up --accept-routes --ssh --reset
+# Output: "To authenticate, visit: https://login.tailscale.com/a/..."
 
-# 2. This prints an auth URL — open it in any browser
-#    https://login.tailscale.com/a/<code>
+# 2. Open URL in browser, auth with the tailnet account (sevenai@)
 
-# 3. After authenticating, verify
+# 3. Verify
 tailscale status
-# Should show active with a temp hostname like vmi3304846-1
-
-# 4. Now the backup script works again
-./backup-to-macbook.sh 100.112.19.124 marvinlamart
+# VPS reappears with a NEW IP (100.127.242.119 vs old 100.98.177.76)
+# Hostname auto-assigned if old one was deleted (gets temp name or original)
 ```
 
-## Side effects
+## Key takeaways
 
-- The VPS gets a new Tailscale IP (changed from 100.98.177.76 to 100.127.242.119)
-- The hostname gets a `-1` suffix unless manually renamed in the admin console
-- The temporary hostname doesn't matter — the old VPS is about to be destroyed
-- On the NEW VPS, `vmi3304846` is already free (node was deleted), so `--hostname=vmi3304846` works
+- **`tailscale up --reset`** is needed when the node was fully deleted (not just
+  disconnected). Without `--reset`, it tries to reuse the old identity which no
+  longer exists.
+- **`tailscale login`** alone may timeout on headless machines — use `tailscale up`
+  which outputs the auth URL.
+- After re-auth, the VPS may get a different Tailscale IP. SSH hosts checking
+  with `StrictHostKeyChecking` will need the new key accepted.
+- The MacBook connectivity survives because the MacBook re-discovers the VPS
+  via DERP relay once it reconnects.
 
 ## Prevention
 
-**DO NOT delete the old node from Tailscale admin console until AFTER the backup is confirmed on the MacBook.**
-
-Sequence:
-1. Run `backup-to-macbook.sh` → verify files on MacBook
-2. THEN delete old node from admin console
-3. THEN destroy old VPS
-4. Then run `setup-new-vps.sh` on new VPS (reuses `vmi3304846`)
+**Never delete the old Tailscale node before running the backup.** The correct
+sequence is: backup → delete node → destroy VPS → provision new.

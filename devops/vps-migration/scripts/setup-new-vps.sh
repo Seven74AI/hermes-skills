@@ -8,14 +8,6 @@
 #
 # IMPORTANT: Before running, go to Tailscale admin console and remove
 # the old "vmi3304846" node so the hostname can be reused.
-#
-# PRE-FLIGHT:
-#   1. The script will print a Tailscale auth URL — open it in your browser
-#   2. Phase 2 needs SSH to your MacBook — either:
-#      a) Generate a key on the new VPS: ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-#         Then add ~/.ssh/id_ed25519.pub to MacBook authorized_keys
-#      b) Or enable password auth on MacBook temporarily
-#   3. MacBook must be online with Tailscale running
 
 set -euo pipefail
 
@@ -184,24 +176,12 @@ source venv/bin/activate
 pip install -e . -q 2>&1 | tail -3
 deactivate
 
-# IMPORTANT: Use absolute path — 'hermes' is NOT on system PATH after deactivate
 log "Restoring Hermes from backup..."
-/usr/local/lib/hermes-agent/venv/bin/hermes import "$STAGING/hermes-final-backup.zip"
+hermes import "$STAGING/hermes-final-backup.zip"
 
-# Cron scripts (guard against empty dir — set -e kills script on failed glob)
+# Cron scripts
 log "Restoring cron scripts..."
-if ls "$STAGING/hermes-scripts/"* >/dev/null 2>&1; then
-    cp -r "$STAGING/hermes-scripts/"* /root/.hermes/scripts/
-fi
-
-# Root-level configs (xurl, git, gh auth, ssh keys)
-log "Restoring root-level configs..."
-cp /root/.xurl /root/.xurl.bak 2>/dev/null || true
-cp "$STAGING/root-config/.xurl" /root/ 2>/dev/null || true
-cp "$STAGING/root-config/.gitconfig" /root/ 2>/dev/null || true
-cp -r "$STAGING/root-config/gh/" /root/.config/ 2>/dev/null || true
-cp -r "$STAGING/root-config/.ssh/" /root/ 2>/dev/null || true
-chmod 600 /root/.ssh/id_* 2>/dev/null || true
+cp -r "$STAGING/hermes-scripts/"* /root/.hermes/scripts/ 2>/dev/null || true
 
 # Systemd units
 log "Installing systemd units..."
