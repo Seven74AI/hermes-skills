@@ -233,7 +233,17 @@ When the user asks "qu'est-ce qu'on a sur X ?":
 3. Present findings grouped by confidence level
 4. If not found, offer to research and add
 
+## User Preferences
+
+- **No compromises.** Don't skip steps in the pipeline for convenience. If the skill says diarization is required for multi-speaker content, do it. If it says large-v3 is mandatory, use it. The user will wait.
+- **Skill updates over memory updates.** When knowledge is discovered (fixes, pitfalls, API changes, new commands), update the skill first, not just memory. Memory captures state; skills capture how-to.
+- **Visibility.** The user blocks commands they haven't approved (curl pipes, mass installs). Show what you're about to do before doing it for non-trivial operations.
+
 ## Pitfalls
+
+### /p/ vs /reel/ URL — always verify before running pipeline
+
+Instagram `/p/` URLs are image carousels; `/reel/` URLs are videos. The pipelines are completely different. Users sometimes say "reel" while pasting a `/p/` URL. **Always confirm the URL type** before running. Running the wrong pipeline wastes time and produces unusable output. If ambiguous, ask: "C'est bien un Reel vidéo ou un post image ?"
 
 ### marker-pdf cascade downgrades critical hermes-agent dependencies
 
@@ -276,3 +286,4 @@ banner at the top of `youtube-note-template.md`.
 - For free web search backends (DuckDuckGo, Brave, SearXNG), see `references/web-providers.md`
 - For researcher profile setup (kanban worker), see `references/researcher-profile-setup.md`
 - **After VPS migration or fresh install:** run `references/fresh-install-checklist.md` to verify all pipeline deps, services, and configs survived the move
+- **Skill sync to GitHub:** custom skills go to `Seven74AI/hermes-skills` via `/root/.hermes/scripts/sync-skills-to-github.py` (cron `4eee7fb0b484`, daily 3:30 AM). To add a new custom category: edit `CUSTOM_CATEGORIES` set + add bundled exclusions to `BUNDLED_SKILLS`.

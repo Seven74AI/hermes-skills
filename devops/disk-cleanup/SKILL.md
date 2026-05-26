@@ -333,7 +333,7 @@ python3 /tmp/cleanup-tmp-media-artifacts.py
 
 Steps 2e/2ea/2eb/2ec cover orphaned files, cache dirs, project clones, and media artifacts. But `/tmp/` also accumulates pip build artifacts from interrupted or failed `pip install` runs: `pip-unpack-*` directories (extracted wheels — a single dir can be 2G+), `pip-build-env-*` (isolated build environments, ~10M each), and `pip-metadata-*` (metadata extraction temp dirs). These use random suffixes, so hundreds can pile up if pip is used heavily. They match NO existing heuristic — they're directories, not project clones, not cache dirs, not media. Fully regeneratable by re-running pip. Use a 10-min grace period (pip builds are fast; anything older than 10 min is abandoned).
 
-Observed accumulation: 2.2G in a single `pip-unpack-*` dir (2026-05-24), plus dozens of smaller `pip-build-env-*` (7M) and `pip-metadata-*` dirs.
+Observed accumulation: 7.4G across 30+ `pip-unpack-*` dirs — largest individuals at 2.7G, 1.5G, 1.5G, 1.4G, 344M (2026-05-26), plus dozens of empty `pip-metadata-*`/`pip-build-env-*` shells.
 
 ```bash
 cat > /tmp/cleanup-pip-artifacts.py << 'PYEOF'
@@ -692,7 +692,7 @@ Observed accumulation (2026-05-22): 306M per snapshot (state.db grows with sessi
 
 ### 2o. System-level regeneratable caches (safe — reinstalled on next use)
 
-`/root/.cache/` accumulates framework and package manager caches at the system level (distinct from per-profile caches in 2j). These are all safe to purge — regenerated on next build/install/download. Observed accumulation: 1.6G across huggingface (1.2G), uv (442M), prisma (21M), typescript (9M) — 2026-05-24.
+`/root/.cache/` accumulates framework and package manager caches at the system level (distinct from per-profile caches in 2j). These are all safe to purge — regenerated on next build/install/download. Observed accumulation: 12.1G across huggingface (11.9G), uv (281M) — 2026-05-26. huggingface alone can reach 10G+ after heavy model downloads.
 
 ```bash
 cat > /tmp/cleanup-system-caches.py << 'PYEOF'
