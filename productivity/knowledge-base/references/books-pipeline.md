@@ -50,11 +50,17 @@ cat /tmp/marker_out/file/file.md | head -20000  # first 20K chars
 Books are 50K-150K words — can't fit in a single note. Strategy:
 
 1. **Extract full text** → `/tmp/book_text.txt`
-2. **Identify structure** — chapter boundaries via `grep -n "^Chapter\|^CHAPITRE\|^[0-9]+\." /tmp/book_text.txt`
-3. **Per-chapter summary** — for each chapter, extract first 2K chars + last 500 chars + any bolded/emphasized text. Feed to LLM summarizer.
-4. **Key claims extraction** — look for declarative statements with citations or statistical claims
-5. **Fact-check top claims** via `web_search` (see `references/fact-check-workflow.md`)
-6. **Save structured note** in `Knowledge base/`
+2. **Archive to MinIO** (BEFORE note creation):
+   ```bash
+   mc cp /tmp/book_text.txt minio/knowledge-base/books/<slug>.txt
+   mc cp book.epub minio/knowledge-base/books/<slug>.epub  # or .pdf
+   ```
+   See `references/minio-storage.md` for MinIO setup.
+3. **Identify structure** — chapter boundaries via `grep -n "^Chapter\|^CHAPITRE\|^[0-9]+\." /tmp/book_text.txt`
+4. **Per-chapter summary** — for each chapter, extract first 2K chars + last 500 chars + any bolded/emphasized text. Feed to LLM summarizer.
+5. **Key claims extraction** — look for declarative statements with citations or statistical claims
+6. **Fact-check top claims** via `web_search` (see `references/fact-check-workflow.md`)
+7. **Save structured note** in `Knowledge base/` with `source_file` in frontmatter pointing to the MinIO archive
 
 ## Note Template for Books
 
@@ -64,6 +70,7 @@ topic: [topic1, topic2]
 date: YYYY-MM-DD
 source: <Book: Title by Author, Year, Publisher>
 source_url: <optional ISBN or URL>
+source_file: <MinIO URL — http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub>
 confidence: varies per claim — see individual ratings
 tags: [tag1, tag2, tag3]
 format: book

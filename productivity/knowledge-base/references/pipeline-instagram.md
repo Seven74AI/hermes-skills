@@ -126,6 +126,9 @@ yt-dlp --cookies /tmp/ig_cookies.txt \
 
 #### Then diarize + transcribe (full pipeline, same as YouTube)
 
+**Follow Global Video Pipeline Rules from main SKILL.md:** `background=true, notify_on_complete=true`
++ `process(wait, timeout=7200)` for ALL pyannote and whisper calls. No foreground. No heartbeats.
+
 **For multi-speaker videos only.** For monologues/solo Reels (single person talking to camera), skip diarization and go directly to transcription with `speaker: 'SPEAKER_00'` for all segments.
 
 ```bash

@@ -1,7 +1,7 @@
 ---
 name: hermes-journal
 description: "Weekly Hermes operations journal: extract infrastructure + debugging lessons from the past week's sessions and write them to a Notion database as a searchable knowledge base."
-version: 1.0.1
+version: 1.1.0
 platforms: [linux]
 prerequisites:
   env_vars: [NOTION_API_KEY]
@@ -57,6 +57,17 @@ Use `2025-09-03` for read-only operations (GET, search, query).
 - **🟡 Important**: Significantly improves reliability or efficiency
 - **🟢 Nice to Know**: Useful context, not essential
 
+## Daily Reports (current setup — May 2026)
+
+Two complementary cron jobs run every morning:
+
+| Job | Time | Deliver | Scope |
+|---|---|---|---|
+| **Morning Report** (`82a083aaa98e`) | 06:00 | Discord `#daily-recap` | General activity, sessions, decisions, alerts, wins |
+| **Daily Journal** (`b259b8f52946`) | 06:05 | Local + Discord `#daily-recap` | Ops-specific durable knowledge → Notion |
+
+Both write to the **Hermes Ops Journal** Notion DB. Morning Report extracts blog-worthy entries (technical insights, novel workflows, interesting bugs) from general activity. Daily Journal captures ops-specific lessons (infrastructure, debugging, config).
+
 ## Weekly Cron Job
 
 Assign to a dedicated profile (`hermes-chronicler`). Run every Sunday at 9h Paris.
@@ -105,6 +116,7 @@ For project-level architecture decisions (not infrastructure lessons), use ADRs 
 
 ## Pitfalls
 
+- **CRITICAL: Integration sharing — writes silently fail.** The Notion integration MUST be explicitly shared with the Hermes Ops Journal database, or ALL writes will silently 404. The cron job claims "wrote X entries to Notion" but nothing was created. This went undetected for 4+ days (May 22-26). **Verify:** in Notion, open the DB → `...` → `Connect to` → your integration name. After sharing, test with a manual page creation. Also verify after re-connecting or re-authorizing the integration.
 - **Don't mix journal entries with ADRs**: Journal = how to run Hermes. ADR = why we made a project decision.
 - **Don't over-capture**: Environment-specific issues (missing .env, wrong PATH) are not durable knowledge.
 - **Internal integrations can't create workspace pages**: Create the journal under an existing shared page.
@@ -112,3 +124,4 @@ For project-level architecture decisions (not infrastructure lessons), use ADRs 
 - **Cron job must use the correct profile**: The journal cron job requires the `hermes-chronicler` profile with NOTION_API_KEY in its `.env`. Without this, curl calls to Notion will 401.
 - **Security scanner blocks `curl | python3` pipes**: When posting to Notion and checking the response, do NOT use `curl ... | python3 -c ...` — the Hermes security scanner rejects it. Instead, write curl output to a file with `-o /tmp/notion_resp.json`, then run python3 on the file separately. The `references/notion-api-template.md` file shows both safe patterns.
 - **Heredocs may be blocked by the security scanner — not just for large payloads**: Both shell heredocs (`cat > file << 'EOF'`) and Python heredocs (`python3 << 'PYEOF'`) trigger security blocks when the content inside matches approval patterns (e.g., systemctl, service management, destructive commands, "script execution via heredoc"). Even benign JSON payloads mentioning these terms in entry body text get blocked. **Always use `python3 -c "..."` with `json.dump()` for Notion payloads** — the inline `-c` form passes the scanner regardless of content. See the Python snippet in `references/notion-api-template.md`.
+- **Backfill missed entries**: When a report was missing Notion writes (e.g., Morning Report before the NOTION section was added), review past output files for blog-worthy entries and backfill them. Criteria: reusable technical insight, novel workflow, architectural decision with rationale, interesting bug + fix, systemic improvement. Skip routine task progress. Write each as a self-contained page under an accessible parent if the DB isn't shared.

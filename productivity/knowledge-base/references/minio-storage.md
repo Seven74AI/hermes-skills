@@ -8,8 +8,8 @@ so Obsidian notes can reference them via stable URLs.
 ```
 Obsidian Vault (Git-synced)          MinIO (local, Tailscale-accessible)
 ├── Knowledge base/                    └── knowledge-base/
-│   ├── sante/note.md                       ├── livres/
-│   └── livres/note.md                      │   └── parasites-humbert.epub
+│   ├── sante/note.md                       ├── books/
+│   └── books/note.md                      │   └── parasites-humbert.epub
 │       └── frontmatter:                    ├── reels/
 │           source_file: https://...        │   └── DR-rVE1ggZH.mp4
 │                                           └── articles/
@@ -21,16 +21,16 @@ Obsidian Vault (Git-synced)          MinIO (local, Tailscale-accessible)
 ```bash
 # Upload a file to MinIO
 mc cp /tmp/book_parasites_full.txt \
-  minio/knowledge-base/livres/parasites-humbert.txt
+  minio/knowledge-base/books/parasites-humbert.txt
 
 # Get public URL (Tailscale IP)
-echo "https://<minio-host>:9000/knowledge-base/livres/parasites-humbert.txt"
+echo "https://<minio-host>:9000/knowledge-base/books/parasites-humbert.txt"
 ```
 
 ## Frontmatter convention
 
 ```yaml
-source_file: https://vmi3304846:9000/knowledge-base/livres/parasites-humbert.epub
+source_file: https://vmi3304846:9000/knowledge-base/books/parasites-humbert.epub
 ```
 
 The `source_file` field is a permanent link, unlike `/tmp/` paths which may be cleaned up.

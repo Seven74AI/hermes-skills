@@ -15,29 +15,34 @@ From researcher profile env:
 ```bash
 source /root/.hermes/profiles/researcher/.env
 mc alias set minio http://localhost:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
-mc cp /tmp/book.epub "minio/$MINIO_BUCKET/epubs/<slug>.epub"
+mc cp /tmp/book.epub "minio/$MINIO_BUCKET/books/<slug>.epub"
+mc cp /tmp/book_full.txt "minio/$MINIO_BUCKET/books/<slug>.txt"
 ```
 
 ## Public URL for notes
 
 Once uploaded, the file is accessible at:
 ```
-http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/epubs/<slug>.epub
+http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.txt
 ```
 
 Include this in the note frontmatter:
 ```yaml
-source_file: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/epubs/<slug>.epub
+source_file: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
 ```
 
 ## Folder mapping
 
 | File type | MinIO path | Frontmatter field |
 |-----------|-----------|-------------------|
-| ePub | `epubs/<slug>.epub` | `source_file` |
-| PDF | `pdfs/<slug>.pdf` | `source_file` |
-| Video | `videos/<slug>.mp4` | `source_file` |
-| Audio | `audio/<slug>.mp3` | `source_file` |
+| Books (ePub/PDF) | `books/<slug>.<ext>` | `source_file` |
+| Videos (YouTube) | `videos/<slug>.webm` | `source_file` |
+| Videos (Reels) | `reels/<slug>.mp4` | `source_file` |
+| Transcripts | `videos/<slug>.json` | `source_file` |
+| Articles/Threads | `articles/<slug>.txt` | `source_file` |
+
+All book files (original ePub/PDF + extracted full text) go under `books/` with the same slug.
 
 ## Notes
 
