@@ -268,6 +268,8 @@ done
 
 **Never guess task body content when the user is about to supply it.** If the user says "add a task for X" and X involves a URL, file, or data the user hasn't provided yet, do NOT fill the task body with assumed content from context. Wait for the user to give you the actual source. Creating a task with guessed content wastes a task slot (the dispatcher picks it up immediately) and forces an archive+recreate cycle. **Real case (2026-05-25):** user said "on va lancer un ticket pour ajouter un reel" — agent created a task for the Rich Sol Foods reel from earlier KB context instead of waiting for the URL the user was about to send. Task archived 30s later and recreated with the correct URL.
 
+**Never say "cause probable" — user demands definitive root cause.** When investigating failures (corruption, crashes, missing data), do not present speculative conclusions. Either prove the cause with evidence (logs, file timestamps, integrity checks, code traces) or state what remains unknown. "Probable" is not acceptable. **Real case (2026-05-27):** agent said "Cause probable : une notification malformée" — user rejected this and demanded "une cause sûre." Full investigation revealed the real cause (WAL corruption from a 2-day-old crash). The notification error was a red herring.
+
 **Bundling independent lanes into one card.** If the user asks for two independent outcomes, create two cards. Example: "fix blockers and check model variants" is not one fixer task; create a fixer/engineer card for the fixes and an explorer/researcher card for the variant check, then optionally gate review on both.
 
 **Over-linking because of wording.** "Finally check X" may still be parallel with implementation if X is static config, docs, or source discovery. Link it after implementation only when the check depends on the implementation result.
@@ -317,6 +319,10 @@ hermes kanban --board <board> reclaim <id>
 **Real case (2026-05-20):** planner on the-swarm and coder on videogame-lab both timed out at 120s despite profile `max_runtime_seconds: 600`. Root cause: the per-task DB column was `max_runtime_seconds = 120` and took precedence. 717 cumulative timeout runs across 3 tasks, all invisible to both watchdogs until `check-crash-loops.py` was upgraded with Phase 2 detection.
 
 **Dispatcher DB corruption — silent dispatch failure.** If the gateway log shows `kanban dispatcher: board default database /root/.hermes/kanban.db is not a valid SQLite database`, the dispatcher has disabled itself. No new tasks are dispatched; watchdogs stop. Board DBs and `hermes kanban boards list` still work normally. The dispatcher DB (`/root/.hermes/kanban.db`) is a coordination cache — all real data is in per-board DBs. Fix: `rm /root/.hermes/kanban.db && hermes gateway restart`. Full diagnosis and recovery in `references/kanban-db-architecture.md`.
+
+**WAL mode → DELETE migration (corruption prevention).** SQLite WAL mode is vulnerable to checkpoint corruption on unclean shutdown. Hermes kanban DBs now use DELETE journal mode + FULL synchronous (patched in `kanban_db.py` May 2026). If you see WAL mode on a kanban DB, convert it and restart gateway. Full rationale and procedure in `references/kanban-db-corruption-recovery.md`.
+
+**Dispatcher DB corruption — silent dispatch failure.** If the gateway log shows `kanban dispatcher: board default database /root/.hermes/kanban.db is not a valid SQLite database`, the dispatcher has disabled itself.
 
 **Budget exhaustion on migration/refactoring tasks.** When a task asks a worker to apply a migration AND re-verify the full test suite inline, the worker exhausts its iteration budget on test output (e.g. 90 iterations burned on 283 test logs in 95s). Fix: split verification from application. Reference prior benchmark results in the task body and explicitly tell workers to SKIP tests — CI will catch regressions. Seen on shop pnpm migration (2026-05-18): task blocked at 90/90 after 20min because it ran `pnpm test` inline despite a prior benchmark proving 283/283 pass.
 
@@ -540,6 +546,8 @@ The full flag set: `--assignee`, `--priority`, `--body`, `--parent` (repeatable)
 
 When the user asks "what's working?" or you suspect silent failures, follow the 5-step health check in `references/kanban-health-check.md`: boards overview → list running → show event history → verify worker PIDs → check diagnostics. The quick one-liner at the bottom of that reference produces a full table of running tasks × worker PID status across all boards in one shot.
 
+**⚠️ Always start with Step 0 (DB integrity check) before any health audit. A corrupted dispatcher DB silently disables dispatch and can lose all tasks when the gateway auto-rebuilds it empty.** Full corruption investigation and recovery procedure in `references/kanban-db-corruption-recovery.md`.
+
 **Web dashboard:** `hermes dashboard --host 0.0.0.0 --insecure --skip-build` (port 9119). See `references/dashboard.md` for full setup. The dashboard provides a visual board view with task details, recovery actions, and diagnostics — use it when the user wants to "see" the boards rather than CLI output.
 
 **CI-gated PR workflow:** For repos with GitHub Actions CI, use the label-based CI-watchdog pattern (`references/ci-watchdog.md`) instead of PR URLs in comments. Workers create PRs with `kanban:TASK_ID` labels; a cron watchdog merges green PRs. Avoids the 24h `active_pr` guard.
@@ -552,9 +560,16 @@ When the user asks "what's working?" or you suspect silent failures, follow the 
 
 Instead of waiting for a human to notice stuck tasks in the dashboard, set up a **cron-based block watchdog** that scans all boards every 5 minutes, identifies tasks blocked by technical failures (crashes, OOM, iteration budget exhausted), and unblocks them automatically. Review-required and dependency-gate blocks are left alone. Uses a two-scanner wrapper (`~/.hermes/scripts/watchdog-all.py`) that runs `check-blocked-tasks.py` (blocked tasks, 30s timeout, always exits 0) + `check-crash-loops.py` (running tasks with ≥5 consecutive failures — invisible to the block scanner). An LLM agent classifies findings and acts. Full setup — scripts, cron config, classification rules, crash-loop auto-block — in `references/block-watchdog.md`.
 
-### Pre-Spawn Health Watchdog
+**Pre-Spawn Health Watchdog**
 
 A no-agent watchdog that scans all boards for tasks with dispatch-blocking issues
 (NO-ASSIGNEE, PR-URL-COMMENTS, PR-URL-IN-BODY, STUCK-SCHEDULED, BODY-IS-NULL, NO-ASSIGNEE-BLOCKED).
 Silent when clean. Full schema and setup in `references/pre-spawn-health-watchdog.md`.
 Script: `~/.hermes/scripts/pre-spawn-watchdog.py`.
+
+**Kanban DB Integrity Watchdog**
+
+A no-agent watchdog that runs `PRAGMA integrity_check` on all kanban DBs every hour.
+Silent when clean (exit 0). On corruption, backs up the corrupt DB and alerts via cron delivery.
+Cron: `b568a8418cf3` (schedule: `0 * * * *`). Script: `scripts/kanban-integrity-watchdog.py`.
+Full corruption recovery procedure: `references/kanban-db-corruption-recovery.md`.

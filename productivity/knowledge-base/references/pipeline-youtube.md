@@ -160,59 +160,47 @@ print(f"Diarization done: {len(segments)} segments")
 
 ### 5b. Transcription (faster-whisper, étape 2/2 — MANDATORY: background+wait)
 
-Appliquer la transcription sur chaque segment diarisé, en 16kHz.
-
-```python
-# Script Python : transcribe.py
-import json
-from faster_whisper import WhisperModel
-
-model = WhisperModel("large-v3", device="cpu", compute_type="int8")  # recommandé pour français multi-locuteurs. Voir references/whisper-model-comparison.md pour small/medium/large.
-
-with open("/tmp/yt_VIDEO_ID_diarization.json") as f:
-    diarization = json.load(f)
-
-# Pour chaque segment pyannote, transcrire l'audio correspondant
-# Note: faster-whisper accepte un fichier audio + timestamps VAD
-# Alternative: segmenter l'audio puis transcrire chaque segment
-
-segments, info = model.transcribe(
-    "/tmp/yt_VIDEO_ID_16k.wav",
-    language="fr",
-    vad_filter=True,
-    word_timestamps=True
-)
-
-# Fusionner segments whisper avec étiquettes pyannote
-transcript_segments = []
-for seg in segments:
-    # Trouver le speaker pyannote dont la fenêtre englobe ce segment
-    speaker = "Unknown"
-    seg_mid = (seg.start + seg.end) / 2
-    for dia in diarization["segments"]:
-        if dia["start"] <= seg_mid <= dia["end"]:
-            speaker = dia["speaker"]
-            break
-    transcript_segments.append({
-        "start": round(seg.start, 2),
-        "end": round(seg.end, 2),
-        "speaker": speaker,
-        "text": seg.text.strip()
-    })
-
-with open("/tmp/yt_SLUG_transcript.json", "w") as f:
-    json.dump({"segments": transcript_segments}, f, indent=2, ensure_ascii=False)
-
-print(f"Transcription done: {len(transcript_segments)} segments")
-```
-
-**Lancement background + wait :**
+**Use the CANONICAL script** `scripts/transcribe.py` from this skill. Do NOT generate ad-hoc scripts.
 
 ```bash
-terminal("python3 /scripts/diarize.py && python3 /scripts/transcribe.py",
-         background=True, notify_on_complete=True)
-process(action="wait", timeout=7200)
-read_file("/tmp/yt_SLUG_transcript.json", limit=10)  # vérifier
+# Copy canonical script to /tmp/ and run
+cp "$SKILL_DIR/scripts/transcribe.py" /tmp/transcribe.py
+
+terminal(
+    "python3 /tmp/transcribe.py /tmp/yt_VIDEO_ID_16k.wav /tmp/yt_SLUG_transcript.json DURATION_SECS",
+    background=True, notify_on_complete=True
+)
+process(action="wait", timeout=28800)  # 8h for long videos
+read_file("/tmp/yt_SLUG_transcript.json", limit=10)  # verify
+```
+
+The script uses `large-v3` int8 on CPU with progress every 5 minutes.
+
+### 5b-bis. Fusion diarization + transcription
+
+Merge whisper segments with pyannote speaker labels:
+
+```python
+import json
+
+with open("/tmp/yt_VIDEO_ID_diarization.json") as f:
+    diar = json.load(f)
+with open("/tmp/yt_SLUG_transcript.json") as f:
+    trans = json.load(f)
+
+for seg in trans["segments"]:
+    seg_mid = (seg["start"] + seg["end"]) / 2
+    for dia in diar["segments"]:
+        if dia["start"] <= seg_mid <= dia["end"]:
+            seg["speaker"] = dia["speaker"]
+            break
+    if "speaker" not in seg:
+        seg["speaker"] = "Unknown"
+
+with open("/tmp/yt_SLUG_transcript.json", "w") as f:
+    json.dump(trans, f, indent=2, ensure_ascii=False)
+
+print(f"Merged: {len(trans['segments'])} segments with speaker labels")
 ```
 
 **Note RAM :** pyannote et whisper tournent séquentiellement (pas en même temps).
@@ -355,6 +343,17 @@ rm /tmp/yt_SLUG.webm /tmp/yt_SLUG.mp3 /tmp/yt_SLUG_transcript.json
 
 ## Anti-pitfalls
 
+- **⛔ STALE AD-HOC SCRIPTS — model drift:** Workers generate transcription scripts in `/tmp/` (e.g. `transcribe_v1.py`, `transcribe_v2.py`). These are CACHED from the session that created them and may use the WRONG model (small, base, tiny). When large-v3 was mandated, old workers kept spawning stale scripts. **Before ANY transcription, check the script's model:** `grep WhisperModel /tmp/transcribe_*.py`. If it says `small`, `base`, `medium`, or `tiny` → DELETE the script and use the CANONICAL one from this skill (`scripts/transcribe.py`). Do NOT generate ad-hoc scripts — always use the canonical one. Real case (2026-05-27): worker spawned `transcribe_v1.py` (small) and `transcribe_v2.py` (base/tiny) for 5h, wasting all CPU time, because these scripts predated the large-v3 mandate.
+- **⛔ DOUBLE-SPAWN — same file transcribed twice:** Workers may spawn 2+ transcription processes on the SAME audio file (e.g. small AND base in parallel). This wastes RAM (2× model loaded = 6-7 GB) and CPU (180%+) for zero gain. Check `ps aux | grep transcribe` before launching — if the same file appears twice, kill the duplicate immediately. Single process per file, always.
+- **⛔ WORKER MUST USE SKILL SCRIPTS, NOT GENERATE THEIRS:** The canonical transcription script is at `scripts/transcribe.py` inside this skill. Workers load the skill via `--skills productivity/knowledge-base` — the script is at `<skill_dir>/scripts/transcribe.py`. Never write an ad-hoc script to `/tmp/`; copy and invoke the canonical one. If the worker's session predates the script, the worker MUST check for its existence and use it.
+- **Worker ignores model mandate in task body.** The worker (an LLM agent) reads the
+  task body but may default to a smaller/faster model despite `large-v3` being
+  specified. The body MUST use imperative, unambiguous language:
+  `⚠️ MODÈLE IMPÉRATIF : faster-whisper large-v3 int8 (CPU) UNIQUEMENT. INTERDICTION
+  d'utiliser small, medium, base, ou tiny.` Vague language like "large-v3 int8 (CPU)"
+  alone is insufficient — the worker may still choose small. Real case (2026-05-27):
+  worker spawned 5 runs all using small despite the body saying large-v3; only
+  after adding `IMPÉRATIF` + `INTERDICTION` did it comply.
 - **n-sig challenge:** Sur IP datacenter, yt-dlp échoue avec "n challenge solving failed". Le flag `--js-runtimes node` est OBLIGATOIRE (Node ≥ v20 requis). Sans lui, yt-dlp ne voit que les images storyboard.
 - **Bot detection:** Si yt-dlp retourne "Sign in to confirm you're not a bot", les cookies sont expirés. L'utilisateur doit les ré-exporter depuis son navigateur.
 - **Format non trouvé:** Si VP9 720p non dispo, fallback `-f "best[height<=720]"` sur le meilleur format natif.
@@ -368,7 +367,7 @@ rm /tmp/yt_SLUG.webm /tmp/yt_SLUG.mp3 /tmp/yt_SLUG_transcript.json
 - **Identification locuteur — limites:** L'heuristique basée sur la description/titre/channel est approximative. Ne pas forcer un mapping si ambigu. `"Unknown"` est préférable à une identification erronée.
 - **Chapitres vides:** YouTube peut lister des chapitres sans titre. Les ignorer et fallback NLP.
 - **Vidéo privée/non listée:** yt-dlp échoue. Le worker doit catcher l'erreur et notifier.
-- **Diarization — premier run très lent:** Le premier appel à `Pipeline.from_pretrained()` + `pipeline(audio)` déclenche la compilation JIT PyTorch et le téléchargement des poids HF + le téléchargement de `large-v3` (3 Go). Comptez **1.5-2× temps réel à 16kHz** (vs ~0.1× en warm). Le second run sera conforme aux benchmarks. S'applique à chaque nouvelle session worker (pas de cache entre sessions cron).
+- **⛔ TICKET BODY OVERRIDES SKILL — model mismatch:** Workers follow the ticket BODY, not the skill. If a ticket says "small int8", the worker WILL use small even though the skill mandates large-v3. When the skill changes (e.g., model upgrade from small → large-v3), ALL existing tickets MUST have their bodies updated: `UPDATE tasks SET body=REPLACE(body, 'small int8', 'large-v3 int8') WHERE body LIKE '%small%'`. Then reclaim the task to restart with the correct model. Real case (2026-05-27): ticket `t_38f28120` created May 26 with "small int8" was restored from DB backup — worker spawned 3 times with small, wasting hours, until the DB body was patched.
 - **Diarization — API pyannote v4:** pyannote 4.x returns `DiarizeOutput`. Use `diarization.speaker_diarization.itertracks(yield_label=True)`. pyannote 3.x returned `Diarization` with direct `.itertracks()`. The `DiarizeOutput` object replaces the old `Diarization`. Version 4.x is required with torch >=2.5. The parameter `use_auth_token=` was renamed to `token=`.
 
 ### Performance benchmarks
@@ -388,19 +387,37 @@ Pipeline manuel (pyannote 4.x diarization + faster-whisper `large-v3` int8), sé
 La compilation JIT PyTorch et le téléchargement des poids dominent le premier run.
 Le premier téléchargement de `large-v3` (= 3 Go) s'ajoute à ce premier run.
 
-### Exécutions suivantes (warm start, large-v3)
+### Exécutions suivantes (warm start, large-v3, cpu_threads=6)
 
-| Vidéo | Audio réel | Diarization | Transcription | Total | Ratio | RAM |
-|-------|-----------|-------------|---------------|-------|-------|-----|
-| 13 min (IG Reel, monologue) | 12.8 min | ~31 min | — | ~31 min | ~2.4× | ~1.5 Go |
-| 30s (Reel, test) | 30s | ~50s | ~0.6s | ~51s | 1.7× | ~4 Go |
-| 96 min (workshop, est.) | 68 min | ~2.5h | ~170 min | ~5.3h | ~4.7× | ~4 Go |
-| 9h (vidéo, warm) | ~8h audio | ~20h | ~20h | ~40h | ~5× | ~4 Go |
+Mesures réelles 2026-05-27 (3 vidéos YouTube Biomécanique, 95-121 min chaque, 6 vCPU AMD EPYC, 11 GB RAM).
 
-- **Règle d'estimation (warm, pyannote 4.x) :**
-- Diarization pyannote 4.x (8kHz) : **~2-3× la durée audio** (plus ~10% de 3.x)
-- Transcription whisper `large-v3` (16kHz) : ~200-300% de la durée audio (inchangé)
-- Total pipeline : ~400-600% de la durée audio (les deux étapes sont séquentielles)
+| Vidéo | Durée | Diarization | Transcription | Total |
+|-------|-------|-------------|---------------|-------|
+| GuXBKGfoA8M | 95 min | ~4-6h (400-500% CPU, 3.5 GB) | ~4-5h (94% CPU, 3.6 GB) | ~8-11h |
+| St0BgcNS7A0 | 121 min | ~4-6h (416% CPU, 2.2 GB) | ~4-5h | ~8-11h |
+| NmURuySSpII | 116 min | ~4-6h | ~4-5h | ~8-11h |
+
+### Profil par étape (identifiable via `ps aux`)
+
+| Étape | CPU% | RAM | Processus |
+|-------|------|-----|-----------|
+| **Diarization** (pyannote) | 400-500% (4-5 cœurs parallèles) | 2-3.5 Go | `python3 /tmp/transcribe.py ...` (phase diarization) |
+| **Transcription** (large-v3) | ~94-300% (cpu_threads=6 mais décodeur single-thread) | 3-4 Go | `python3 /tmp/transcribe.py ...` (phase whisper) |
+| **Download** (yt-dlp) | ~50% | ~200 Mo | `yt-dlp ...` |
+| **Conversion** (ffmpeg) | ~100% | ~100 Mo | `ffmpeg -i ... .webm → .wav` |
+
+**Comment identifier l'étape en cours :**
+- CPU > 300% = **diarization** pyannote (parallélisé sur tous les cœurs)
+- CPU ~90-100% = **transcription** whisper (décodeur single-thread, encodeur seul bénéficie de cpu_threads)
+- CPU ~50% + réseau = **download** yt-dlp
+- CPU ~100% + courte durée = **conversion** ffmpeg
+
+### Règles d'estimation (warm, pyannote 4.x, cpu_threads=6)
+
+- Diarization pyannote 4.x (8kHz) : **~2-3× la durée audio**
+- Transcription whisper `large-v3` (16kHz, cpu_threads=6) : **~2-3× la durée audio** (réduit de ~5× sans cpu_threads)
+- Total pipeline : **~5-6× la durée audio** (séquentiel : diarization puis transcription)
 - La durée audio réelle est souvent plus courte que la durée vidéo (silences, pauses)
 - **Premier run toujours plus lent** (×2-5 à 16kHz) → les workers en cron amortissent
-- **Sur cette machine (6 vCPU, 8 GB RAM) :** la diarization monopolise ~350% CPU et 1.5 GB RAM. Les workers kanban concurrents ralentissent le pipeline — les kill si possible pendant la diarization.
+- **Les 3 vidéos de cette session (95-121 min) : ~8-11h chacune.** Vidéo 2h → prévoir 10-14h.
+- **RAM :** diarization ~2-3.5 Go, transcription ~3-4 Go. Les deux sont séquentielles → pic à ~4 Go. Vérifier ~5 Go libres avant lancement.

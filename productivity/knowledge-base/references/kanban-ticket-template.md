@@ -41,6 +41,13 @@ N. URL — Auteur/Topic (optional annotation)
 For Instagram: use cookies at /tmp/ig_cookies.txt. For carousel posts: extract all slides. For Threads: try web_extract or browser. CRITICAL: do NOT translate — note language = source language. Save to Knowledge base/. Push after each note.
 ```
 
+## Assignee selection
+
+- **Video content (Reels, Threads videos, YouTube):** assignee = `researcher-videos`
+- **Text/image content (carousels, articles, Threads text posts):** assignee = `researcher`
+
+The `researcher-videos` profile has the full video pipeline (download → diarize → transcribe → note). Don't assign video content to `researcher` — the video-specific config (cookies, rate-limit, whisper model, worker profile) is tied to `researcher-videos`.
+
 ## Key elements
 
 | Element | Purpose |
@@ -59,5 +66,4 @@ For Instagram: use cookies at /tmp/ig_cookies.txt. For carousel posts: extract a
 
 - 5 URLs per ticket max
 - Chain with `--parent` so each batch waits for the previous one
-- Assignee: `researcher`
 - Skill: `knowledge-base`

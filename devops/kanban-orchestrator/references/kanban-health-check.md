@@ -1,6 +1,20 @@
 # Kanban Health Check — Diagnostic Workflow
 
-Quick board-wide health check to identify stale claims, stuck workers, and real active work. Use this when the user asks "what teams are working?" or you suspect silent failures.
+Quick board-wide health check to identify stale claims, stuck workers, DB corruption, and real active work. Use this when the user asks "what teams are working?" or you suspect silent failures.
+
+## Step 0 — DB integrity (ALWAYS FIRST)
+
+A corrupted dispatcher DB will silently disable dispatch for affected boards with no alert. Always check integrity before anything else:
+
+```bash
+python3 /root/.hermes/scripts/kanban-integrity-watchdog.py
+```
+
+Silent exit (0) = all clean. Non-zero = corruption detected (backup auto-saved as `<path>.corrupt.<ts>.bak`).
+
+**⚠️ If corruption found:** Do NOT proceed with normal health check or dispatch. Follow `references/kanban-db-corruption-recovery.md` instead. Corrupted DBs can lose tasks silently (real case: 2026-05-27 — 54 tasks vanished when dispatcher DB was rebuilt from scratch).
+
+**⚠️ Pitfall — silent corruption:** The gateway auto-heals corrupted DBs by recreating them EMPTY. It backs up the corrupt file as `kanban.db.corrupted-backup` first, but does not restore data. If you don't check integrity proactively, you may discover missing tasks days later when the user asks "where are my tickets?"
 
 ## Step 1 — Board overview
 

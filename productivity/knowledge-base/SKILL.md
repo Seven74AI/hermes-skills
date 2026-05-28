@@ -1,7 +1,7 @@
 ---
 name: knowledge-base
 description: "Manage a personal knowledge base in the Obsidian vault: capture and structure info about sante, sciences, histoire, livres, faits divers, etc."
-version: 1.3.0
+version: 1.4.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -54,7 +54,32 @@ le timeout foreground de 600s tue les longues transcriptions (une vidéo de 13 m
 **Jamais de heartbeats** pour attendre — `process(wait)` bloque proprement sans flood.
 
 **⚠️ CRITICAL — Whisper model:** `large-v3` obligatoire pour tout contenu vidéo (YouTube, Instagram, Mega).
-`medium` / `small` ne sont pas utilisés — noms propres, idiomes, syntaxe. Quality over speed.
+`medium` / `small` / `base` / `tiny` ne sont pas utilisés — noms propres, idiomes, syntaxe. Quality over speed.
+
+**⚠️ CRITICAL — CPU threads:** `cpu_threads=6` obligatoire sur ce serveur (6 cœurs AMD EPYC).
+Sans ce paramètre, CTranslate2 utilise ~1.2 cœurs → transcription 4-5× plus lente. Avec → tous les cœurs,
+zéro perte de qualité. Le script canonique `scripts/transcribe.py` l'inclut déjà.
+
+**⚠️ CRITICAL — Language auto-detection:** Toujours utiliser `language=None` dans faster-whisper
+(pas de langue forcée). Le modèle détecte automatiquement la langue source (fr, en, etc.).
+Ne jamais hardcoder `language="fr"` ou autre — le contenu suit la langue de la vidéo.
+
+**⚠️ CRITICAL — Canonical scripts only:** Les workers doivent utiliser les scripts canoniques du skill
+(`scripts/transcribe.py`, `scripts/diarize.py`), pas générer des scripts ad-hoc dans `/tmp/`. Les scripts
+ad-hoc peuvent être périmés (vieux modèle, mauvaise config). Avant chaque transcription, vérifier que le
+script utilise `large-v3` : `grep WhisperModel /tmp/transcribe_*.py`. Si `small`/`base`/`medium`/`tiny`
+apparaît, supprimer et utiliser le script canonique.
+
+**⚠️ CRITICAL — Workers may ignore task body model instructions:** Même si le ticket body dit
+explicitement `large-v3`, le worker LLM peut générer un script ad-hoc avec `small` (vu 2026-05-27 :
+Run 66-70 ont tous généré du small malgré un body explicite). La seule protection fiable est un
+script canonique dans `scripts/transcribe.py` que le worker découvre via `skill_view`. Toujours
+vérifier le modèle après le lancement : `grep WhisperModel /tmp/transcribe_*.py && ps aux | grep transcribe`.
+Si le script ou le processus utilise small/medium/base/tiny → tuer, fixer le script, reclaim.
+
+**⚠️ CRITICAL — Check for orphan processes before launching:** Toujours vérifier `ps aux | grep transcribe`
+et `ps aux | grep kanban` avant de lancer une nouvelle transcription. Des workers orphelins (ticket sur
+board détruit) peuvent tourner en boucle et respawn des processus. Les tuer avant de relancer.
 
 **⚠️ CRITICAL — Skip diarization for single-speaker content** (monologues, solo Reels, direct-to-camera).
 Diarization sur un monologue de 13 min en CPU coûte ~40 min pour zéro valeur. Utiliser
@@ -394,6 +419,13 @@ named files don't exist. These come from batch workers that use sequential numbe
 - Slugs should be descriptive: `champignons-soleil-vitamine-d.md`, not `note1.md`
 - Always include `source` and `source_url` — provenance matters
 - **Ne pas référencer `/tmp/` dans une note** — uploader sur MinIO et utiliser `source_file`. Voir `references/minio-storage.md`.
+
+### Answer the question, don't jump to fix
+
+When the user asks a diagnostic question ("pourquoi X ?", "c'est quoi Y ?"), **answer the question and stop**. Don't follow up with "je corrige", "je vais modifier le script", or any offer to fix unless explicitly asked. The user is gathering information, not asking for action. Jumping to fix mode wastes tokens and frustrates.
+
+### Skill updates over memory updates
+
 - When Firecrawl/DDG can't extract Instagram reels, use `curl` + Googlebot UA — see `references/instagram-extraction.md`. For full video transcript, use the yt-dlp + cookies pipeline — see `references/pipeline-instagram.md` (Method A).
 - For extracting content from Instagram Reels without browser/Firecrawl, see `references/pipeline-instagram.md`
 - After creating or updating a note, push to Git so the user's Obsidian syncs: `cd "$OBSIDIAN_VAULT_PATH" && git add -A && git commit -m "add: <slug>" && git push`

@@ -219,6 +219,25 @@ terminal("npm test", background=true)
 
 **Fix:** Always pair `background=true` with `notify_on_complete=true` for finite tasks.
 
+### 6. Killing a Background Process Without Checking Expected Duration
+
+```
+# WRONG — kills work that was almost done
+# Worker spawned a 2-hour audio transcription on CPU (~3× realtime = 6h expected)
+# After 5h elapsed, agent assumes "stuck" and kills it
+# Result: 5h of CPU lost, transcription restarted from zero
+```
+
+**Fix:** Before killing ANY long-running background process, compute the expected duration:
+- **Whisper transcription (CPU):** file duration × 3-5 for large-v3, × 2-3 for small
+- **Video download (yt-dlp):** file size / rate limit (plus ~30% overhead)
+- **Test suite:** check historical run time from CI logs
+- **Build/install:** check package count or previous runs
+
+Compare expected duration against elapsed time. A process at 80% of expected wall time is likely finishing, not stuck. **Only kill when elapsed > 2× expected duration with zero progress (no output file growth, no log activity).**
+
+**Real case (2026-05-27):** 121-minute MP3, small model on CPU, expected ~5h. Process at 5h elapsed, killed. User: "C'est ptet normal" — it was. File was 2h long, transcription was almost done.
+
 ## Cron Alternative (Recurring Validation)
 
 For CI pipelines or recurring test runs where no agent reasoning is needed:
