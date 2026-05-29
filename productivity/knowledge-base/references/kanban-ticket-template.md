@@ -6,6 +6,16 @@ to process URLs into the knowledge base.
 ## Ticket creation command
 
 ```bash
+# For video content (Reels, YouTube, Threads) — uses transcription pipeline
+hermes kanban --board default create \
+  --assignee researcher-videos \
+  --skill knowledge-base \
+  --max-runtime 3600 \
+  --parent <previous_ticket_id> \
+  --body "..." \
+  "KB: <description> (lot X/N)"
+
+# For text/image content (carousels, threads, posts) — no transcription needed
 hermes kanban --board default create \
   --assignee researcher \
   --skill knowledge-base \
@@ -42,11 +52,12 @@ For Instagram: use cookies at /tmp/ig_cookies.txt. For carousel posts: extract a
 ```
 
 ## Assignee selection
+## Assignee selection
 
-- **Video content (Reels, Threads videos, YouTube):** assignee = `researcher-videos`
-- **Text/image content (carousels, articles, Threads text posts):** assignee = `researcher`
-
-The `researcher-videos` profile has the full video pipeline (download → diarize → transcribe → note). Don't assign video content to `researcher` — the video-specific config (cookies, rate-limit, whisper model, worker profile) is tied to `researcher-videos`.
+| Content type | Assignee | Why |
+|---|---|---|
+| Image posts, text threads, carousels | `researcher` | No transcription — metadata extraction, web_extract, or browser |
+| Video (Instagram Reels, YouTube, Threads) | `researcher-videos` | Requires download → diarization → transcription pipeline. `max_spawn=1` for RAM. |
 
 ## Key elements
 

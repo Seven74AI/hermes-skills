@@ -720,7 +720,7 @@ python3 /tmp/cleanup-system-caches.py
 
 ### 2p. Backup archives — /tmp + /root (safe — already uploaded to remote)
 
-The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–2.6G each. They're not caught by 2e (<24h old) nor 2ea/2eb (they're files, not dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan both `/tmp` and `/root`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) that was missed by a `/tmp`-only scan.
+The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–16G+ each (observed range: 1.6G typical, 16G when backups include full profiles — 2026-05-28). They're not caught by 2e (<24h old) nor 2ea/2eb (they're files, not dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan both `/tmp` and `/root`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) that was missed by a `/tmp`-only scan.
 
 ```bash
 cat > /tmp/cleanup-backup-zips.py << 'PYEOF'

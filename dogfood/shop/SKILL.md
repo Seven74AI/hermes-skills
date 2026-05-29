@@ -1,10 +1,26 @@
 ---
 name: shop
 description: "Shop project configuration — tech stack, repo, Prisma pitfalls, flaky tests, Phase roadmap."
-version: 3.3.0
+version: 3.4.0
 metadata:
   hermes:
     tags: [shop, project, ecommerce, reference]
+---
+
+# ⛔ RÈGLE ABSOLUE — À LIRE AVANT TOUTE ACTION
+
+**TU NE DOIS JAMAIS MERGER UNE PR SI UN SEUL CHECK CI EST ROUGE.**
+**AUCUNE EXCEPTION. MÊME SI L'ERREUR TE SEMBLE "PRÉ-EXISTANTE".**
+
+- `gh pr merge --admin` est **INTERDIT**. Tu n'as pas le droit de bypasser.
+- Seul `gh pr merge --auto --squash` est autorisé.
+- Si un check est `FAILURE` → tu **FIXES** l'erreur. Tu ne merges pas.
+- Si tu ne peux pas fixer → tu **BLOQUES** la tâche et tu expliques pourquoi.
+- **TU N'ÉVALUES PAS** si une erreur est "pré-existante" ou pas. Rouge = rouge.
+- Avant de passer la main au reviewer : **TOUS** les checks doivent être **GREEN**.
+
+Si tu violes cette règle, le code cassé atterrit sur main et casse tout le projet.
+
 ---
 
 # Shop — Project Configuration
@@ -49,6 +65,24 @@ count toward branch protection's required approval count. See `kanban-project-wo
 
 Shop uses the **unified PR workflow** from `kanban-project-workflow`:
 PR → auto-merge → reviewer → GH native merge → unblock.
+
+**⛔ ALL coder tasks MUST include `kanban-project-workflow` in skills.**
+Tasks created with `skills=["shop"]` only will merge red CI because the
+coder doesn't know the merge rules. Always use:
+```bash
+hermes kanban --board shop create --assignee coder \
+  --skills shop --skills kanban-project-workflow ...
+```
+
+**Branch protection (Seven74AI/shop fork, hard set 2026-05-28):**
+- `enforce_admins: true` — even repo owner can't bypass checks
+- `required_reviews: 1` — reviewer approval mandatory
+- `dismiss_stale_reviews: true` — new push invalidates old approval
+- Required checks: `lint, typecheck, vitest, playwright-gate`
+- No merge possible without all 4 green + reviewer approval
+
+See `kanban-project-workflow` § Branch Protection Hardening and
+`references/branch-protection-hardening.md`.
 
 ## Environment
 
@@ -218,6 +252,13 @@ Full template: `references/fix-all-tests-ticket-template.md`
   226 commits fork→upstream. All 66 upstream issues (#101–#167) still OPEN — need
   mnlamart token or GitHub App with Issues:Write to close. See
   `kanban-project-workflow` § Closing Upstream Issues After Work Completes.
+- **⚠️ Status (2026-05-27):** 368 tasks all archived. 12 PRs open on fork with red CI
+  (#170, #181, #187, #202, #206, #207, #210, #211, #216, #223, #224, #226). Common
+  failures: typecheck cascading to build + vitest. Root cause: bulk manual archive
+  on May 24 bypassed the merge workflow. See `kanban-project-workflow` § Phantom Done.
+  No open kanban tickets — all tasks archived, including the ones associated with
+  the failing PRs. Need to: (1) fix root CI issue (likely a shared typecheck error),
+  (2) unblock/reopen affected tickets, (3) let auto-merge flow complete.
 - **New issues:** Create on `Seven74AI/shop`, NOT `mnlamart/shop`. The fork may
   have issues disabled by default — enable via `gh api repos/Seven74AI/shop -X PATCH -f has_issues=true`.
 

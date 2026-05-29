@@ -140,8 +140,9 @@ See `references/kanban-ticket-template.md` for the full template.
 Quick reference:
 - 5 URLs max per ticket
 - Chain with `--parent` for sequential processing
-- `--assignee researcher --skill knowledge-base --max-runtime 3600`
+- `--max-runtime 3600`
 - Body must include: rate-limit instructions, cookie path, language rule, save path
+- **Assignee: `researcher` for text/image/Threads content; `researcher-videos` for video content that needs transcription (Instagram Reels, YouTube).** If unsure, default to `researcher-videos` — the extra capability (transcription) doesn't hurt text-only tasks.
 
 ## When to add a note
 

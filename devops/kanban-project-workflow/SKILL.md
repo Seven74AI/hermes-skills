@@ -1,10 +1,23 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.11.0
+version: 1.12.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared, anti-specs-to-code]
+---
+
+# ⛔ RÈGLE ABSOLUE — LIRE AVANT TOUTE ACTION
+
+**TU NE MERGES PAS SI UN SEUL CHECK CI EST ROUGE. ZÉRO EXCEPTION.**
+
+1. `gh pr merge --admin` = **INTERDIT**. Tu ne l'utilises jamais.
+2. Seul `gh pr merge --auto --squash` est autorisé.
+3. Check rouge → tu **FIXES**. Même si l'erreur est "pré-existante" ou "pas ton code".
+4. Tu n'évalues pas, tu ne rationalises pas. Rouge = tu fixes.
+5. **TOUS les checks doivent être GREEN** avant de créer le reviewer.
+6. Si vraiment unfixable → tu bloques et tu expliques. Tu ne merges pas.
+
 ---
 
 # Kanban Project Workflow — Shared Patterns
@@ -17,8 +30,10 @@ Load this skill alongside the project-specific skill for every coder/reviewer ta
 ALL projects use the same flow — review-gated with auto-merge:
 
 ```
-Coder → PR + auto-merge → block "review-required" → Reviewer approves → CI green → GitHub merges auto → CI watchdog unblocks → Coder completes
+Coder → Implement + Run CI → CI ALL GREEN → PR + auto-merge → block "review-required" → Reviewer approves → GitHub merges auto → CI watchdog unblocks → Coder completes
 ```
+
+⚠️ **CRITICAL: The coder MUST verify CI is 100% GREEN BEFORE creating the reviewer task and blocking.** If CI is red, the coder MUST fix it first. Never block with red CI — the auto-merge will never complete, and the coder will be stuck in a respawn loop.
 
 This replaces the previous two-model system (CI-gated for shop, review-gated for the-swarm).
 GitHub's native auto-merge (`gh pr merge --auto`) handles the merge — no custom merge logic needed.
@@ -67,29 +82,43 @@ Coder → PR + auto-merge → block (review-required) → Reviewer agent approve
 
 ### Coder (step-by-step)
 
-```python
-# 1. Clone repo, implement, run CI in background
-terminal("vitest run && tsc --noEmit && lint", background=true, notify_on_complete=true)
+⚠️ **DO NOT BLOCK FOR REVIEW UNTIL CI IS 100% GREEN.** If you block with red CI,
+the auto-merge will never complete and you'll be stuck in a respawn loop.
 
-# 2. Push branch, create PR with kanban label
+```python
+# 1. Clone repo, implement, run CI LOCALLY
+terminal("pnpm typecheck && pnpm vitest run && pnpm lint && pnpm playwright test", 
+         background=true, notify_on_complete=true)
+# WAIT for CI — DO NOT proceed until ALL checks pass
+
+# 2. Push branch, create PR with kanban label AND auto-merge
 terminal(f"gh pr create --repo {REPO} --base main --head feat/X "
          f"--label 'kanban:{os.environ[\"HERMES_KANBAN_TASK\"]}' "
          f"--title '...' --body '...'")
-
-# 3. Enable GitHub native auto-merge (merges when CI green + approved)
 terminal(f"gh pr merge --auto --squash")
 
-# 4. Create reviewer task (standalone — NEVER with parent=)
+# 3. ⚠️ WAIT for remote CI — verify EVERY check is GREEN
+#    gh pr checks <N> --repo <REPO>
+#    If ANY check is FAILURE → FIX IT. Go back to step 1.
+#    Do NOT merge. Do NOT use --admin. Fix the failures.
+
+# 4. ONLY when ALL checks are GREEN:
+#    - Create reviewer task (standalone — NEVER with parent=)
+#    - Post handoff comment with changed files summary
+#    - Block yourself
 kanban_create(
     title=f"Review: (t_{os.environ['HERMES_KANBAN_TASK']}) <summary>",
     assignee="reviewer",
     skills=["github-code-review", "kanban-project-workflow"],
     body="Review the work from the coder task.",
 )
-
-# 5. Block yourself
-kanban_block(reason="review-required: PR label kanban:$HERMES_KANBAN_TASK")
+kanban_comment(body="review-required handoff: ...")
+kanban_block(reason="review-required: ALL CI GREEN — PR label kanban:$HERMES_KANBAN_TASK")
 ```
+
+⚠️ **If CI is red at step 3:** Do not create reviewer. Do not block. Fix the failures.
+The respawn guard will block you if you try to respawn with a PR URL in comments.
+**Fix CI first, then block.**
 
 GitHub auto-merge (`--auto`) handles the CI gate natively — no custom watchdog
 needed for merging. When all required status checks pass AND the reviewer
@@ -242,7 +271,153 @@ These commits were never on upstream main. The PR showed 9 commits: 4 legit
 (French translations) + 5 stale (including one that re-introduced `|| true`).
 No CI triggered, no kanban label.
 
-## ⛔ CRITICAL: Label-Based PR Workflow — NO PR URLs in Comments
+## ⛔ CRITICAL: NEVER Merge with Red CI — Auto-Merge Only
+
+**The coder MUST NOT manually merge PRs.** Auto-merge (`gh pr merge --auto --squash`)
+is the ONLY merge path for reviewed PRs. Manual merge (`gh pr merge --merge`) with
+red CI bypasses all gates — the PR merges with failing checks, broken code lands on
+main, and the kanban workflow doesn't detect it (CI watchdog only polls for auto-merged PRs).
+
+**Symptoms:**
+- `gh pr view` shows `mergedBy: Seven74AI`, `auto_merge: null` — manual merge, not auto
+- `mergeStateStatus: BEHIND` or `UNKNOWN` but `state: MERGED`
+- Required status checks (playwright-gate, typecheck) show FAILURE but PR is merged
+
+**Root cause:** The coder's SOUL.md or inline script uses `gh pr merge --merge`
+instead of setting auto-merge. The branch protection requires CI checks but
+`gh pr merge --merge` can bypass them if the PR already has an approving review
+(required reviews are not configured on some repos).
+
+**Prevention:** The coder MUST:
+1. Create PR with `--label "kanban:$HERMES_KANBAN_TASK"`
+2. Enable auto-merge: `gh pr merge --auto --squash "$BRANCH"`
+3. Verify CI is green BEFORE handoff:
+   ```bash
+   FAILING=$(gh pr view "$BRANCH" --json statusCheckRollup --jq '[.statusCheckRollup[] | select(.conclusion=="FAILURE")] | length')
+   [ "$FAILING" -gt 0 ] && kanban_block(reason="CI not green: $FAILING checks failing")
+   ```
+4. Block with `review-required` — let the reviewer + CI watchdog handle the rest
+
+**Real case (2026-05-28):** PR #170 on shop — merged by Seven74AI at 07:58 UTC with
+build + playwright(1+2) + playwright-gate all FAILURE. No auto-merge enabled. Branch
+protection requires `lint, typecheck, vitest, playwright-gate` with `strict: true`,
+yet manual merge bypassed the playwright-gate failure.
+
+## ⛔ CRITICAL: Tasks Created WITHOUT kanban-project-workflow → Red CI Merges
+
+**This is the #1 root cause of red-CI merges.** When a coder task is created with
+`skills=["shop"]` and no `kanban-project-workflow`, the coder agent has NO
+knowledge of:
+- Auto-merge only (`gh pr merge --auto --squash`)
+- Never merge with red CI
+- Kanban label requirement on PRs
+- Reviewer gate requirement
+- Branch protection enforcement
+
+The coder implements the feature correctly, but then merges manually with
+`gh pr merge --squash` — bypassing all CI gates. Broken code lands on main.
+
+**Detection — find tasks missing the workflow skill:**
+```sql
+SELECT id, skills, status, title
+FROM tasks
+WHERE assignee='coder'
+AND status NOT IN ('done','archived')
+AND (skills IS NULL OR skills NOT LIKE '%kanban-project-workflow%');
+```
+
+**Backfill — fix all non-done coder tasks:**
+```sql
+UPDATE tasks SET skills='["<project>", "kanban-project-workflow"]'
+WHERE assignee='coder' AND status NOT IN ('done','archived')
+AND (skills IS NULL OR skills NOT LIKE '%kanban-project-workflow%');
+```
+
+**Prevention — ALWAYS include kanban-project-workflow in task creation:**
+```bash
+hermes kanban --board <board> create --assignee coder \
+  --skills <project> --skills kanban-project-workflow ...
+```
+
+**Prevention — branch protection hardening:** Even with the right skills,
+coders can still bypass checks if `enforce_admins: false`. See
+`references/branch-protection-hardening.md` for the hardening procedure.
+
+**Real case (2026-05-28):** Shop board — 10 coder tasks created with
+`skills=["shop"]` only. Within 2 hours, 7 PRs merged with `build: FAILURE`,
+`playwright-gate: FAILURE`. Root cause: missing `kanban-project-workflow` skill.
+Branch protection `enforce_admins: false` let Seven74AI bypass. Fixed by:
+(1) backfilling skills on all tasks, (2) setting `enforce_admins: true` +
+`required_reviews: 1` on the fork's branch protection.
+
+### The "Pre-Existing" Rationalization Trap
+
+Even WITH `kanban-project-workflow` loaded, coders can rationalize red CI as
+"not my fault" and use `gh pr merge --admin` to bypass. Common patterns:
+
+- "Build fails on Fly token — pre-existing, not my code"
+- "Playwright flaky — pre-existing on main, I didn't break it"
+- "Lint/vitest pass, only pre-existing failures remain — safe to merge"
+
+**This is NEVER acceptable.** Any red check, regardless of origin, means broken
+code lands on main. The coder's job is to FIX the failure, not judge whether it's
+their fault. The absolute rule at the top of this skill exists specifically to
+counter this rationalization.
+
+**Real case (2026-05-28):** PR #237 on shop — coder heartbeat: "build FAIL (Fly
+token pre-existing), playwright FAIL (pre-existing flaky). Reviewer approved.
+Planning admin-merge." Merged despite `enforce_admins: true`. The coder
+rationalized pre-existing failures and bypassed. Fix: absolute rule added at
+SKILL.md top + `enforce_admins: true` on branch protection.
+
+## ⛔ Pitfall: `active_pr` Respawn Guard Blocks Coder After Reviewer Unblock
+
+When the coder posts a handoff comment containing a PR URL (`github.com/.../pull/N`),
+the `active_pr` respawn guard prevents the task from spawning for **24 hours**.
+This is correct behavior during the review phase (avoid creating duplicate PRs),
+but it breaks the workflow when the reviewer approves the PR and the coder
+needs to respawn to verify the merge.
+
+**The cycle:**
+1. Coder creates PR, enables auto-merge, posts handoff comment with PR URL
+2. Coder blocks with `review-required`
+3. Reviewer approves, unblocks the coder
+4. Coder tries to spawn → `active_pr` guard blocks it (PR URL in comment < 24h)
+5. If auto-merge is blocked (CI red, review not counting), nobody fixes it
+6. Task stays `ready` with 20+ `respawn_guarded` events, PR stays open
+
+**Symptoms:**
+- `hermes kanban events <task>` shows repeated `respawn_guarded: active_pr`
+- Task is `ready` but dispatcher refuses to spawn — 20+ attempts in logs
+- PR is open with auto-merge enabled but `mergeStateStatus: BLOCKED`
+
+**Immediate fix — delete the PR URL comment:**
+```python
+import sqlite3
+db = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+db.execute("DELETE FROM task_comments WHERE task_id='<task_id>' AND body LIKE '%github.com%pull%'")
+db.commit()
+print(f'Deleted {db.total_changes} PR URL comments')
+db.close()
+```
+
+**Prevention — coder MUST fix CI BEFORE blocking for review:**
+The root cause is blocking with red CI. If CI is green when the coder blocks,
+the auto-merge completes without needing the coder to respawn. The CI watchdog
+detects the merge and completes the task. The `active_pr` guard is never
+triggered because the coder doesn't need to respawn.
+
+This is enforced in the coder step-by-step (§ 3): verify CI is ALL GREEN
+before creating the reviewer and blocking. Red CI → fix → re-run → only
+block when green.
+
+**Prevention — CI watchdog should clear PR URL comments on merge:**
+When the CI watchdog detects a merged PR, it should delete the PR URL
+comment from the coder task to clear the guard for future runs.
+
+Real case: shop t_541d2c3a (2026-05-28) — 20 `respawn_guarded: active_pr`
+events from 22:02 to 22:22. PR #238 auto-merge blocked (review not counting),
+coder couldn't respawn to fix it. Fixed by deleting the PR URL comment.
 
 **Symptoms:** Tasks sit `ready` for hours with repeated `respawn_guarded` events.
 `hermes kanban events <task>` shows `respawn_guarded: active_pr`.
@@ -270,7 +445,129 @@ Three checks in priority order — first match wins:
 The guard is **stateless** — re-evaluated fresh every tick. When the condition
 clears, the task spawns normally.
 
-## Pitfall: Manual GitHub Merge ≠ Kanban Completion
+## Pitfall: Missing Kanban Labels on PRs — How to Detect and Backfill
+
+PRs created without `--label "kanban:$HERMES_KANBAN_TASK"` are invisible to the CI watchdog.
+The watchdog can't map them to kanban tasks, so even if they merge, the coder task stays blocked.
+
+**Symptoms:**
+- PR exists with no label starting with `kanban:`
+- CI watchdog never unblocks the corresponding task
+- Task stays `blocked` with `review-required` forever
+
+**Audit — find unlabeled PRs:**
+```bash
+gh pr list --repo <repo> --state open --json number,labels --jq \
+  '.[] | select([.labels[].name | select(startswith("kanban:"))] | length == 0) | .number'
+```
+
+**Backfill — add correct labels (open PRs only, merged/closed can't be edited):**
+```bash
+# Per-PR: gh pr edit <N> --repo <repo> --add-label "kanban:<task_id>"
+# Per-PR via API: gh api repos/<repo>/issues/<N>/labels -X POST -f "labels[]=kanban:<task_id>"
+# Replace old label: DELETE /labels/<old> then POST new
+```
+
+**Prevention:** Coder SOUL.md MUST include `--label "kanban:$HERMES_KANBAN_TASK"` in the
+`gh pr create` command. The `kanban-project-workflow` skill shows the correct command;
+verify the SOUL.md matches it.
+
+**Real case (2026-05-28):** 5 of 12 open shop PRs had no kanban label. The coder
+SOUL.md's `gh pr create` command was missing `--label`. Fixed by patching SOUL.md
+and backfilling labels via `gh api` on open PRs. Merged/closed PRs (#170, #207)
+were left unlabeled since they can't be edited.
+
+## Technique: Splitting Sequential Ticket Chains into Parallel Chains
+
+When you have a long batch of chained tickets (e.g., 12 PR fix tickets chained
+with `--parent`), you can split them into 2+ parallel chains to double throughput.
+Each chain processes independently — useful when `max_spawn > 1`.
+
+**Procedure:**
+```sql
+-- 1. Find the midpoint of the chain via task_links
+SELECT parent_id, child_id FROM task_links WHERE parent_id IN (SELECT id FROM tasks WHERE status='todo');
+
+-- 2. Delete the link at the split point
+DELETE FROM task_links WHERE parent_id='<last_of_chain_A>' AND child_id='<first_of_chain_B>';
+
+-- 3. Promote the first ticket of chain B to ready
+UPDATE tasks SET status='ready' WHERE id='<first_of_chain_B>';
+```
+
+**Constraints:**
+- Chain B's tickets must already be in correct parent-child order via task_links
+- Only delete one link — the rest of chain B inherits its internal chain correctly
+- `max_spawn` must be ≥ number of parallel chains (coder: 3)
+- Works because `todo` tasks auto-promote to `ready` when their parent completes
+
+**Real case (2026-05-28):** 12-ticket shop batch split into chain A (6 tickets) and
+chain B (4 tickets) by unlinking `t_c742820e` from parent `t_59ad6381`. Both chains
+running simultaneously on coder profile (max_spawn=3).
+
+**Symptom:** All kanban tasks on a board are `done`/`archived`, but many PRs remain open with red CI.
+The PR was never merged — the ticket went `done` without merge verification.
+
+**⚠️ Root cause (confirmed 2026-05-27):** The block watchdog (`check-blocked-tasks.py`)
+explicitly does NOT unblock review-required tasks — it marks them as "review-blocked
+(no auto-retry)". The watchdog only handles crash-retry (backoff: 2m→4m→6m→8m→10m).
+The actual cause was a **manual bulk archive** — 25 tasks archived at the same
+second (2026-05-24 14:34 UTC), with no `completed` or `archived` event recorded.
+This bypasses the normal workflow entirely.
+
+**Detection — find phantom-done tasks (archived without merge):**
+```sql
+-- Tasks archived without a completed event (direct status change)
+SELECT t.id, t.title, t.completed_at
+FROM tasks t
+WHERE t.status IN ('done', 'archived')
+AND t.completed_at IS NOT NULL
+AND NOT EXISTS (
+  SELECT 1 FROM task_events e 
+  WHERE e.task_id = t.id 
+  AND (e.kind = 'completed' OR e.kind = 'archived')
+)
+ORDER BY t.completed_at DESC;
+```
+
+**Detection — bulk archive at same timestamp:**
+```sql
+-- Tasks sharing the same completed_at timestamp (batch operation)
+SELECT completed_at, COUNT(*) as cnt, GROUP_CONCAT(id, ', ') as tasks
+FROM tasks
+WHERE status IN ('done', 'archived')
+GROUP BY completed_at
+HAVING cnt > 5
+ORDER BY completed_at DESC;
+```
+
+**Cross-reference kanban done tickets with GitHub open PRs:**
+```bash
+# List open PRs with kanban labels
+gh pr list --repo Seven74AI/shop --state open --json labels,number,title \
+  --jq '.[] | select(.labels[].name | startswith("kanban:")) | "#\(.number) \(.labels[].name) \(.title)"'
+
+# For each, check if the kanban task is done
+for pr in $(gh pr list --repo Seven74AI/shop --state open --json number --jq '.[].number'); do
+  label=$(gh pr view $pr --repo Seven74AI/shop --json labels --jq '.labels[].name | select(startswith("kanban:"))')
+  [ -n "$label" ] && echo "PR #$pr → $label ($(hermes kanban --board shop show ${label#kanban:} 2>&1 | grep 'status:'))"
+done
+```
+
+**Prevention — NEVER bulk-archive/complete kanban tasks without verifying PR merge.** 
+If a cleanup is needed, first cross-reference with open PRs. Archived tasks with
+open PRs are invisible — no watchdog monitors them, no coder will fix them.
+
+**Prevention — coder respawn MUST verify merge before completing:**
+```bash
+gh pr view $PR --repo $REPO --json mergedAt,state
+# mergedAt must be non-null before kanban_complete()
+```
+
+Real case: shop board (2026-05-27) — 368 tasks all `done`/`archived`, 25 of them
+bulk-archived at the exact same second (14:34 UTC May 24) with no completion event,
+12 PRs still open with red CI. #224, #223, #216, #211, #210, #207, #206, #202, #187,
+#181, #170, #226 all unmerged. Common failures: typecheck, build, vitest cascading.
 
 The kanban block watchdog has **no bridge to GitHub**. If you manually merge a
 PR, the kanban task stays `blocked` and the watchdog keeps escalating (every 5 min).
@@ -427,17 +724,34 @@ the profile copy exists.
 
 ## Worker Tuning
 
-### `max_iterations` — set to 120
+### `max_iterations` vs `max_turns` — TWO config keys, `max_turns` is the one that matters
 
-Default 50 causes "Iteration budget exhausted" on complex tasks (e2e test runs,
-migrations, multi-file refactors). All worker profiles should have:
+**⚠️ PITFALL: `max_turns` (root-level) is the actual iteration limit for kanban workers, NOT `kanban.max_iterations`.** The task error message says "Iteration budget exhausted (90/90)" — this comes from `max_turns`, not `kanban.max_iterations`. Setting only `kanban.max_iterations: 120` does nothing if `max_turns` is still 90.
 
+**Both must be set:**
 ```yaml
+# Root-level — this is what actually limits kanban worker turns
+max_turns: 120
+
+# Kanban section — safety net, but secondary
 kanban:
   max_iterations: 120
 ```
 
-Set via: `hermes config set --profile <name> kanban.max_iterations 120`
+Set via:
+```bash
+hermes config set --profile <name> max_turns 120
+hermes config set --profile <name> kanban.max_iterations 120
+```
+
+Default 50-90 causes "Iteration budget exhausted" on complex tasks (e2e test runs,
+migrations, multi-file refactors). A typical shop coder task uses ~40 turns just for
+setup (clone, pnpm install, prisma generate, first typecheck), leaving only 50 turns
+for actual debugging and fixing — insufficient for anything beyond 1-2 trivial errors.
+
+**Real case (2026-05-28):** Coder tasks on shop board hit 90/90 turns despite
+`kanban.max_iterations: 120` being set. Root cause: `max_turns: 90` was the active
+limit. Fixed by setting `max_turns: 120` on the coder profile.
 
 ### `max_runtime_seconds` — per-task DB column, set to 3600s
 
@@ -525,25 +839,57 @@ consolidate into one PR:
 5. Close superseded PRs with comment
 6. Close upstream issues corresponding to the consolidated work (see § Closing Upstream Issues)
 
-## Pitfall: Reviewer App Approval Not Counting (`authorAssociation: NONE`)
+## ⛔ Pitfall: Reviewer App Approval Not Counting (`authorAssociation: NONE`)
 
-Even with `Contents: Read & Write` on the GitHub App, reviews can show
-`authorAssociation: "NONE"` and NOT count toward branch protection.
+**Root cause: The GitHub App has `contents: read` — it needs `contents: write`.**
+
+When the app only has `contents: read`, its reviews show `authorAssociation: "NONE"`
+and do NOT count toward branch protection's `required_reviews`. This blocks auto-merge
+even when all CI is green and the reviewer approved.
+
 **Symptom:** `mergeStateStatus: "BLOCKED"` with 1 APPROVED review, all CI green.
-
-**Immediate fix:** Admin-merge the PR:
-```bash
-gh pr merge N --repo <repo> --admin --squash --delete-branch
-```
-
-**Diagnosis:**
 ```bash
 gh pr view N --repo <repo> --json reviews --jq '[.reviews[] | {state, authorAssociation}]'
 # authorAssociation: "NONE" → review doesn't count
 ```
 
-Real case: music-library#4 (2026-05-21) — hermes-sevenai-reviewer approved, all CI green,
-but `authorAssociation: NONE` blocked auto-merge. Admin-merge was the workaround.
+**Check current app permissions (requires app private key):**
+```bash
+python3 -c "
+import jwt, time, requests
+with open('/root/.hermes/profiles/reviewer/home/.config/hermes-sevenai-reviewer.pem','rb') as f:
+    pk = f.read()
+jwt_tok = jwt.encode({'iat':time.time()-60,'exp':time.time()+600,'iss':'3788528'}, pk, algorithm='RS256')
+r = requests.get('https://api.github.com/app/installations/134194993',
+    headers={'Authorization':f'Bearer {jwt_tok}','Accept':'application/vnd.github+json'})
+print(r.json()['permissions'])
+"
+# Look for "contents": "read" → this is the problem
+```
+
+**Permanent fix — change app permissions in GitHub UI:**
+1. Go to GitHub → Settings → Developer settings → GitHub Apps → hermes-sevenai-reviewer
+2. Permissions & events → Repository permissions → Contents
+3. Change from "Read-only" to **"Read & write"**
+4. Save changes → accept the installation update prompt
+
+**After the fix:** The app's reviews should show `authorAssociation: "CONTRIBUTOR"`
+or higher after its first approved PR is merged.
+
+**Immediate workaround (before fixing permissions):** Admin-merge the PR.
+But this requires the repo owner (Seven74AI) and bypasses `enforce_admins`.
+```bash
+gh pr merge N --repo <repo> --admin --squash --delete-branch
+```
+
+**Scope:** This affects ALL repos where the app is installed — shop, music-library,
+the-swarm, videogame-lab. Verified `authorAssociation: NONE` on every repo
+(2026-05-28). The app has NEVER had `contents: write`, so its reviews have
+never counted anywhere.
+
+Real case: shop#238 (2026-05-28) — hermes-sevenai-reviewer approved, all CI green,
+`mergeStateStatus: BLOCKED` because `authorAssociation: NONE`. Same as
+music-library#4 (2026-05-21).
 
 ## Pitfall: CI Status Check Names vs Branch Protection Required Contexts
 
