@@ -1,6 +1,6 @@
 ---
 name: hermes-journal
-description: "Weekly Hermes operations journal: extract infrastructure + debugging lessons from the past week's sessions and write them to a Notion database as a searchable knowledge base."
+description: "Daily/weekly Hermes operations journal: extract infrastructure + debugging lessons from the past day's/week's sessions and write them to a Notion database as a searchable knowledge base."
 version: 1.1.0
 platforms: [linux]
 prerequisites:
@@ -17,7 +17,7 @@ Weekly journal that captures technical lessons, infrastructure fixes, and debugg
 
 ## When to Use
 
-- Weekly retrospective of Hermes operations sessions
+- Daily or weekly retrospective of Hermes operations sessions
 - After fixing a non-trivial infrastructure issue (OOM, swap, disk, config)
 - User asks to "document what we learned" or "start a journal"
 

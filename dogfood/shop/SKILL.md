@@ -7,22 +7,6 @@ metadata:
     tags: [shop, project, ecommerce, reference]
 ---
 
-# ⛔ RÈGLE ABSOLUE — À LIRE AVANT TOUTE ACTION
-
-**TU NE DOIS JAMAIS MERGER UNE PR SI UN SEUL CHECK CI EST ROUGE.**
-**AUCUNE EXCEPTION. MÊME SI L'ERREUR TE SEMBLE "PRÉ-EXISTANTE".**
-
-- `gh pr merge --admin` est **INTERDIT**. Tu n'as pas le droit de bypasser.
-- Seul `gh pr merge --auto --squash` est autorisé.
-- Si un check est `FAILURE` → tu **FIXES** l'erreur. Tu ne merges pas.
-- Si tu ne peux pas fixer → tu **BLOQUES** la tâche et tu expliques pourquoi.
-- **TU N'ÉVALUES PAS** si une erreur est "pré-existante" ou pas. Rouge = rouge.
-- Avant de passer la main au reviewer : **TOUS** les checks doivent être **GREEN**.
-
-Si tu violes cette règle, le code cassé atterrit sur main et casse tout le projet.
-
----
-
 # Shop — Project Configuration
 
 E-commerce project. Load this skill when working on the Shop codebase.

@@ -1,7 +1,7 @@
 ---
 name: the-swarm
 description: "THE SWARM project configuration — incremental game, Vite/TypeScript, Preact Signals, pipeline mechanics."
-version: 3.2.0
+version: 3.3.0
 metadata:
   hermes:
     tags: [the-swarm, game, incremental, web, project]
@@ -27,6 +27,57 @@ The Swarm uses the **unified PR workflow** from `kanban-project-workflow`:
 PR → auto-merge → reviewer agent approves → CI green → GitHub native merge → unblock.
 No separate review-gated vs CI-gated — all boards use the same flow.
 
+**⛔ ALL coder tasks MUST include `kanban-project-workflow` in skills.**
+Tasks created with `skills=["the-swarm"]` only will merge red CI because the
+coder doesn't know the merge rules. Always use:
+```bash
+hermes kanban --board the-swarm create --assignee coder \
+  --skills the-swarm --skills kanban-project-workflow ...
+```
+
+**Branch protection (Seven74AI/the-swarm):**
+- `enforce_admins: true` — even repo owner can't bypass checks
+- `required_reviews: 1` — reviewer approval mandatory
+- `dismiss_stale_reviews: true` — new push invalidates old approval
+- Required checks: `ci` — single CI workflow
+- No merge possible without CI green + reviewer approval
+
+## CI
+
+Full CI: `tsc --noEmit + vitest run + playwright test`
+
+**Workflow MUST be named `CI`** (exact match for branch protection `contexts: ["ci"]`).
+
+**Pitfall: `|| true` / `--if-present` — silent CI bypass.** Two variants, same effect:
+
+- `pnpm typecheck || true` (shell) — swallows non-zero exit codes
+- `npm run typecheck --if-present` (npm) — skips silently if the script doesn't exist
+
+Both make CI report green while type errors pass through. After any PR, verify the workflow
+does NOT have `|| true` on typecheck/lint/test steps:
+```bash
+grep "typecheck" .github/workflows/ci.yml
+# MUST show: tsc --noEmit (or equivalent)
+# MUST NOT show: || true
+```
+
+### Pitfall: Emoji CI job `name:` fields break branch protection
+
+GitHub uses the job-level `name:` field as the status check context. If a workflow has
+`name: ⬣ TypeScript` on the `typecheck:` job, the check reports as `⬣ TypeScript` — but branch
+protection requires `ci`. The contexts never match, auto-merge hangs forever on
+"waiting for status to be reported."
+
+**Fix:** remove ALL job-level `name:` fields from `.github/workflows/ci.yml`.
+The YAML key becomes the context under the unified `ci` workflow.
+Step-level emoji names are fine — they're cosmetic inside the job.
+
+Verification:
+```bash
+gh pr checks <N> --repo Seven74AI/the-swarm
+# Must show: ci (NOT ⬣ TypeScript, etc.)
+```
+
 ## Reviewer account pitfall (RESOLVED)
 
 The reviewer agent uses a **GitHub App** (`hermes-sevenai-reviewer`, App ID 3788528)
@@ -48,18 +99,18 @@ When creating swarm tasks, ensure:
 hermes kanban --board the-swarm create \
   --assignee <profile> \
   --max-runtime 3600s \
-  --skill kanban-worker --skill kanban-project-workflow --skill the-swarm \
+  --skills the-swarm --skills kanban-project-workflow \
   "<title>"
 
 # Planner (uses kanban-orchestrator, NOT kanban-worker):
 hermes kanban --board the-swarm create \
   --assignee planner \
   --max-runtime 3600s \
-  --skill kanban-orchestrator --skill kanban-project-workflow --skill the-swarm \
+  --skills kanban-orchestrator --skills kanban-project-workflow --skills the-swarm \
   "<title>"
 ```
 
-- **Flag is `--skill` (singular, repeatable)**, not `--skills`.
+- **Flag is `--skills` (repeatable).**
 - **skills**: Must include the role skill (`kanban-worker` or `kanban-orchestrator`), `kanban-project-workflow`, and `the-swarm`. Workers without these operate without the shared PR workflow, respawn guard, and project-specific patterns.
 - **Planner exception**: planner uses `kanban-orchestrator` instead of `kanban-worker` — it never implements code, it decomposes and delegates.
 - **max_runtime_seconds**: Set to 3600 (1h safety net). Heartbeat is the primary liveness signal.
@@ -71,8 +122,43 @@ You are an ant queen. Click to lay eggs. Grow your colony. Explore the garden.
 Fight or ally. Discover fire. Industrialize. Launch ants into space. Colonize
 asteroids. Dyson sphere. Transcend.
 
-7 phases: egg-laying → colony → territory → war/diplomacy → civilization → space → transcendence.
-Implemented: 5/7. Phase transitions in `src/phases/transitions.ts`.
+6 phases: egg-laying → colony → combat → expansion → space → transcendence.
+All implemented. Phase transitions in `src/phases/transitions.ts`.
+
+## Units & Combat System — Two Separate Systems
+
+There are TWO distinct soldier systems — they do NOT overlap:
+
+### Combat Soldiers (SoldierSystem — Phase 2 COMBAT)
+- `src/systems/SoldierSystem.ts`
+- **Recruitment**: 5 food + 1 worker → pipeline (SOLDIER_TRAIN_TIME=15 ticks, ~15s)
+- **Usage**: Auto-battles only (BattleSystem, 20 rounds max)
+- **Equipment**: Weapon/Armor upgrades (10 food × 1.20^level, max Lv.5)
+- **No subtypes** — these are generic "combat soldiers" (`state.combatSoldiers`)
+
+### Scouts & Warriors (RecruitmentSystem — Phase 3 EXPANSION)
+- `src/systems/RecruitmentSystem.ts`
+- **Recruitment**: Direct (no pipeline), requires Barracks building
+  - Scout: 50 food + 1 worker, Barracks **Lv.2** (`if (level >= 2)` — Lv.1 gives 0 scouts), tracked as `state.soldiers.scouts`
+  - Warrior: 100 food + 1 worker, Barracks Lv.2, tracked as `state.soldiers.warriors`
+  - Caps Lv.2+: scoutsCap=3, warriorsCap=2 (`getEffects('barracks', level)`)
+- **Caps**: `getMaxScouts()` / `getMaxWarriors()` from Barracks level
+- **Usage**: Expeditions only (MEADOW, FOREST, MOUNTAIN destinations)
+- Combat soldiers are NOT auto-split into scouts/warriors — the two populations are completely independent
+
+### ⛔ Pitfall: UNLOCKS.md Is Unreliable — 6+ Known Errors
+
+`docs/UNLOCKS.md` is a developer reference written early in the project. It is NOT
+authoritative — the TypeScript source code is. Known errors (audited 2026-05-29):
+
+1. "soldiers auto-split into scouts/warriors" — wrong. Two separate systems.
+2. "Barracks Lv.1 → scouts cap=2" — wrong. Code: `if (level >= 2)`. Lv.1 gives ZERO.
+3. Building cost "× level" (linear) — wrong. Formula: `Math.floor(baseCost × 2.5^level)`.
+4. Spaceship Lv.1 cost "2000f/500w/500s/200n" — wrong. Scout ship base = 500f/200w/200s/100n.
+5. COMBAT_TO_EXPANSION transition missing — code has it (workers≥25, battlesWon≥3).
+6. Soldier train time "15 ticks" misleading — with dtSec=0.05 it's ~300 ticks = 15s.
+
+Always verify mechanics against `src/systems/*.ts`, `src/phases/transitions.ts`, and `src/engine/ProgressionCurve.ts`. Never cite UNLOCKS.md without cross-referencing actual code.
 
 ## Quick Start
 
@@ -101,7 +187,7 @@ Access: `http://100.98.177.76:3456` (Tailscale IP, port 3456).
 - E2E seed: `page.addInitScript` → `localStorage.setItem('the_swarm_save', ...)` BEFORE `page.goto('/')`
 - DOM selectors: `references/dom-selectors.md`
 - E2E selectors (post-ResourcePanel refactor): `references/e2e-selectors.md`
-- Save version: 10 (migrations cover v1→v10 in `src/persistence/migrations.ts`)
+- Save version: 11 (migrations cover v1→v11 in `src/persistence/migrations.ts`)
 
 ### Test Conventions: Invariants, NOT Hardcoded Values
 
@@ -154,7 +240,68 @@ Tend workers: multiplier (+25% per worker) on hatch rate.
 
 **Pitfall:** Larva pipeline must be fed — `larvaPipe.count += actual` when eggs hatch.
 
-## UI Panels
+## Map & Territory System
+
+8×8 grid (`MapSystem.GRID_SIZE = 8`). Weighted generation: FOREST 25%, MEADOW 20%, MOUNTAIN 15%, EMPTY 30%, ENEMY_NEST 10%.
+
+### Discovery (fog of war)
+
+1. **DecisionSystem "Scout Report"** — event triggers every 2-3 min (random). "Investigate" reveals 1-3 tiles. No scouts needed — bootstrap method.
+2. **Expeditions** — partial success: 1 tile, full success: 2 tiles.
+
+### Claiming
+
+Tile must be: discovered + adjacent to an owned tile (8-dir) + not already claimed.
+TerritorySystem: `claimTile(x, y, state)`. Each claimed tile = +0.5/tick/worker of its resource type.
+First tile requires adjacency — DecisionSystem discovery provides the starting tiles.
+
+### Resources from tiles
+
+| Tile | Resource | Rate |
+|------|----------|------|
+| FOREST | Wood | 0.5/tick/worker |
+| MOUNTAIN | Stone | 0.5/tick/worker |
+| MEADOW | Nectar | 0.5/tick/worker |
+
+### ⛔ Pitfall: MapPanel.onTileClick Was Never Wired
+
+MapPanel exposes `onTileClick: ((x: number, y: number) => void) | null` but it was
+never assigned in UIRoot or main.ts — defaulted to `null`. Clicking tiles on the
+map did nothing (bug present since map was introduced).
+
+**Fix (applied in PR):** In UIRoot's `panelRegistry.set('map_panel', ...)`, capture the
+MapPanel instance before returning `getElement()`, then assign `onTileClick`:
+
+```typescript
+this.panelRegistry.set('map_panel', () => {
+  const mapPanel = new MapPanel(this.mapSystem, this.getState, this.setState);
+  mapPanel.onTileClick = (x, y) => {
+    const state = this.getState();
+    if (this.territorySystem.claimTile(x, y, state)) {
+      this.setState({ ...state }); // force signal update (claimTile mutates in-place)
+    }
+  };
+  return mapPanel.getElement();
+});
+```
+
+**Key details:** `territorySystem.claimTile()` mutates state in-place (replaces tile at
+index). Must spread `{...state}` before `setState()` to create a new reference for
+Preact signal change detection.
+
+## Building Costs
+
+Formula: `Math.floor(baseCost × 2.5^level)` — exponential, not linear.
+
+| Building | Lv.1 Cost | Lv.2 Cost | Effect |
+|----------|----------|----------|--------|
+| Barracks | 100 food, 50 wood | 625 food, 312 wood | Lv.2+: scoutsCap=3, warriorsCap=2 |
+| Walls | 200 stone | 1250 stone | +5% defense/level (soft-capped >Lv.5) |
+| Warehouse | 150 wood, 100 stone | 937 wood, 625 stone | +25 nest capacity/level |
+
+## Game Mechanics Reference
+
+Complete game guide: `references/game-mechanics.md` — phases, transitions, resources, workers, buildings, expeditions, space, prestige, timing constants.
 
 Worker Assignment, Resource Panel, Soldier Panel, Building Panel, Map Panel,
 Expedition Panel (card grid), Battle Panel, Event Log, Exploration Panel,
@@ -175,6 +322,11 @@ __.setState({ ...__.getState(), resources: { ...s.resources, eggs: 999999, ... }
 __.setState({ ...__.getState(), victoryAchieved: true })
 localStorage.setItem('the_swarm_save', '...')
 ```
+
+## Playtest Tasks
+
+For comprehensive playtest tasks (researcher plays like a real player, focuses on
+fun/UX not edge cases), use the template at `references/playtest-task-template.md`.
 
 ## Spaceship Bootstrap
 

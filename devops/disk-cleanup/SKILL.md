@@ -720,16 +720,19 @@ python3 /tmp/cleanup-system-caches.py
 
 ### 2p. Backup archives — /tmp + /root (safe — already uploaded to remote)
 
-The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–16G+ each (observed range: 1.6G typical, 16G when backups include full profiles — 2026-05-28). They're not caught by 2e (<24h old) nor 2ea/2eb (they're files, not dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan both `/tmp` and `/root`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) that was missed by a `/tmp`-only scan.
+The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–16G+ each (observed range: 1.6G typical, 16G when backups include full profiles — 2026-05-28). They're not caught by 2e (<24h old) nor 2ea/2eb (they're files or non-project dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan both `/tmp` and `/root`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) that was missed by a `/tmp`-only scan.
+
+**Two phases: files first, then directories.** The backup cron can leave behind both `.zip`/`.tar.gz` files AND entire unpacked directories (e.g., `hermes-backup-20260529-072807/` at 496M, `hermes-critical-20260529-094443/` at 506M — 2026-05-29). Directories aren't caught by the file-only scan and don't match the project-clone heuristic in 2eb (no `.git`/`package.json`/`node_modules`).
 
 ```bash
 cat > /tmp/cleanup-backup-zips.py << 'PYEOF'
-import os
+import os, shutil
 
 PREFIXES = ['hermes-backup', 'hermes-critical', 'hermes-final']
 EXTENSIONS = ['.zip', '.tar.gz']
 total = 0
 
+# Phase 1: archive FILES
 for base in ['/tmp', '/root']:
     try:
         for f in os.listdir(base):
@@ -742,7 +745,25 @@ for base in ['/tmp', '/root']:
                 sz = os.path.getsize(fp)
                 os.remove(fp)
                 total += sz
-                print(f'Removed: {fp} ({sz/1024/1024:.0f}M)')
+                print(f'Removed file: {fp} ({sz/1024/1024:.0f}M)')
+    except (OSError, PermissionError):
+        pass
+
+# Phase 2: unpacked backup DIRECTORIES (e.g. hermes-backup-20260529-072807/)
+for base in ['/tmp', '/root']:
+    try:
+        for d in os.listdir(base):
+            dp = os.path.join(base, d)
+            if not os.path.isdir(dp):
+                continue
+            if any(d.startswith(p) for p in PREFIXES):
+                # Skip if it's a git clone (already handled by 2eb)
+                if os.path.exists(os.path.join(dp, '.git')):
+                    continue
+                size = sum(os.path.getsize(os.path.join(r,fn)) for r,_,files in os.walk(dp) for fn in files)
+                shutil.rmtree(dp, ignore_errors=True)
+                total += size
+                print(f'Removed dir: {dp} ({size/1024/1024:.0f}M)')
     except (OSError, PermissionError):
         pass
 
@@ -790,6 +811,7 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **🔴 Media processing pipelines leave large residue in /tmp.** Researcher-videos and similar profiles that extract frames, transcode audio, or run media analysis tools can accumulate 3-4G of `.mp4`/`.mp3`/`.wav` files in `/tmp/` in a single run, plus tool-specific directories like `megapy_*` (200-500M). These are not caught by Step 2e (<24h cutoff) — use Step 2ec for media artifacts with a 1h grace period. Check with `du -sh /tmp` when /tmp appears oversized but 2e/2ea/2eb found nothing.
 - **🔴 Pip build artifacts in /tmp are NOT caught by 2e/2ea/2eb/2ec.** Failed or interrupted `pip install` runs leave `pip-unpack-*` directories (extracted wheels, single dirs can be 2G+), `pip-build-env-*` (isolated build environments), and `pip-metadata-*` (metadata extraction temp dirs) with random suffixes. These are directories — not caught by 2e (files-only), not project clones — not caught by 2eb, not cache dirs — not caught by 2ea, not media — not caught by 2ec. Observed: 2.2G in one `pip-unpack-*` dir + 7M in `pip-build-env-*` (2026-05-24). Use Step 2ed with a 10-min grace period. When `/tmp` is oversized but all other /tmp steps found nothing, run `ls /tmp/ | grep '^pip-'` to check for these.
 - **🔴 Pipeline-specific data-processing residue in /tmp is NOT caught by any step.** Data extraction/scraping pipelines (Instagram transcripts, video frame extraction, audio analysis) leave behind named directories like `ig_lot4`, `ig_transcripts_lot3`, `ig_slides`, `reels_transcripts` that contain JSON/CSV/media files. These are NOT project clones (no `.git`/`package.json`), NOT cache dirs (not `camoufox-*`/`node-compile-cache`), NOT media artifacts (they're dirs, not bare files), and NOT pip artifacts. Observed: 190M across 5 directories (2026-05-24). No universal pattern exists — when `/tmp` is oversized but all 2e–2ed steps found nothing, run `du -sh /tmp/*/ | sort -rh` and inspect remaining dirs. Safe to delete with `shutil.rmtree()` if they're >1h old and clearly pipeline output.
+- **🔴 Backup operations leave two forms of /tmp residue.** (1) `.zip`/`.tar.gz` files matching `hermes-*` prefixes — caught by 2p Phase 1. (2) **Unpacked backup directories** with the same prefixes (e.g., `hermes-backup-20260529-072807/`, 496M; `hermes-critical-20260529-094443/`, 506M) — these are directories, not files, and not caught by 2eb (no `.git`/`package.json`/`node_modules`). 2p Phase 2 now catches them. (3) **Orphaned temp SQLite DBs** (`tmp*.db` in /tmp, 1.4-1.6G each) are not caught by any automated step when <24h old. See `references/tmp-backup-residue-patterns.md` for full pattern catalog.
 - **🔴 /tmp project clones are NOT caught by Step 2e.** Step 2e only removes orphaned files >24h, but kanban worker workspaces in `/tmp/` are full git clones (`.git/`, `node_modules/`, etc.) that are directories, not individual files. They survive 2e indefinitely. In the 2026-05-22 incident, `/tmp/` held 25G of stale workspace clones (shop ×12, music-library ×3, edgee-lab ×3, etc.) — the largest single disk consumer. To clean these: identify project dirs (those with `.git/` or `package.json`), verify they're not the active workspace, then remove. Keep an allowlist for the current working project(s).
 - **`find /root -type f -size +100M` can time out on busy or large filesystems.** Give it at least 60s timeout; if it still times out, skip it — rely on `du -sh` of known directories instead. The escape hatch doesn't mention this but the same logic applies: I/O starvation at high usage makes filesystem walks slow.
 - **`du -sh` on workspace directories can time out even at moderate usage.** The escape hatch in Step 1 says to skip `du` only at ≥95%, but `du -sh /root/.hermes/kanban/boards/*/workspaces` timed out at 180s on a 79%-full disk with 38 shop workspaces (2026-05-23). The workspace count script (`ws-count.py`) is fast — prefer it. If `du` times out, skip it and rely on `ws-count.py` + `find /root -type f -size +100M` to identify large consumers.

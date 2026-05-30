@@ -10,6 +10,8 @@ metadata:
 # Videogame Lab — Project Configuration
 
 Quick-reference config. Load this skill when working on the game dev pipeline.
+Also load `kanban-project-workflow` — it contains the shared PR workflow,
+respawn guard, profile sync, and worker tuning patterns.
 
 ## GitHub
 

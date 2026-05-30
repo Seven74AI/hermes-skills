@@ -399,6 +399,15 @@ git config --unset credential.helper  # CRITICAL: overrides URL token
 
 Full diagnostic and fork CI workflow: `references/diagnosing-blocked-tasks.md` section 3. See `github-auth` skill `references/fork-ci-workflow.md` for the recipe (push → workflow_dispatch on fork → create PR).
 
+**⛔ Token identity: the pusher on GitHub is determined by the TOKEN value, NOT the `git` username in the URL.** The pattern `https://git:$TOKEN@github.com/...` means GitHub identifies the pusher by the TOKEN itself. If `GITHUB_TOKEN` in `~/.hermes/.env` is ever temporarily set to a different account's token (accidental copy-paste, credential testing, rotation mistake), ALL pushes from kanban workspaces will show that account as the pusher — while the commit author (`git config user.name`) still says "Hermes Agent". The commit looks legitimate (right author, right repo) but the pusher is wrong. **There is no audit trail for .env changes** — the file is not under version control. If you discover a rogue pusher on a commit:
+
+1. Search for the commit hash in coder sessions: `grep -rl "<sha>" /root/.hermes/profiles/coder/sessions/`
+2. Extract the token-source command from the session (usually message ~13: `grep '^GITHUB_TOKEN=' /root/.hermes/.env`)
+3. Compare tokens across `.env`, `gh auth token`, and `~/.git-credentials` (they can differ!)
+4. Check `.env` modification time (`stat ~/.hermes/.env`) — if it's after the commit, the token may have been changed since
+
+Prevention: periodically verify `gh auth status` matches the expected account. See `references/tracing-git-token-identity.md` for the full forensic recipe.
+
 **Never run long test suites inside the agent loop.** Running `npx playwright test`, `npm run test:e2e`, or benchmark scripts inside the agent loop burns your iteration budget (90 max) because every test log line, assertion, and wait consumes an iteration. When your task involves running test suites or benchmarks:
 - Use `terminal(background=true, notify_on_complete=true, timeout=600)` to run the test/benchmark as a background process.
 - The script runs independently and notifies you when it's done — you only spend ~3-4 iterations total (launch + analyze results).

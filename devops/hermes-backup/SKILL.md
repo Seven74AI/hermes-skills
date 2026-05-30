@@ -85,6 +85,15 @@ When a backup cron shows `last_status: error`:
 3. Scroll into the cron session: `session_search(session_id="...", around_message_id=<id>, window=10)`
 4. Look for: timeouts (300s foreground cap), disk-full errors, approval-needed blocks on `rm`, or 0-message sessions (agent crash/infra failure)
 
+### Scheduling dependency: backup must run AFTER disk cleanup
+
+The Daily Backup cron (04:00) can fail with `RuntimeError: [Errno 32] Broken pipe` when disk usage is high — the backup process creates a large archive before the disk-cleanup chain runs (typically 04:36–04:50). The pipe breaks when disk space runs out mid-backup.
+
+**Fix:** Reschedule the backup cron to run at 05:00 (after cleanup completes at ~04:50), or add a pre-flight disk check that skips the backup when usage exceeds a threshold:
+```bash
+df / | awk 'NR==2{exit ($5+0)>80}' && hermes backup ... || echo "Disk >80%, skipping backup"
+```
+
 ## What `hermes backup` does NOT cover
 
 `hermes backup` preserves Hermes itself: config, state.db, .env, auth, cron definitions, sessions. It does **not** back up:
@@ -99,6 +108,7 @@ Before a VPS migration or full restore, audit all external stores. A `hermes bac
 ## Pitfalls
 
 - **PR-per-backup + LFS = quota doom**: Every PR keeps the file in history. LFS objects are never garbage-collected automatically. Use rotation + direct-to-main commits.
+- **Git LFS is unnecessary for Hermes backups**: Backup tarballs are ~170 MB — well under GitHub's standard 100 MB per-file limit. Git LFS provides no value here and only creates recurring friction (quota exhaustion, `GIT_LFS_SKIP_SMUDGE=1` workarounds). **Recommended fix:** uninstall LFS from the backup repo entirely. Remove `.gitattributes` LFS filter rules, push backups as regular Git objects, and never deal with LFS quotas again. This is a 5-minute fix with permanent benefit.
 - **Foreground timeout**: `hermes backup` in foreground defaults to 300s. Large backups (>500 MB) will timeout. Use `background=true` with `notify_on_complete=true` or set `timeout=600`.
 - **`rm` in /tmp needs approval**: The terminal tool may block `rm` commands in `/tmp` as "delete in root path". Cleanup should happen inside the backup repo directory.
 - **State-snapshots bloat**: If `hermes backup` produces abnormally large files, check `~/.hermes/state-snapshots/` first.

@@ -1,13 +1,19 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.12.0
+version: 1.13.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared, anti-specs-to-code]
 ---
 
 # ⛔ RÈGLE ABSOLUE — LIRE AVANT TOUTE ACTION
+
+**This is the ONE authoritative source for CI merge rules. Do NOT duplicate this
+block into project-level skills (shop, the-swarm, etc.). Project skills should
+reference `kanban-project-workflow` and tell coders to load it. Duplication
+creates maintenance drift — when the rule evolves, outdated copies in project
+skills silently contradict the authoritative version.**
 
 **TU NE MERGES PAS SI UN SEUL CHECK CI EST ROUGE. ZÉRO EXCEPTION.**
 
@@ -123,6 +129,69 @@ The respawn guard will block you if you try to respawn with a PR URL in comments
 GitHub auto-merge (`--auto`) handles the CI gate natively — no custom watchdog
 needed for merging. When all required status checks pass AND the reviewer
 approves, GitHub merges automatically.
+
+### ⛔ Pitfall: Coder blocks for review but forgets to create reviewer task
+
+**This is the #2 cause of PR pile-up** (after missing `kanban-project-workflow` skill).
+The coder follows steps 1-3 correctly (PR + auto-merge + CI green + block) but skips
+step 4 (creating the reviewer task). Result: PR sits open forever with CI green and
+auto-merge enabled, but nobody ever reviews it. The coder is blocked in kanban, the
+reviewer has no task to pick up — deadlock.
+
+**Symptoms:**
+- Multiple open PRs with CI green, auto-merge enabled, zero reviews
+- Coders all `blocked` with `review-required`, but zero `reviewer` tasks in `running` or `ready`
+- Board accumulates PRs over hours/days with no merges
+
+**Detection:**
+```bash
+# Count open PRs with auto-merge enabled but no reviews
+gh pr list --repo <repo> --state open --json number,reviews,autoMergeRequest \
+  --jq '[.[] | select(.autoMergeRequest != null and (.reviews | length) == 0)] | length'
+# Compare to reviewer tasks on the board
+hermes kanban --board <board> list --status running | grep reviewer | wc -l
+# If PRs >> reviewer tasks → coders forgot step 4
+```
+
+**Recovery — bulk-create reviewer tasks for all green PRs:**
+```python
+# For each open PR with CI green:
+# 1. Enable auto-merge (if not already): gh pr merge <N> --auto --squash
+# 2. Create reviewer task:
+#    hermes kanban --board <board> create --assignee reviewer \
+#      --skills github-code-review --skills kanban-project-workflow \
+#      "Review: (<task_id>) <pr_title>"
+# 3. Dispatch: hermes kanban --board <board> dispatch
+```
+
+**Prevention:** The coder step-by-step (§ 4) already mandates creating the reviewer task.
+The absolute rule at the top of this skill exists to ensure step 4 is never skipped.
+
+**Real case:** the-swarm board (2026-05-29) — 16 PRs open, all CI green, all auto-merge
+enabled, all coders blocked `review-required`, zero reviewer tasks. PRs had been piling
+up for hours. Fixed by bulk-creating 16 reviewer tasks → all approved and merged within
+minutes.
+
+### ⛔ Pitfall: `active_pr` Respawn Guard Blocks Coder After Review
+
+When the coder blocks with a handoff comment containing the PR URL, the respawn
+guard (`active_pr` check in `kanban_db.py`) prevents the coder from respawning
+after the reviewer unblocks. **30+ consecutive `respawn_guarded: active_pr`
+events** hold the task in `ready` for 5-10 minutes.
+
+**Why:** The guard checks for PR URLs in task comments within the last 24h.
+The coder's own handoff comment triggers it.
+
+**Fix — never put the PR URL in your own comment.** Post the handoff without
+the URL, or use the kanban task metadata. The reviewer can find the PR from
+the coder's work context. If already stuck, delete the comment:
+```sql
+DELETE FROM task_comments WHERE task_id='<id>' AND body LIKE '%github.com%pull%';
+```
+
+Real case: t_541d2c3a (2026-05-28) — 30 respawn_guarded events over 10 minutes
+because the coder's `review-required handoff` comment contained the PR URL.
+Deleting the comment cleared the guard immediately.
 
 ### Reviewer agent (step-by-step)
 
@@ -244,7 +313,71 @@ in `gh pr list`. Workarounds:
   prefix (`re.match(r"kanban:", label["name"])`). `gh pr list --label kanban:` does
   exact match, not prefix — a label `kanban:t_abc123` does NOT match `--label kanban:`.
 
-## Pitfall: Stale Fork Base — Unmerged Commits on Feature Branches
+## Pitfall: `git merge main` pollutes feature branch history
+
+**Never merge main into your feature branch.** Creates useless merge commits
+("merge main", "sync remote") that clutter history and waste CI minutes.
+Always rebase instead:
+
+```bash
+# ✅ CORRECT — rebase
+git fetch origin main    # or: git fetch upstream main (fork model)
+git rebase origin/main   # or: git rebase upstream/main
+git push --force-with-lease
+
+# ❌ WRONG — creates merge commits
+git merge origin/main
+```
+
+Squash-merge on the PR cleans up the commits, but every push triggers CI —
+merge commits = wasted CI minutes and noisy PR history.
+
+## Pitfall: Task Stuck in Budget Exhaustion → Split and Use Background
+
+When a coder task burns 90+ turns 2+ times consecutively, the root cause is
+almost always **inline test/CI output consuming turns**. Every line of `vitest`
+or `playwright` output counts as a turn. The fix is two-fold:
+
+### 1. Use background mode for ALL test/CI runs
+
+```python
+# ✅ CORRECT — 1 turn for setup, 1 turn to wait
+terminal("npx playwright test --grep combat", background=True, notify_on_complete=True)
+process(action="wait", timeout=600)
+# Read results from a file or parse the wait output
+
+# ❌ WRONG — every test log line burns 1 turn
+terminal("npx playwright test --grep combat", timeout=300)
+```
+
+### 2. Split large tasks into atomic sub-tasks
+
+If a task has 3+ distinct fixes, split into separate tickets. Each sub-task
+handles 1-2 fixes max, uses background mode, and can complete within the
+budget. Archive the original bloated task.
+
+```bash
+# Create N atomic sub-tasks from the original
+hermes kanban --board <board> create --assignee coder ... "[P1] Fix X — batch 1/N"
+hermes kanban --board <board> create --assignee coder ... "[P1] Fix X — batch 2/N"
+# Archive the original
+hermes kanban --board <board> complete <original_task>
+```
+
+### 3. Bump max_turns to 120
+
+Default 90 is too tight for any CI run. Set on all worker profiles:
+
+```bash
+hermes config set --profile coder max_turns 120
+hermes config set --profile coder kanban.max_iterations 120
+hermes config set --profile reviewer max_turns 120
+hermes config set --profile researcher max_turns 120
+```
+
+Real case: t_8780761d (the-swarm, 2026-05-29) — 3 consecutive budget exhaustions
+at 90/90 fixing 5 E2E combat failures. Split into 3 atomic sub-tasks each with
+background CI. All profiles bumped to max_turns=120.
 
 When a worker creates a branch from a fork, the fork may contain commits that
 were **never merged to upstream main**. This happens when consolidation PRs,
@@ -369,6 +502,65 @@ token pre-existing), playwright FAIL (pre-existing flaky). Reviewer approved.
 Planning admin-merge." Merged despite `enforce_admins: true`. The coder
 rationalized pre-existing failures and bypassed. Fix: absolute rule added at
 SKILL.md top + `enforce_admins: true` on branch protection.
+
+## ⛔ Pitfall: Research Done ≠ Recommendations Addressed (Audit Follow-Through Gap)
+
+When a researcher completes an audit or report with actionable recommendations,
+the research task being `done` does NOT mean the recommendations were turned into
+implementation tickets. This is the #1 silent gap in the pipeline — research
+completes cleanly but 7-10 recommendations sit unaddressed for days.
+
+**Why it happens:**
+- Researcher produces a report in a kanban comment or workspace file
+- Researcher completes with summary referencing "7 recos, 2 bugs, 5 improvements"
+- Nobody (orchestrator, planner, or user) systematically checks: "did every reco become a ticket?"
+- The research task looks done on the board — recommendations are invisible
+
+**Symptoms:**
+- Audit/report tasks marked `done` with summaries like "11 recommendations, 3 HIGH-priority"
+- Searching the board for keywords from those recommendations returns zero implementation tickets
+- Weeks pass, nobody notices the gap
+
+**Detection — cross-reference research outputs with tickets:**
+```bash
+# 1. Find all researcher tasks with recommendations in their summary
+hermes kanban --board <board> list | grep researcher | while read line; do
+  tid=$(echo "$line" | awk '{print $2}')
+  summary=$(hermes kanban --board <board> show "$tid" 2>&1 | grep "Latest summary:" -A1 | tail -1)
+  if echo "$summary" | grep -qiE "recommand|recommend|ticket|P0|P1|HIGH|MEDIUM"; then
+    echo "$tid: $summary"
+  fi
+done
+
+# 2. For each recommendation keyword, check if any coder ticket exists
+#    (manual — read the research comment, extract keywords, grep board)
+```
+
+**Prevention — after ANY research/audit task completes:**
+1. Read the researcher's comment/summary — extract actionable recommendations
+2. Check the board for corresponding implementation tickets (grep keywords)
+3. Create any missing tickets immediately — don't wait for the next session
+4. Comment on the research task: "Verified: N tickets created from recommendations"
+
+**Bulk creation pattern** (when 5+ tickets are missing):
+```python
+from hermes_tools import terminal
+for t in tickets:
+    body = t["body"].replace("'", "'\\''")
+    title = t["title"].replace("'", "'\\''")
+    cmd = (
+        f"hermes kanban --board <board> create "
+        f"--assignee coder --priority {t['priority']} "
+        f"--skill <project> --skill kanban-project-workflow "
+        f"--body '{body}' '{title}'"
+    )
+    terminal(cmd)
+```
+
+**Real case (the-swarm 2026-05-29):**
+- Timing audit (t_283c924e): 7 recommendations, 0 tickets created — gap discovered hours later
+- Phase 4 space validation (t_3f68adc2, May 19): 3 HIGH-priority recos, 0 tickets — gap undiscovered for 10 days
+- 10 missing tickets created in a single batch via execute_code
 
 ## ⛔ Pitfall: `active_pr` Respawn Guard Blocks Coder After Reviewer Unblock
 
@@ -827,6 +1019,57 @@ Real case: shop board (2026-05-22) — 262 kanban tasks done, consolidation PR #
 merged 226 commits to upstream, but all 66 upstream issues (#101–#167) remained
 open. Seven74AI and the reviewer app both got 403 on close.
 
+## Pitfall: Stale PRs from Out-of-Order Slice Merges
+
+When later vertical slices get merged before earlier ones (e.g., Slice 4 + 5
+merged, but Slice 1 + 3 PRs still open), the open PRs may be **fully obsolete**
+— not just conflicting, but entirely superseded by code already on main.
+
+**Symptoms:**
+- PR shows `mergeable: CONFLICTING` on files that already exist in main
+- `git diff --name-only` shows files that main already contains (often with MORE functionality)
+- Diff of PR branch vs main shows the PR has a SUBSET of main's code
+
+**Detection — before attempting rebase, check if the PR is obsolete:**
+```bash
+# 1. List files the PR touches vs files already on main
+comm -12 <(git diff --name-only merge-base..pr-branch | sort) \
+         <(git ls-tree -r --name-only origin/main | sort)
+
+# 2. For key files, diff PR version vs main version
+diff <(git show pr-branch:path/to/file.ts) <(git show origin/main:path/to/file.ts)
+
+# 3. If main has the SAME or MORE code → PR is obsolete, close it
+```
+
+**Cleanup:**
+```bash
+gh pr close <N> --repo <repo> -c "Closed: obsolete — functionality already in main via later slices."
+gh api -X DELETE repos/<repo>/git/refs/heads/<branch>
+```
+
+**Real case (2026-05-29):** the-swarm PRs #48 (Slice 1) and #49 (Slice 3) were
+both obsolete — Slice 4 and 5 had been merged out of order, and main already
+contained the same files with more functionality. Every file in PR #49 existed
+identically in main; PR #48's flat prestige fields had been superseded by main's
+`prestige` object + `prestigeTree`. Both closed + branches deleted.
+
+## PR Obsolescence Detection
+
+When open PRs have merge conflicts, first check if the PR is **still legitimate**
+(new code not already in main via a different merge path). Parallel slices, squash-merges,
+and refactors can make older PRs obsolete without anyone noticing.
+
+See `references/pr-obsolescence-detection.md` for the full procedure: check branch
+existence, compare files against main, diff for superset/subset, cleanup.
+
+## Batch Ticket Creation
+
+When decomposing a research report into 10+ implementation tickets, use the
+`execute_code` loop pattern instead of creating tickets one at a time via CLI.
+
+See `references/batch-ticket-creation.md` for the template.
+
 ## PR Consolidation
 
 When multiple open PRs overlap (e.g., dep bumps + CI fixes + migration),
@@ -873,23 +1116,20 @@ print(r.json()['permissions'])
 3. Change from "Read-only" to **"Read & write"**
 4. Save changes → accept the installation update prompt
 
-**After the fix:** The app's reviews should show `authorAssociation: "CONTRIBUTOR"`
-or higher after its first approved PR is merged.
-
-**Immediate workaround (before fixing permissions):** Admin-merge the PR.
-But this requires the repo owner (Seven74AI) and bypasses `enforce_admins`.
+✅ **Fix applied 2026-05-29.** The app now has `contents: write`. Reviews count correctly —
+verify with `reviewDecision` (not `authorAssociation` — `NONE` is cosmetic and doesn't prevent merging):
 ```bash
-gh pr merge N --repo <repo> --admin --squash --delete-branch
+gh pr view N --repo <repo> --json reviewDecision,mergeStateStatus
+# reviewDecision: "APPROVED" → review counts
+# mergeStateStatus: "BLOCKED" → something else is wrong
 ```
 
 **Scope:** This affects ALL repos where the app is installed — shop, music-library,
-the-swarm, videogame-lab. Verified `authorAssociation: NONE` on every repo
-(2026-05-28). The app has NEVER had `contents: write`, so its reviews have
-never counted anywhere.
+the-swarm, videogame-lab. The app had `contents: read` from creation until 2026-05-29.
 
-Real case: shop#238 (2026-05-28) — hermes-sevenai-reviewer approved, all CI green,
-`mergeStateStatus: BLOCKED` because `authorAssociation: NONE`. Same as
-music-library#4 (2026-05-21).
+Real case: shop#238 (2026-05-28) — `mergeStateStatus: BLOCKED` despite APPROVED review
+and all-green CI. Root cause: `contents: read` → `reviewDecision: REVIEW_REQUIRED`.
+Fixed by upgrading to `contents: write`.
 
 ## Pitfall: CI Status Check Names vs Branch Protection Required Contexts
 

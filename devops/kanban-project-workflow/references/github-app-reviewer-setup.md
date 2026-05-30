@@ -9,7 +9,8 @@ A GitHub App owned by Seven74AI, installed on target repos, is the setup.
 - **App ID:** 3788528
 - **Installation ID:** 134194993
 - **Permissions:** `Pull Requests: Read & Write`, `Contents: Read & Write`, `Metadata: Read`
-- ⚠️ **CRITICAL: `Contents: Write` is MANDATORY.** Without it, the app's reviews show `authorAssociation: "NONE"` and do NOT count toward the required approval count. GitHub requires write-level access for a review to satisfy branch protection.
+- ⚠️ **CRITICAL: `Contents: Write` is MANDATORY.** Without it, `reviewDecision` stays `REVIEW_REQUIRED` even with APPROVED reviews — the review doesn't count toward branch protection. GitHub requires write-level access for reviews to satisfy `required_reviews`. ✅ **Fix applied 2026-05-29.**
+- **Verify with `reviewDecision`, not `authorAssociation`.** `authorAssociation: "NONE"` is cosmetic and doesn't block merging. Check `gh pr view N --json reviewDecision,mergeStateStatus` — `reviewDecision: "APPROVED"` means the review counted.
 - **Private key:** `~/.hermes/profiles/reviewer/home/.config/hermes-sevenai-reviewer.pem`
 
 ## Why an App
