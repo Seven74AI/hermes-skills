@@ -1,7 +1,7 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.13.0
+version: 1.14.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared, anti-specs-to-code]
@@ -469,7 +469,7 @@ AND (skills IS NULL OR skills NOT LIKE '%kanban-project-workflow%');
 **Prevention — ALWAYS include kanban-project-workflow in task creation:**
 ```bash
 hermes kanban --board <board> create --assignee coder \
-  --skills <project> --skills kanban-project-workflow ...
+  --skill <project> --skill kanban-project-workflow ...
 ```
 
 **Prevention — branch protection hardening:** Even with the right skills,
@@ -541,6 +541,12 @@ done
 2. Check the board for corresponding implementation tickets (grep keywords)
 3. Create any missing tickets immediately — don't wait for the next session
 4. Comment on the research task: "Verified: N tickets created from recommendations"
+5. **Create or update GitHub Issues with the COMPLETE audit report as the body** — the kanban ticket body can be shorter/task-focused, but the GitHub Issue MUST contain the full findings. The user explicitly requires this (2026-05-30: "I want the whole audit result inside the GitHub issue"). This ensures the durable record (GitHub) carries all findings, not just the ephemeral kanban comment.
+   - **If issue already exists:** Use `gh issue edit <N> --repo <org>/<repo> --body-file /tmp/audit_report.md` to update it.
+   - **If no issue exists:** Use `gh issue create --repo <org>/<repo> --title "..." --body-file /tmp/audit_report.md --label "research-backed"`.
+   - **Why this failed before (2026-05-30, #130):** The researcher task only had "Linked - GitHub: #130" as a reference, no instruction to update it. The kanban comment was posted but never propagated to the issue. ALWAYS write the report to a file, then push it to the GitHub Issue.
+   - **Template:** Use `references/audit-ticket-template.md` when creating new audit tickets — it includes the GitHub Issue update step as mandatory.
+6. **Close old resolved GitHub Issues** — when auditing, cross-reference existing open issues with what's been implemented. If an issue's work is done (e.g., property-based testing merged, CSS containment shipped), close the issue with a comment linking to the implementation tickets. Don't leave resolved issues open.
 
 **Bulk creation pattern** (when 5+ tickets are missing):
 ```python
@@ -561,6 +567,28 @@ for t in tickets:
 - Timing audit (t_283c924e): 7 recommendations, 0 tickets created — gap discovered hours later
 - Phase 4 space validation (t_3f68adc2, May 19): 3 HIGH-priority recos, 0 tickets — gap undiscovered for 10 days
 - 10 missing tickets created in a single batch via execute_code
+- Pacing audit (t_079ed35a, May 29): 2 P0 bugs + 11 P1 nerfs, 0 tickets — 5 implementation tickets + 3 GitHub Issues created after gap detection
+
+### Audit Tracker Pattern
+
+When a researcher audit produces actionable findings, create a **tracker ticket** that lists all findings with their linked implementation tickets. The tracker stays open until every sub-ticket is done — it acts as a single point of closure:
+
+```bash
+hermes kanban --board <board> create \
+  --assignee researcher \
+  --body "## Findings from <audit_task>
+### P0
+- Finding 1 → t_xxx
+- Finding 2 → t_yyy
+### P1
+- Finding 3 → t_zzz
+
+## Status
+OPEN — N sub-tickets pending. Close when all done." \
+  "[AUDIT TRACKER] <audit_name> (<audit_task>) — N findings"
+```
+
+Tracker tickets are marked `done` when all linked sub-tickets complete. They serve as the bridge between "research completed" and "all recommendations addressed" — closing both the kanban tracker AND the corresponding GitHub Issue signals full resolution.
 
 ## ⛔ Pitfall: `active_pr` Respawn Guard Blocks Coder After Reviewer Unblock
 
@@ -1075,12 +1103,24 @@ See `references/batch-ticket-creation.md` for the template.
 When multiple open PRs overlap (e.g., dep bumps + CI fixes + migration),
 consolidate into one PR:
 
-1. Check which PRs are already merged on main (`gh pr view` + `git log`)
-2. Apply remaining changes onto a single branch off main
-3. Run full local CI in background + wait
-4. Push to fork, create a single consolidated PR
-5. Close superseded PRs with comment
-6. Close upstream issues corresponding to the consolidated work (see § Closing Upstream Issues)
+1. **Check if a consolidation PR already exists** — search ALL PR states (open + merged + closed) on the upstream repo:
+   ```bash
+   gh pr list --repo <upstream> --state all --limit 30 --json number,title,state,mergedAt,headRefName
+   ```
+   The repo owner may have already merged a consolidation PR manually. If `mergedAt` is recent (same day), the consolidation is done — skip creation.
+   ⚠️ Do NOT rely on `--search "consolidat"` — older gh versions (pre-2.60) silently ignore the flag.
+2. Check which PRs are already merged on main (`gh pr view` + `git log`)
+3. Apply remaining changes onto a single branch off main
+4. Run full local CI in background + wait
+5. Push to fork, create a single consolidated PR
+6. Close superseded PRs with comment
+7. Close upstream issues corresponding to the consolidated work (see § Closing Upstream Issues)
+
+**⛔ Pitfall: Creating a consolidation PR that was already merged.** Always check ALL PR states on upstream before creating. The repo owner (mnlamart) can merge consolidation PRs directly with their token — the PR may be merged and you won't know unless you check. Creating a duplicate wastes time and creates noise.
+
+**Real case (2026-05-30):** music-library consolidation PR #10 was merged by mnlamart at 11:37. Agent created a new consolidation attempt without checking — wasted time resolving unrelated-history conflicts before discovering the PR was already merged.
+
+**Merge permissions:** Merging a consolidation PR to upstream requires write access to the upstream repo. Neither the Seven74AI token (not a collaborator) nor the GitHub App (installed only on Seven74AI repos) can merge to `mnlamart/*` repos. Only mnlamart's personal token can merge to upstream. Create the PR, then hand off — or the repo owner merges it themselves.
 
 ## ⛔ Pitfall: Reviewer App Approval Not Counting (`authorAssociation: NONE`)
 
@@ -1191,6 +1231,30 @@ Researcher → Planner (PRD + to-issues) → Coder → Reviewer → Done
 All boards use the same unified PR workflow (CI + reviewer → auto-merge).
 No per-board variation. Project-specific details (GitHub model, tech stack,
 testing conventions) live in the project skill (`shop`, `the-swarm`, etc.).
+
+### ⛔ Pitfall: AI-Coded PRs with Fabricated Root Causes
+
+When an AI coder produces a PR, the root cause analysis may be
+**mathematically correct but conceptually wrong**. The AI pattern-matches
+a fix that makes tests pass without understanding domain logic.
+
+**Recognition:**
+- PR claims "root cause" with a clean one-line fix
+- Fix works mathematically but violates domain logic
+- AI rationalizes "X has field Y → Z should too" without understanding Y
+
+**Real case — PR #134 on the-swarm (2026-05-30):**
+- Bug: worker starvation above ~1800 workers (food deficit)
+- Claimed root cause: "foodConsumedPerSec missing workerEff, while foodProducedPerSec has it"
+- Fix: `foodConsumedPerSec = (workers / 2) * workerEff`
+- Wrong: `workerEff` models diminishing PRODUCTION returns. Multiplying consumption by it makes workers eat LESS at higher counts — absurd physics.
+- Real fix: soften the efficiency curve (`0.001 → 0.0005` in ProgressionCurve.ts)
+
+**When reviewing AI-coded PRs, ask:**
+1. Does the root cause make **domain sense**, not just math?
+2. Would a human domain expert agree?
+3. Is this fixing the symptom or the actual root cause?
+4. Does the fix introduce conceptual regressions?
 
 ### Anti-Specs-to-Code Guardrails
 
@@ -1581,11 +1645,27 @@ for ready tasks with issues. It reports to Discord but takes NO action:
 
 - `NO-SKILLS` — skills is NULL or empty
 - `NO-MRT` — max_runtime_seconds is NULL
+- `NO-BODY` — task body is NULL or empty (worker has no instructions)
 - `PR-URL-IN-BODY` — task body contains a github.com PR URL
 - `PR-URL-COMMENTS(N)` — N comments contain github.com PR URLs  
 - `NO-ASSIGNEE` — no assignee (expected for RECETTE bookmarks)
 
 Silent when clean. Created 2026-05-20 (cron `ceead0ca5089`).
+
+### ⛔ Pitfall: Tickets Created Without `--body` → NO-BODY Watchdog Noise
+
+Always pass `--body` when creating kanban tickets. Tickets without bodies are
+flagged by the pre-spawn watchdog as NO-BODY and the worker has no context to
+understand the task. If tickets were created without bodies, archive and recreate:
+
+```bash
+hermes kanban --board <board> archive <task_id>
+hermes kanban --board <board> create --assignee coder --priority 1 \
+  --body "$(cat /tmp/ticket_body.md)" "Title"
+```
+
+Real case (the-swarm 2026-05-30): 5 tickets created without `--body` — all
+flagged NO-BODY by the watchdog. Archived and recreated with bodies.
 
 ### Pre-Spawn False Positives: Gap-Recreated Tasks
 

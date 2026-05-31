@@ -32,7 +32,7 @@ Tasks created with `skills=["the-swarm"]` only will merge red CI because the
 coder doesn't know the merge rules. Always use:
 ```bash
 hermes kanban --board the-swarm create --assignee coder \
-  --skills the-swarm --skills kanban-project-workflow ...
+--skill the-swarm --skill kanban-project-workflow ...
 ```
 
 **Branch protection (Seven74AI/the-swarm):**
@@ -44,9 +44,9 @@ hermes kanban --board the-swarm create --assignee coder \
 
 ## CI
 
-Full CI: `tsc --noEmit + vitest run + playwright test`
+Full CI: `tsc --noEmit + vitest run + playwright test` with 2-shard matrix + playwright-gate.
 
-**Workflow MUST be named `CI`** (exact match for branch protection `contexts: ["ci"]`).
+**Workflow: `.github/workflows/ci.yml`** — 4 jobs: `typecheck`, `vitest`, `playwright` (2-shard matrix), `playwright-gate`.
 
 **Pitfall: `|| true` / `--if-present` — silent CI bypass.** Two variants, same effect:
 
@@ -99,18 +99,18 @@ When creating swarm tasks, ensure:
 hermes kanban --board the-swarm create \
   --assignee <profile> \
   --max-runtime 3600s \
-  --skills the-swarm --skills kanban-project-workflow \
+--skill the-swarm --skill kanban-project-workflow ...
   "<title>"
 
 # Planner (uses kanban-orchestrator, NOT kanban-worker):
 hermes kanban --board the-swarm create \
   --assignee planner \
   --max-runtime 3600s \
-  --skills kanban-orchestrator --skills kanban-project-workflow --skills the-swarm \
+  --skill kanban-orchestrator --skill kanban-project-workflow --skill the-swarm \
   "<title>"
 ```
 
-- **Flag is `--skills` (repeatable).**
+- **Flag is `--skill` (repeatable).** `--skills` (plural) is REJECTED by the CLI. Always use `--skill the-swarm --skill kanban-project-workflow`.
 - **skills**: Must include the role skill (`kanban-worker` or `kanban-orchestrator`), `kanban-project-workflow`, and `the-swarm`. Workers without these operate without the shared PR workflow, respawn guard, and project-specific patterns.
 - **Planner exception**: planner uses `kanban-orchestrator` instead of `kanban-worker` — it never implements code, it decomposes and delegates.
 - **max_runtime_seconds**: Set to 3600 (1h safety net). Heartbeat is the primary liveness signal.
@@ -160,6 +160,8 @@ authoritative — the TypeScript source code is. Known errors (audited 2026-05-2
 
 Always verify mechanics against `src/systems/*.ts`, `src/phases/transitions.ts`, and `src/engine/ProgressionCurve.ts`. Never cite UNLOCKS.md without cross-referencing actual code.
 
+- **workerEfficiency curve (2026-05-30):** coefficient 0.001 → 0.0005 in `ProgressionCurve.ts`. Original 0.001 caused starvation at ~1500 workers (efficiency dropped too fast, linear consumption outpaced O(1) production). The 0.0005 coefficient pushes the starvation threshold past the practical game range (~2500 without prestige bonuses). Consumption stays linear (`workers/2`) — NOT multiplied by workerEff (that would be a conceptual regression: workers eating less at higher counts).**
+
 ## Quick Start
 
 ```bash
@@ -182,12 +184,21 @@ Access: `http://100.98.177.76:3456` (Tailscale IP, port 3456).
 
 ## Testing
 
-- 512 unit tests (Vitest), 7 E2E specs (Playwright), lint: `tsc --noEmit`
+- 1158 unit tests (Vitest), 20 E2E specs (Playwright), lint: `tsc --noEmit`
 - TDD mandatory — load `test-driven-development` skill
 - E2E seed: `page.addInitScript` → `localStorage.setItem('the_swarm_save', ...)` BEFORE `page.goto('/')`
 - DOM selectors: `references/dom-selectors.md`
 - E2E selectors (post-ResourcePanel refactor): `references/e2e-selectors.md`
 - Save version: 11 (migrations cover v1→v11 in `src/persistence/migrations.ts`)
+
+### E2E CI Setup
+
+- **2-shard matrix** in `.github/workflows/ci.yml`: `shard: [1, 2]` with `--shard=${{ matrix.shard }}/${{ strategy.job-total }}`
+- **Playwright workers: 2** in CI (`playwright.config.ts:8`), each shard runs 2 browser instances
+- **repeat-each=3** for flaky protection
+- **playwright-gate** job consolidates shard results
+- Branch protection: `typecheck + vitest + playwright-gate` (was monolithic `ci`)
+- CI timeout: 60 min per shard
 
 ### Test Conventions: Invariants, NOT Hardcoded Values
 
@@ -328,7 +339,14 @@ localStorage.setItem('the_swarm_save', '...')
 For comprehensive playtest tasks (researcher plays like a real player, focuses on
 fun/UX not edge cases), use the template at `references/playtest-task-template.md`.
 
-## Spaceship Bootstrap
+## Prestige System
+
+- `PrestigeSystem.ts`: `calculateLegacyPoints()` uses `Math.floor(Math.log10(food) * phaseScore / 100)`
+- **⚠️ Known issue (#127):** divisor 100 makes prestige tree inaccessible (1 LP needs ~4.6M food). Fix pending: change divisor 100 → 10.
+- Prestige requirement: all colony buildings level 5+ AND 100K total food
+- Reset: all Phase 1-4 resources, buildings, upgrades, worker counts to starting values
+- Legacy Points: +2% production per point (additive)
+- Prestige tree: 8 upgrades costing 57 LP total
 
 First spaceship costs only basic resources (food, wood, stone, nectar — zero space resources). Expeditions have 10% chance to drop space resources as alternative bootstrap.
 

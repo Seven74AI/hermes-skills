@@ -24,6 +24,19 @@ python3 ~/.hermes/scripts/kanban-velocity-view.py           # all boards
 python3 ~/.hermes/scripts/kanban-velocity-view.py shop      # single board
 ```
 
+**Daily health monitor** (velocity + system + blocked tasks, Discord-friendly):
+```bash
+python3 ~/.hermes/scripts/kanban-daily-monitor.py
+```
+
+**Fallback when scripts aren't installed at `~/.hermes/scripts/`:** run them from the skill directory:
+```bash
+SKILL_DIR=~/.hermes/skills/devops/kanban-velocity
+python3 $SKILL_DIR/scripts/kanban-velocity.py
+python3 $SKILL_DIR/scripts/kanban-velocity-view.py
+```
+If `kanban-daily-monitor.py` is missing, combine `kanban-velocity.py` (live dashboard) + manual `df -h /`, `free -h`, and `uptime` for the same system-health snapshot.
+
 ## Scripts
 
 - `scripts/kanban-velocity.py` — query-based live dashboard (reads task_events directly)
@@ -91,6 +104,7 @@ Both scripts live in `scripts/`:
 
 ## Pitfalls
 
+- **Corrupted/empty kanban.db:** if `kanban.db` has 0 tables (e.g. after a disk-full event or filesystem error), `count-blocked-tasks.py` and the live dashboard may hang or timeout. The velocity registry (`velocity-registry.json`) is independent and usually survives — use `kanban-velocity-view.py` for historical data and check board state files directly for blocked-task counts.
 - The registry is JSON-based and loaded entirely into memory. For 90 days of daily snapshots across 10+ boards, this is ~100KB — negligible.
 - If the cron job misses a day, the next run will batch all missed completions into one snapshot (not backfill daily buckets).
 - The live dashboard (`kanban-velocity.py`) queries task_events directly and can be slow on large boards with millions of events. The registry approach is more efficient for historical queries.
