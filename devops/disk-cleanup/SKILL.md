@@ -98,7 +98,7 @@ python3 /tmp/profile-cache-check.py
 
 ## Step 2 — Cleanup (safe targets, ordered by safety)
 
-Execute in order. Stop when disk drops below 80%.
+Execute in order. Stop when disk drops below 70% (5% below the ≥75% watchdog trigger).
 
 **🚨 RÈGLE ABSOLUE — à lire avant toute action :**
 - **NE JAMAIS** supprimer un workspace de tâche `blocked`, `running`, ou `ready`. Seules les tâches `done`/`archived` sont nettoyables.
@@ -218,9 +218,9 @@ ncc = '/tmp/node-compile-cache'
 if os.path.isdir(ncc):
     targets.append(ncc)
 
-# Playwright transform cache
+# Playwright transform cache and download temp dirs
 for d in os.listdir('/tmp'):
-    if d.startswith('playwright-transform-cache-') and os.path.isdir(os.path.join('/tmp', d)):
+    if d.startswith(('playwright-transform-cache-', 'playwright-download-')) and os.path.isdir(os.path.join('/tmp', d)):
         targets.append(os.path.join('/tmp', d))
 
 for dp in targets:
@@ -238,6 +238,8 @@ Step 2e only removes orphaned **files** >24h. Full project directories with `.gi
 - Contains `.git/` OR `package.json` OR `node_modules/` (project clone heuristic)
 - Is NOT in the allowlist below
 
+**Also catches broken `node_modules.*` directories that ARE the node_modules (not containers of them — no `.git`/`package.json`/`node_modules/` subdirectory).** These are renamed temp dirs from failed/aborted npm installs and match NO existing heuristic. Observed: `node_modules.broken-t189f4234` at 742M (2026-05-31).
+
 ```bash
 cat > /tmp/cleanup-tmp-projects.py << 'PYEOF'
 import shutil, os
@@ -251,9 +253,11 @@ for d in os.listdir('/tmp'):
     if not os.path.isdir(dp) or dp in ALLOWLIST:
         continue
     # Heuristic: project clone if it has .git/, package.json, or node_modules/
+    # Also catch broken node_modules.* temp dirs (named with node_modules in dirname)
     if (os.path.exists(os.path.join(dp, '.git')) or
         os.path.exists(os.path.join(dp, 'package.json')) or
-        os.path.exists(os.path.join(dp, 'node_modules'))):
+        os.path.exists(os.path.join(dp, 'node_modules')) or
+        'node_modules' in d):
         targets.append(dp)
         size = 0
         try:
@@ -426,7 +430,7 @@ python3 /tmp/cleanup-stale-ws.py
 
 ### 2ha. Orphaned kanban workspaces — dirs with NO matching task in DB
 
-Sometimes workspace directories survive on disk even after the task record is deleted from the DB — or the directory was renamed with a `_new` or `.old` suffix during workspace recreation. These are truly orphaned (NOT blocked, NOT ready — they don't exist in the DB at all). Safe to delete. Observed accumulation: 176M across 4 orphans (2026-05-24).
+Sometimes workspace directories survive on disk even after the task record is deleted from the DB — or the directory was renamed with a `_new`, `.old`, or `_fix` suffix during workspace recreation. These are truly orphaned (NOT blocked, NOT ready — they don't exist in the DB at all). Safe to delete. Observed accumulation: 176M across 4 orphans (2026-05-24).
 
 ```bash
 cat > /tmp/cleanup-orphan-ws.py << 'PYEOF'
@@ -728,7 +732,7 @@ The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/`
 cat > /tmp/cleanup-backup-zips.py << 'PYEOF'
 import os, shutil
 
-PREFIXES = ['hermes-backup', 'hermes-critical', 'hermes-final']
+PREFIXES = ['hermes-backup', 'hermes-critical', 'hermes-final', 'hermes-bkp']
 EXTENSIONS = ['.zip', '.tar.gz']
 total = 0
 
@@ -767,6 +771,42 @@ for base in ['/tmp', '/root']:
     except (OSError, PermissionError):
         pass
 
+# Phase 3: backup archives nested ONE level deep in temp dirs (e.g. /tmp/tmp.XXXXXX/hermes-critical-*.tar.gz).
+# Phase 1 only scans top-level /tmp/ and /root/ — misses archives wrapped in a temp directory.
+# Observed: 814M (tar.gz 219M + unpacked dir 662M) in /tmp/tmp.5TPyx2em9I/ — 2026-05-31.
+for base in ['/tmp', '/root']:
+    try:
+        for d in os.listdir(base):
+            dp = os.path.join(base, d)
+            if not os.path.isdir(dp):
+                continue
+            # Only descend into temp-looking dirs (tmp.*, .tmp*, etc.)
+            if not (d.startswith('tmp.') or d.startswith('.tmp')):
+                continue
+            try:
+                for f in os.listdir(dp):
+                    fp = os.path.join(dp, f)
+                    # Archive files
+                    if os.path.isfile(fp) and any(f.startswith(p) for p in PREFIXES) and any(f.endswith(e) for e in EXTENSIONS):
+                        sz = os.path.getsize(fp)
+                        os.remove(fp)
+                        total += sz
+                        print(f'Removed nested file: {fp} ({sz/1024/1024:.0f}M)')
+                    # Unpacked backup dirs
+                    if os.path.isdir(fp) and any(f.startswith(p) for p in PREFIXES):
+                        if not os.path.exists(os.path.join(fp, '.git')):
+                            size = sum(os.path.getsize(os.path.join(r,fn)) for r,_,files in os.walk(fp) for fn in files)
+                            shutil.rmtree(fp, ignore_errors=True)
+                            total += size
+                            print(f'Removed nested dir: {fp} ({size/1024/1024:.0f}M)')
+                # If temp dir is now empty, remove it too
+                if not os.listdir(dp):
+                    os.rmdir(dp)
+            except (OSError, PermissionError):
+                pass
+    except (OSError, PermissionError):
+        pass
+
 print(f'Total: {total/1024/1024:.0f}M')
 PYEOF
 python3 /tmp/cleanup-backup-zips.py
@@ -794,7 +834,7 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - Never delete `/root/.hermes/kanban/boards/*/kanban.db` — that's the task database
 - Never delete `/root/.hermes/config.yaml` or `.env` files
 - Never delete project git repos in `/tmp/` with uncommitted work — check `git status` first
-- The stale workspace cleanup (2h) targets tasks idle >6h — conservative, won't kill active work. **Note: some kanban boards use `running` instead of `in_progress` — the 2h script checks both statuses.** If your board uses a different status name, add it to the `for status in` list.
+- **The stale workspace cleanup (2h) targets tasks idle >6h — conservative, won't kill active work. **Note: some kanban boards use `running` instead of `in_progress` — the 2h script checks both statuses.** If your board uses a different status name, add it to the `for status in` list.**\n- **🔴 2h query gap — running tasks with NULL heartbeat are never caught.** The 2h query requires `CAST(last_heartbeat_at AS INTEGER) > 0`, which excludes tasks whose heartbeat was never set or was reset to NULL. Running tasks that sit in this zombie state (e.g., `t_ceee3f9f`, 2.3G, running with NULL heartbeat on 2026-05-31) accumulate indefinitely. The query is designed this way to avoid false positives on tasks that just transitioned to running, so no change is needed — but the agent should check for this pattern manually when disk is still tight after 2h produces 0 results. Verify with: `SELECT id, status, heartbeat FROM tasks WHERE status='running' AND (last_heartbeat_at IS NULL OR CAST(last_heartbeat_at AS INTEGER) <= 0)`.
 - Docker system prune with `--volumes` deletes unused volumes — safe, but note it
 - **The GC script (`kanban-gc-workspaces.py`) was broken since creation** — it referenced `updated_at` which doesn't exist in the kanban schema. Fixed 2026-05-18 to use `CAST(completed_at AS INTEGER)` with Python-side timestamp. Verify the script works before trusting the GC cron.
 - **Full incident report**: See `references/may-18-incident.md` — disk saturation, 22 workspaces destroyed, root causes, guardrails added.
@@ -806,12 +846,14 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - Docker `system prune --volumes` deletes unused volumes — safe, but note it.
 - **Watchdog % may differ from live `df`.** The watchdog snapshot and the cleanup run are separated in time — transient files (temp builds, caches flushed by other processes) can drop usage between the watchdog check and the agent's `df`. When `CLEANUP_TRIGGER=true` is set, **trust the trigger** and run the full protocol. Do not short-circuit based on a lower current `df` reading — the watchdog fired for a reason, and storage can fill again quickly.
 - **🔴 FIXED 2026-05-22: Trigger mismatch.** The disk-watchdog (`9fbadfbd593e`) now emits `CLEANUP_TRIGGER=true` in its action field at ≥75%, matching what the Disk Cleanup Agent (`4423bee366e6`) expects. Previously the watchdog only emitted "Cleanup required — run disk-cleanup skill..." without the trigger string, so the cleanup agent responded "." every 10 minutes while disk stayed at 95%.
-- **GC script silent output is normal.** The script prints nothing when 0 workspaces are removed. This can mean: (a) no done/archived tasks, (b) workspaces already deleted from disk in a prior run but DB records remain, or (c) all done/archived tasks completed <5 minutes ago. Verify by checking the DB directly before assuming failure.
-- **Blocked and ready workspaces can become the largest disk consumers.** Blocked and ready tasks are NOT cleaned by any automated step (2g only targets done/archived, 2h only targets in_progress/running). When many tasks get stuck in `blocked` or `ready` state (e.g. shop board with 3 ready workspaces at ~370M avg, ~1.1G total lingering since May 22 — 2026-05-24, or 25 blocked workspaces at ~160M avg, ~4G total), manual intervention is required. **The GC script has a 5-minute grace period** (`completed_at < now - 300`), so re-running 2g immediately after archiving will produce empty output — the workspaces are too fresh. The correct workflow: (1) Archive blocked/ready tasks via SQL: `UPDATE tasks SET status='archived', completed_at=<unix_ts> WHERE id='<tid>'`. (2) Delete the workspaces directly with a temp script that queries `SELECT id FROM tasks WHERE status='archived' AND completed_at IS NOT NULL` and calls `shutil.rmtree()` for each workspace on disk. (3) Then re-run 2g to catch any done/archived tasks from other boards that may have accumulated. See the 2026-05-24 session for the exact temp script pattern.
+- **GC script silent output is normal.** The script prints nothing when 0 workspaces are removed. This can mean: (a) no done/archived tasks, (b) workspaces already deleted from disk in a prior run but DB records remain, (c) all done/archived tasks completed <5 minutes ago, or (d) all done/archived tasks have `completed_at = NULL` — the GC script requires `completed_at IS NOT NULL`, and many boards transition tasks to done/archived without setting this field. Verify by checking the DB directly before assuming failure: `SELECT id, status, completed_at FROM tasks WHERE status IN ('done','archived')`.
+- **Blocked and ready workspaces can become the largest disk consumers.** Blocked and ready tasks are NOT cleaned by any automated step (2g only targets done/archived, 2h only targets in_progress/running). Before archiving, verify staleness with disk mtime — see `references/assessing-blocked-workspaces.md`. When many tasks get stuck in `blocked` or `ready` state (e.g. shop board with 3 ready workspaces at ~370M avg, ~1.1G total lingering since May 22 — 2026-05-24, or 25 blocked workspaces at ~160M avg, ~4G total), manual intervention is required. **The GC script has a 5-minute grace period** (`completed_at < now - 300`), so re-running 2g immediately after archiving will produce empty output — the workspaces are too fresh. The correct workflow: (1) Archive blocked/ready tasks via SQL: `UPDATE tasks SET status='archived', completed_at=<unix_ts> WHERE id='<tid>'`. (2) Delete the workspaces directly with a temp script that queries `SELECT id FROM tasks WHERE status='archived' AND completed_at IS NOT NULL` and calls `shutil.rmtree()` for each workspace on disk. (3) Then re-run 2g to catch any done/archived tasks from other boards that may have accumulated. See the 2026-05-24 session for the exact temp script pattern.
 - **🔴 Media processing pipelines leave large residue in /tmp.** Researcher-videos and similar profiles that extract frames, transcode audio, or run media analysis tools can accumulate 3-4G of `.mp4`/`.mp3`/`.wav` files in `/tmp/` in a single run, plus tool-specific directories like `megapy_*` (200-500M). These are not caught by Step 2e (<24h cutoff) — use Step 2ec for media artifacts with a 1h grace period. Check with `du -sh /tmp` when /tmp appears oversized but 2e/2ea/2eb found nothing.
 - **🔴 Pip build artifacts in /tmp are NOT caught by 2e/2ea/2eb/2ec.** Failed or interrupted `pip install` runs leave `pip-unpack-*` directories (extracted wheels, single dirs can be 2G+), `pip-build-env-*` (isolated build environments), and `pip-metadata-*` (metadata extraction temp dirs) with random suffixes. These are directories — not caught by 2e (files-only), not project clones — not caught by 2eb, not cache dirs — not caught by 2ea, not media — not caught by 2ec. Observed: 2.2G in one `pip-unpack-*` dir + 7M in `pip-build-env-*` (2026-05-24). Use Step 2ed with a 10-min grace period. When `/tmp` is oversized but all other /tmp steps found nothing, run `ls /tmp/ | grep '^pip-'` to check for these.
 - **🔴 Pipeline-specific data-processing residue in /tmp is NOT caught by any step.** Data extraction/scraping pipelines (Instagram transcripts, video frame extraction, audio analysis) leave behind named directories like `ig_lot4`, `ig_transcripts_lot3`, `ig_slides`, `reels_transcripts` that contain JSON/CSV/media files. These are NOT project clones (no `.git`/`package.json`), NOT cache dirs (not `camoufox-*`/`node-compile-cache`), NOT media artifacts (they're dirs, not bare files), and NOT pip artifacts. Observed: 190M across 5 directories (2026-05-24). No universal pattern exists — when `/tmp` is oversized but all 2e–2ed steps found nothing, run `du -sh /tmp/*/ | sort -rh` and inspect remaining dirs. Safe to delete with `shutil.rmtree()` if they're >1h old and clearly pipeline output.
-- **🔴 Backup operations leave two forms of /tmp residue.** (1) `.zip`/`.tar.gz` files matching `hermes-*` prefixes — caught by 2p Phase 1. (2) **Unpacked backup directories** with the same prefixes (e.g., `hermes-backup-20260529-072807/`, 496M; `hermes-critical-20260529-094443/`, 506M) — these are directories, not files, and not caught by 2eb (no `.git`/`package.json`/`node_modules`). 2p Phase 2 now catches them. (3) **Orphaned temp SQLite DBs** (`tmp*.db` in /tmp, 1.4-1.6G each) are not caught by any automated step when <24h old. See `references/tmp-backup-residue-patterns.md` for full pattern catalog.
+- **🔴 Backup operations leave THREE forms of /tmp residue.** (1) `.zip`/`.tar.gz` files matching `hermes-*` prefixes — caught by 2p Phase 1. (2) **Unpacked backup directories** with the same prefixes (e.g., `hermes-backup-20260529-072807/`, 496M; `hermes-critical-20260529-094443/`, 506M) — these are directories, not files, and not caught by 2eb (no `.git`/`package.json`/`node_modules`). 2p Phase 2 now catches them. (3) **Orphaned temp SQLite DBs** (`tmp*.db` in /tmp, 1.4-1.6G each) are not caught by any automated step when <24h old. See `references/tmp-backup-residue-patterns.md` for full pattern catalog. (4) **Nested backup archives inside temp directories** — 2p Phase 1 only scans top-level of `/tmp/` and `/root/`. Backup archives wrapped in a temp subdirectory (e.g., `/tmp/tmp.5TPyx2em9I/hermes-critical-*.tar.gz`, 814M — 2026-05-31) are missed. 2p Phase 3 now descends into `tmp.*`/`.tmp*` dirs to catch these.
+- **🔴 `node_modules.broken-*` dirs are NOT caught by 2eb's heuristic.** Step 2eb checks for `.git/`, `package.json`, and `node_modules/` subdirectory inside the target dir. But dirs named `node_modules.broken-*` ARE the node_modules themselves (no `node_modules/` subdir, no `.git/`, no `package.json`) — they match none of the checks. Observed: `node_modules.broken-t189f4234` at 742M (2026-05-31). Fixed: 2eb now also matches dirs whose name contains `node_modules`.
+- **🔴 `playwright-download-*` dirs are NOT caught by 2ea.** Step 2ea caught `playwright-transform-cache-*` and `camoufox-*` but Playwright's browser download temp dirs use a different prefix (`playwright-download-ZlR1tK`, 113M — 2026-05-31). Fixed: 2ea now matches both `playwright-transform-cache-*` and `playwright-download-*`.
 - **🔴 /tmp project clones are NOT caught by Step 2e.** Step 2e only removes orphaned files >24h, but kanban worker workspaces in `/tmp/` are full git clones (`.git/`, `node_modules/`, etc.) that are directories, not individual files. They survive 2e indefinitely. In the 2026-05-22 incident, `/tmp/` held 25G of stale workspace clones (shop ×12, music-library ×3, edgee-lab ×3, etc.) — the largest single disk consumer. To clean these: identify project dirs (those with `.git/` or `package.json`), verify they're not the active workspace, then remove. Keep an allowlist for the current working project(s).
 - **`find /root -type f -size +100M` can time out on busy or large filesystems.** Give it at least 60s timeout; if it still times out, skip it — rely on `du -sh` of known directories instead. The escape hatch doesn't mention this but the same logic applies: I/O starvation at high usage makes filesystem walks slow.
 - **`du -sh` on workspace directories can time out even at moderate usage.** The escape hatch in Step 1 says to skip `du` only at ≥95%, but `du -sh /root/.hermes/kanban/boards/*/workspaces` timed out at 180s on a 79%-full disk with 38 shop workspaces (2026-05-23). The workspace count script (`ws-count.py`) is fast — prefer it. If `du` times out, skip it and rely on `ws-count.py` + `find /root -type f -size +100M` to identify large consumers.

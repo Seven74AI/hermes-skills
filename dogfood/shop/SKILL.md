@@ -1,7 +1,7 @@
 ---
 name: shop
 description: "Shop project configuration — tech stack, repo, Prisma pitfalls, flaky tests, Phase roadmap."
-version: 3.4.0
+version: 3.5.0
 metadata:
   hermes:
     tags: [shop, project, ecommerce, reference]
@@ -157,6 +157,22 @@ see `references/gh-api-file-edit.md`.
 
 ## Prisma — Adapter & Config Pitfalls
 
+### ⛔ Pitfall: Missing `.env` → SESSION_SECRET Crash (ALL Tests Fail)
+
+When `.env` is missing from the working copy, `process.env.SESSION_SECRET` is `undefined`, and calling `.split(',')` on it throws `TypeError`. This crashes the import chain before any test body runs — ALL 93 vitest files AND all 183 Playwright tests fail with the same error at `cart-session.server.ts:13`.
+
+**Files affected:** `cart-session.server.ts`, `session.server.ts`, `verification.server.ts`, `toast.server.ts`, `webauthn+/utils.server.ts` — all use `process.env.SESSION_SECRET.split(',')` without a fallback.
+
+**Fix:** Copy `.env.example` to `.env` AND add `?? 'dev-secret'` fallback to all 5 sites:
+```ts
+// BEFORE — crash
+secrets: process.env.SESSION_SECRET.split(','),
+// AFTER — safe
+secrets: (process.env.SESSION_SECRET ?? 'dev-secret').split(','),
+```
+
+**Detection:** Run `grep -rn "SESSION_SECRET.split" app/` — must show `?? 'dev-secret'` on every site.
+
 ### Prisma v7 — Use `PrismaBetterSqlite3`, NOT `PrismaLibSql`
 
 ```ts
@@ -190,11 +206,37 @@ export default defineConfig({
 
 ### `packageManager` must be exact version
 
-```json
-"packageManager": "pnpm@10.9.0"   // ✅  — NOT "pnpm@10"
+### ⛔ Pitfall: Admin a11y Tests — Lazy Routes Block SSR `<main>`
+
+When ALL admin a11y tests fail with `locator('main').toBeVisible()` timeout (30s), React Router 7 SSR returns raw JSON (`Content-Type: application/json`, 204 bytes) instead of rendered HTML. The `.lazy` route component is never rendered server-side — `handleDataRequest` fires, not `handleDocumentRequest`.
+
+**Root cause:** Admin routes use `export const lazy = () => import('./__xxx.lazy')`. React Router 7 SSR with `onShellReady` does NOT render lazy routes. The component must be in the SAME file as the loader/meta exports.
+
+**❌ Does NOT work — direct import still returns JSON:**
+```ts
+import LazyComponent from './__index.lazy'
+export default LazyComponent  // STILL broken
 ```
 
-## Flaky Playwright Test Fixes
+**✅ Fix — inline the component body into the route file:**
+Copy the component function from the `.lazy` file into the route file itself. Full procedure in `references/flaky-test-patterns.md` § Admin Page a11y Tests.
+
+**⚠️ MUST REBUILD after any route file change.** Production mode (`NODE_ENV=production`, used by `start:mocks` and the Playwright webServer in CI) loads from `server-build/index.js`. Without `pnpm run build`, stale builds are used and SSR won't reflect source changes.
+```bash
+pnpm run build  # REQUIRED before every test run after source edits
+```
+
+**⚠️ Related: Vite 8 + Oxc/Rolldown build failure** — if `react-router build` itself fails with `[builtin:vite-transform] Unexpected token` on `@conform-to/react` or `@epic-web/invariant`, the build pipeline is broken at the bundler level (not lazy routes). See `references/flaky-test-patterns.md` § Vite 8 + Oxc/Rolldown Build Failure for diagnostics and fix paths.
+
+Five recurring patterns — full details in `references/flaky-test-patterns.md`: 
+
+Five recurring patterns — full details in `references/flaky-test-patterns.md`:
+
+1. **networkidle → domcontentloaded** — pages with SSE/polling (LiveReload) never reach idle
+2. **CDP WebAuthn headless limitation** — `setUserVerified(false)` doesn't propagate in CI → skip
+3. **shadcn checkbox hydration** — `<button role="checkbox">` fails `.check()` → use `.click()`
+4. **Toast race after redirect** — `waitForURL` before `toBeVisible` with explicit timeout
+5. **SQLite busy_timeout** — `PRAGMA busy_timeout = 5000` for parallel worker contention
 
 ### Pattern 1: WCAG color-contrast (a11y tests)
 

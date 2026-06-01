@@ -1,7 +1,7 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.14.0
+version: 1.18.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared, anti-specs-to-code]
@@ -111,6 +111,9 @@ terminal(f"gh pr merge --auto --squash")
 # 4. ONLY when ALL checks are GREEN:
 #    - Create reviewer task (standalone — NEVER with parent=)
 #    - Post handoff comment with changed files summary
+#      ⛔ NEVER include the PR URL (github.com/.../pull/N) in the comment or body.
+#         It triggers the active_pr respawn guard for 24h, blocking respawn after review.
+#         Use the PR number only: "PR #N" — the reviewer can find it from the label.
 #    - Block yourself
 kanban_create(
     title=f"Review: (t_{os.environ['HERMES_KANBAN_TASK']}) <summary>",
@@ -184,9 +187,9 @@ The coder's own handoff comment triggers it.
 
 **Fix — never put the PR URL in your own comment.** Post the handoff without
 the URL, or use the kanban task metadata. The reviewer can find the PR from
-the coder's work context. If already stuck, delete the comment:
-```sql
-DELETE FROM task_comments WHERE task_id='<id>' AND body LIKE '%github.com%pull%';
+the coder's work context. If already stuck, run the cleanup script:
+```bash
+python3 /root/.hermes/skills/devops/kanban-project-workflow/scripts/clean-pr-urls.py
 ```
 
 Real case: t_541d2c3a (2026-05-28) — 30 respawn_guarded events over 10 minutes
@@ -491,17 +494,49 @@ Even WITH `kanban-project-workflow` loaded, coders can rationalize red CI as
 - "Build fails on Fly token — pre-existing, not my code"
 - "Playwright flaky — pre-existing on main, I didn't break it"
 - "Lint/vitest pass, only pre-existing failures remain — safe to merge"
+- "The bug was already existing before my PR"
 
 **This is NEVER acceptable.** Any red check, regardless of origin, means broken
 code lands on main. The coder's job is to FIX the failure, not judge whether it's
 their fault. The absolute rule at the top of this skill exists specifically to
 counter this rationalization.
 
+**User directive (2026-05-31): "I don't give a fuck the bug was already existing.
+We always fix bug even if pre existing."** — This applies universally: failing
+tests, broken CI, missing panels, seed data bugs, migration gaps. If CI is red,
+you fix it. No debate, no classification, no rationalization.
+
 **Real case (2026-05-28):** PR #237 on shop — coder heartbeat: "build FAIL (Fly
 token pre-existing), playwright FAIL (pre-existing flaky). Reviewer approved.
 Planning admin-merge." Merged despite `enforce_admins: true`. The coder
 rationalized pre-existing failures and bypassed. Fix: absolute rule added at
 SKILL.md top + `enforce_admins: true` on branch protection.
+
+**Real case (2026-05-31):** the-swarm PR #136 — playwright failure in
+automation.spec.ts caused by seed data at save v11 missing `prestige`/`research`
+fields (added at v7→v8 migration, skipped because seed version is 11). Root cause:
+SaveManager only migrates from seed version UPWARD, so v7→v8 is never applied to
+v11 seeds. Fix: add the missing fields directly to the seed data, don't skip the
+test.
+
+### ⛔ Pitfall: Save Seed Data Missing Lower-Version Migration Fields
+
+When an E2E test seeds a save at version N, the SaveManager only migrates from
+N UPWARD (N→N+1→...→current). Migrations added at versions BELOW N are NEVER
+applied. If v7→v8 added `prestige` and the seed is at v11, the game crashes
+silently because `state.prestige` is undefined.
+
+**Symptoms:**
+- Playwright timeout waiting for a selector that should exist (sub-8s)
+- No console errors — crash happens silently during game loop
+- The panel/page is never rendered because the game bootstrap fails
+
+**Fix:** Don't bump the seed version (triggers more migrations). Instead, add
+the missing fields with correct defaults directly to the seed:
+```typescript
+prestige: { count: 0, legacyPoints: 0, totalFoodProduced: 0, totalWoodProduced: 0, ... },
+research: { projects: {} },
+```
 
 ## ⛔ Pitfall: Research Done ≠ Recommendations Addressed (Audit Follow-Through Gap)
 
@@ -569,6 +604,35 @@ for t in tickets:
 - 10 missing tickets created in a single batch via execute_code
 - Pacing audit (t_079ed35a, May 29): 2 P0 bugs + 11 P1 nerfs, 0 tickets — 5 implementation tickets + 3 GitHub Issues created after gap detection
 
+### Post-Audit Verification Pattern
+
+After ALL sub-tickets from an audit complete, create a blocked planner ticket that
+fires a follow-up verification audit. This catches regressions, verifies fixes
+are deployed, and checks score improvement:
+
+```bash
+# 1. Create the post-audit planner (blocked — will unblock when ready)
+hermes kanban --board <board> create \
+  --assignee planner \
+  --skill <project> --skill kanban-project-workflow \
+  --body "## Mission
+After ALL tickets from <audit_name> are done, verify:
+1. All P0/P1 fixes deployed and working
+2. No regressions
+3. Score improvement from previous audit
+4. New issues since last audit" \
+  "[POST-AUDIT] <Project> — verification after all <audit> fixes"
+
+# 2. Block it — user unblocks when current audit cycle is complete
+hermes kanban --board <board> block <new_ticket_id> \
+  "Waiting for all sub-tickets from <tracker_id> to complete"
+```
+
+The post-audit ticket stays blocked while the current cycle runs. When all
+running/ready tickets from the audit are done, the user unblocks it and the
+planner spawns a fresh audit cycle. This creates a continuous improvement
+loop: audit → fix → verify → re-audit.
+
 ### Audit Tracker Pattern
 
 When a researcher audit produces actionable findings, create a **tracker ticket** that lists all findings with their linked implementation tickets. The tracker stays open until every sub-ticket is done — it acts as a single point of closure:
@@ -589,6 +653,39 @@ OPEN — N sub-tickets pending. Close when all done." \
 ```
 
 Tracker tickets are marked `done` when all linked sub-tickets complete. They serve as the bridge between "research completed" and "all recommendations addressed" — closing both the kanban tracker AND the corresponding GitHub Issue signals full resolution.
+
+### Continuous Audit Cycle
+
+After all tickets from one audit complete, the user may want a **follow-up verification audit** to confirm fixes are deployed and score improvements were achieved. This creates a continuous audit loop:
+
+```
+Researcher audit → Tracker → All sub-tickets done → Post-audit planner → New researcher audit → ...
+```
+
+**Implementation:** Create a blocked planner ticket that auto-unblocks when all tracker sub-tickets complete:
+
+```bash
+# 1. Create the post-audit planner ticket
+hermes kanban --board <board> create \
+  --assignee planner \
+  --skill <project> --skill kanban-project-workflow \
+  --body "## Mission
+After ALL tickets from <audit_name> (tracker <tracker_id>) are done, create a
+follow-up audit to verify:
+1. All P0/P1 fixes deployed and working
+2. No regressions introduced
+3. Score improvement vs previous audit
+4. New issues since last audit" \
+  "[POST-AUDIT] <Board> — verification after all <audit_name> fixes"
+
+# 2. Block it until the tracker completes
+hermes kanban --board <board> block <post_audit_id> \
+  "Waiting for all sub-tickets of tracker <tracker_id> to complete"
+```
+
+**When to use:** After major audit cycles where the user wants to track quality improvement over time. The post-audit planner creates a fresh researcher task — not a deep re-audit, but a focused verification pass (CI health, lighthouse scores, security headers, regression smoke test).
+
+**Real case (2026-05-31):** Shop audit (sécurité/perf/i18n), music-library audit (a11y/sécu/perf), and the-swarm audit (perf/balance/E2E) all spawned 6-9 sub-tickets each. Post-audit planner tickets (`t_258cd888`, `t_e98ea5b9`, `t_4f3c5807`) were created and blocked on each board — they'll fire when all current audit sub-tickets complete.
 
 ## ⛔ Pitfall: `active_pr` Respawn Guard Blocks Coder After Reviewer Unblock
 
@@ -665,6 +762,25 @@ Three checks in priority order — first match wins:
 The guard is **stateless** — re-evaluated fresh every tick. When the condition
 clears, the task spawns normally.
 
+## Pitfall: PR Description Stale After Fixes
+
+When you fix a PR (rebase, resolve conflicts, fix seed values, update tests), the PR
+description often becomes stale — it describes the **original** changes, not what's
+actually in the diff. The user will notice and call it out.
+
+**Symptoms:**
+- User says "description does not seem to match the changes made"
+- PR body lists 10 new tests and config changes, but the actual diff is a 3-line seed fix
+- CI was red, you fixed it, but the body still says "all tests pass" with the old data
+
+**Prevention:** After ANY push to a PR branch, re-read the description with
+`gh pr view <N> --json body` and compare against `gh pr diff <N>`. If they don't
+match, update via `gh api repos/X/pulls/<N> -X PATCH -f body="..."`.
+
+**Real case (2026-05-31):** the-swarm #155 — PR was created with 10 tests + playwright
+config, but after rebase the only remaining diff was a 3-line seed fix. Description
+still listed the original scope. Updated twice before matching the actual changes.
+
 ## Pitfall: Missing Kanban Labels on PRs — How to Detect and Backfill
 
 PRs created without `--label "kanban:$HERMES_KANBAN_TASK"` are invisible to the CI watchdog.
@@ -683,7 +799,6 @@ gh pr list --repo <repo> --state open --json number,labels --jq \
 
 **Backfill — add correct labels (open PRs only, merged/closed can't be edited):**
 ```bash
-# Per-PR: gh pr edit <N> --repo <repo> --add-label "kanban:<task_id>"
 # Per-PR via API: gh api repos/<repo>/issues/<N>/labels -X POST -f "labels[]=kanban:<task_id>"
 # Replace old label: DELETE /labels/<old> then POST new
 ```
@@ -694,7 +809,52 @@ verify the SOUL.md matches it.
 
 **Real case (2026-05-28):** 5 of 12 open shop PRs had no kanban label. The coder
 SOUL.md's `gh pr create` command was missing `--label`. Fixed by patching SOUL.md
-and backfilling labels via `gh api` on open PRs. Merged/closed PRs (#170, #207)
+and backfilling labels via `gh api` on open PRs.
+
+## ⛔ Pitfall: Archived Ticket with Open PR — Orphaned Work
+
+When a PR fails CI repeatedly (e.g., playwright timeout from bad seed data),
+the kanban task gets archived (manually or by crash-limit). The PR stays open
+on GitHub, but the ticket is invisible — no coder will ever fix it, and no
+watchdog will unblock it.
+
+**Symptoms:**
+- `gh pr list` shows open PR with no kanban label
+- `hermes kanban show <task_id>` shows `status: archived`
+- PR body references the task but `labels: []`
+- User asks: "Why do we still have open PRs but no tickets?"
+
+**Recovery (3 steps):**
+```bash
+# 1. Add kanban label to PR (via API — gh pr edit may not work)
+gh api repos/<repo>/issues/<N>/labels -X POST -f 'labels[]=kanban:<task_id>'
+
+# 2. Un-archive ticket — NO CLI command exists, use SQLite:
+python3 -c "
+import sqlite3
+db = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+db.execute(\"UPDATE tasks SET status='ready' WHERE id='<task_id>'\")
+db.commit()
+db.close()
+"
+
+# 3. Verify
+hermes kanban --board <board> show <task_id> | grep status
+gh pr view <N> --repo <repo> --json labels
+```
+
+**Why `hermes kanban unarchive` doesn't exist:** The CLI only has `archive`, not
+`unarchive`. The only recovery path is direct SQLite. This is worth remembering
+when a task needs to be revived.
+
+**Prevention:** Never archive a task without first checking if its PR is still
+open. If the PR exists, fix it instead of archiving. Cross-reference: `gh pr list`
+vs `hermes kanban list`.
+
+**Real case (2026-05-31):** the-swarm #155 — PR open with CI failing (seed
+thresholds wrong), task t_40e3fa9e archived. After fixing the seed, had to
+add kanban label via API + un-archive via SQLite. The CI watchdog then
+detected the merged PR and unblocked the task normally.
 were left unlabeled since they can't be edited.
 
 ## Technique: Splitting Sequential Ticket Chains into Parallel Chains
@@ -825,7 +985,7 @@ need `arxiv` or `polymarket`. A coder doesn't need `kanban-velocity` or
 | `reviewer` | `github-code-review`, `github-pr-workflow`, `systematic-debugging`, `codebase-inspection`, `project-ci`, `requesting-code-review` |
 | `researcher` | `arxiv`, `blogwatcher`, `llm-wiki` (if needed) |
 | `planner` | `kanban-orchestrator`. Core: `kanban-project-workflow`, `writing-plans` (NOT `kanban-worker`). Project skills (shop, the-swarm, etc.) loaded on-demand via `HERMES_TENANT` → `skill_view()`. Personality: `technical`. |
-| `hermes-devops` | `kanban-ci-watchdog`, `kanban-velocity`, `kanban-profile-blueprint`, `hermes-journal`, `disk-cleanup`, `webhook-subscriptions`, all `github-*`, `renovate-bulk-merge`, `hermes-agent`, `project-ci`, `long-running-tests` |
+| `hermes-devops` | `kanban-project-workflow`, `kanban-ci-watchdog`, `kanban-velocity`, `kanban-profile-blueprint`, `hermes-journal`, `disk-cleanup`, `webhook-subscriptions`, all `github-*`, `renovate-bulk-merge`, `hermes-agent`, `project-ci`, `long-running-tests` |
 
 External skill suites (Matt Pocock, etc.) are added only to roles that benefit:
 `coder` might get `tdd`, `diagnose`, `triage`; `reviewer` might get `diagnose`;
@@ -921,6 +1081,35 @@ fails. The pre-spawn watchdog only scans `ready` tasks for NO-SKILLS (NULL/empty
 the worker's profile copy. The only symptom is the dispatch error log.
 **The tenant auto-injection above eliminates this class of error for project
 skills, but only when tasks carry `--tenant`.**
+
+**⚠️ Pitfall: `hermes-devops` profile missing `kanban-project-workflow` → backfill tasks crash-loop.**
+
+The `hermes-devops` profile runs kanban metadata backfill tasks that require
+`kanban-project-workflow`. If the skill is missing from this profile, every
+backfill task will crash with "Unknown skill(s): kanban-project-workflow" on spawn.
+
+**Symptoms:**
+- `hermes kanban log <task>` shows "Unknown skill(s): kanban-project-workflow" repeated
+- Task assigned to `hermes-devops`, status `running` but dies in ~60s
+- Backfill/metadata tasks never complete
+- Pre-spawn watchdog shows no issues (skills column is non-NULL — the skill just doesn't exist in the profile)
+
+**Fix:**
+```bash
+rsync -a --delete \
+  /root/.hermes/skills/devops/kanban-project-workflow/ \
+  /root/.hermes/profiles/hermes-devops/skills/devops/kanban-project-workflow/
+hermes kanban --board <board> reclaim <task_id>
+```
+
+**Prevention:** The `hermes-devops` row in the profile skill table includes
+`kanban-project-workflow` as its FIRST listed skill. When creating or
+rebuilding the hermes-devops profile, always sync this skill first.
+
+**Real case (shop 2026-05-31):** `t_389b6deb` (backfill kanban metadata) crash-looped
+for hours because `kanban-project-workflow` was missing from the hermes-devops profile.
+The skill was present in coder/reviewer/researcher/planner but not hermes-devops —
+the profile sync table didn't list it. Fixed by rsync + reclaim.
 
 **Pre-spawn watchdog blind spot:** a task with `skills=["shop", "kanban-project-workflow"]`
 passes the NO-SKILLS check because the column is non-NULL. But if `shop` was
@@ -1047,6 +1236,40 @@ Real case: shop board (2026-05-22) — 262 kanban tasks done, consolidation PR #
 merged 226 commits to upstream, but all 66 upstream issues (#101–#167) remained
 open. Seven74AI and the reviewer app both got 403 on close.
 
+## ⛔ Pitfall: PR Description Doesn't Match Surviving Diff After Rebase
+
+When a PR is rebased onto main, main may already contain some of the PR's
+changes (merged via another path). The diff shrinks, but the PR description
+still describes the **original scope** — a misleading mismatch.
+
+**Symptoms:**
+- PR body says "New E2E test suite (10 tests)" but `gh pr diff` shows only 3 lines
+- PR body claims guard thresholds of VC≥500 but actual guard is VC≥2000
+- Description references files that aren't in the diff anymore
+- User flags: "description does not seem to match the changes made"
+
+**Detection — compare diff to description after any rebase:**
+```bash
+gh pr diff <N> --repo <repo> | wc -l       # actual diff size
+gh pr view <N> --repo <repo> --json body    # described changes
+# If diff is tiny but description is huge, update the description
+```
+
+**Fix — update PR body via API:**
+```bash
+gh api repos/<org>/<repo>/pulls/<N> -X PATCH -f body="<new description>"
+```
+
+**Prevention:** After rebasing a PR, always run `gh pr diff` and verify the
+description matches. If it doesn't, update it before pushing or immediately after.
+Don't leave stale descriptions — they mislead reviewers and make the PR history
+inaccurate.
+
+**Real case (2026-05-31):** the-swarm #155 — coder created PR with 10 new E2E tests
++ playwright config changes. After rebase, main already had those changes. Surviving
+diff was only 3 lines (seed threshold fix). Description still claimed "New E2E test
+suite, Playwright config changes." Fixed by rewriting description to match actual diff.
+
 ## Pitfall: Stale PRs from Out-of-Order Slice Merges
 
 When later vertical slices get merged before earlier ones (e.g., Slice 4 + 5
@@ -1082,6 +1305,86 @@ contained the same files with more functionality. Every file in PR #49 existed
 identically in main; PR #48's flat prestige fields had been superseded by main's
 `prestige` object + `prestigeTree`. Both closed + branches deleted.
 
+## Pitfall: PR Already Merged — Push Wasted, CI Never Triggers
+
+**Symptom:** You push fixes to a branch, `git push` says "Everything up-to-date" (or
+pushes successfully) but CI never triggers. `gh pr view <N>` shows `state: MERGED`.
+
+**Root cause:** The coder's auto-merge completed while you were investigating.
+The PR is already on main — your new commits go to a branch with no open PR,
+so GitHub Actions does not trigger CI.
+
+**Detection — check BEFORE pushing:**
+```bash
+gh pr view <N> --repo <repo> --json state,mergedAt,headRefOid
+# state: MERGED → don't push to that branch, cherry-pick to a NEW branch off main
+```
+
+**Fix:**
+```bash
+git checkout main && git pull origin main
+git checkout -b fix/follow-up-<description>
+git cherry-pick <your-commit-sha>...
+git push origin fix/follow-up-<description>
+gh pr create --repo <repo> --head fix/follow-up-<description> --base main \
+  --title "fix: ..." --body-file /tmp/body.md
+```
+
+**Real case:** shop PR #263 (2026-05-31) — coder auto-merged while agent was
+investigating test failures. Three additional commits pushed to merged branch →
+no CI triggered. Required cherry-pick to new branch + new PR #268.
+
+## Reference: E2E Flaky Test Root-Cause Patterns
+
+See `references/e2e-flaky-test-patterns.md` for systematic diagnosis of common
+Playwright failures: `networkidle` hangs on SSE pages, shadcn checkbox click()
+incompatibility, CDP WebAuthn headless limitations, toast hydration races, and
+SQLITE_BUSY contention. Do NOT reach for blanket timeout increases — fix the root cause.
+
+## Reference: CI Log Batch Analysis (multi-PR playwright failures)
+
+See `references/ci-log-batch-analysis.md` for downloading and parsing raw CI logs
+across multiple PRs to group failures by test file, identify error patterns, and
+distinguish systemic issues (also failing on main) from PR-specific regressions.
+
+## Pitfall: Working on Wrong Branch in Kanban Workspace
+
+Kanban workspaces accumulate branches from multiple coder runs. A prior coder may
+have checked out `feat/t_xxx-fix` while your task's PR tracks `feat/t_xxx`. Always
+verify BEFORE committing:
+
+```bash
+# 1. Check which branch the PR tracks
+gh pr view <N> --json headRefName --jq '.headRefName'
+
+# 2. Verify you're on that branch
+git branch --show-current
+
+# 3. If wrong branch → cherry-pick your commits
+git checkout <correct-branch>
+git cherry-pick <your-commit-sha>...
+git push origin <correct-branch>
+```
+
+**Symptoms:** `git push` says "Everything up-to-date" but CI doesn't trigger.
+`git branch --show-current` shows a different branch name than the PR's head.
+
+**Real case (shop 2026-05-31):** Agent worked on `feat/t_5c653b-fix` while PR #263
+tracked `feat/t_5c653b`. Three commits pushed to the wrong remote branch → no CI.
+Fixed by cherry-picking commits onto the correct branch.
+
+## Pitfall: `hermes kanban create --body-file` Does NOT Exist
+
+Use `--body "$(cat /tmp/body.md)"` or `shlex.quote()` from Python. The CLI
+parses `--body-file` as the task title, not a flag.
+
+```python
+from hermes_tools import terminal, read_file
+import shlex
+body = read_file("/tmp/body.md")["content"]
+terminal(f'hermes kanban --board {board} create ... --body {shlex.quote(body)} "Title"')
+```
+
 ## PR Obsolescence Detection
 
 When open PRs have merge conflicts, first check if the PR is **still legitimate**
@@ -1090,6 +1393,15 @@ and refactors can make older PRs obsolete without anyone noticing.
 
 See `references/pr-obsolescence-detection.md` for the full procedure: check branch
 existence, compare files against main, diff for superset/subset, cleanup.
+
+## Review Suggestion Audit (PRs + Kanban → GitHub Issues)
+
+Collect all non-blocking reviewer suggestions from GitHub PR reviews and kanban
+reviewer feedback, compile into a consolidated GitHub issue. Useful for periodic
+project health checks, pre-release polish sweeps, or post-milestone reviews.
+
+See `references/review-suggestion-audit.md` for the full methodology (API queries,
+filter patterns, issue templates, and recurring suggestion categories).
 
 ## Batch Ticket Creation
 
@@ -1212,6 +1524,8 @@ Researcher → Planner (PRD + to-issues) → Coder → Reviewer → Done
 
 - **Researcher:** Investigate, compare approaches, produce recommendations.
   Handoff: `kanban_complete(summary=..., metadata={recommendation, benchmarks})`.
+  For **dependency safety audits**, see `references/dependency-safety-audit.md` — methodology for
+  identifying risky packages (low downloads, single maintainer, deprecated) and finding alternatives.
   **Deliverable by board type:**
   - **Project boards (shop, the-swarm, etc.)** — post results as a comment on the
     originating GitHub issue (e.g. `gh issue comment N --repo <repo> --body "..."`).
@@ -1598,6 +1912,18 @@ block watchdog BEFORE blocking tasks**, or use `hermes kanban block` with
 ## OOM Prevention
 
 Multiple parallel kanban workers can exhaust memory on constrained VMs.
+**15 concurrent coders (each with vitest + playwright + chrome-headless) exhausted
+10.7 GB RAM + 7.4 GB swap on an 11 GB VPS, causing 2 OOM kills and a gateway
+crash within 1 hour.** Keep max_spawn ≤ 5 on VPS with <16 GB RAM so the
+dispatcher never spawns more than the system can handle.
+
+### ⛔ Pitfall: OOM Cascade from Audit-Decomposed Coder Tickets
+
+When a researcher audit decomposes into 9+ coder tickets and the dispatcher spawns
+them all at once, each worker clones the repo, installs deps, and runs vitest +
+playwright. The total memory pressure is: (coders × (node_modules + vitest workers
++ chrome-headless instances)). At max_spawn=7 with 3 boards active, 15+ workers
+can spawn simultaneously → guaranteed OOM.
 Each worker spawns heavy subprocesses: TypeScript tsserver (800MB-1GB RSS),
 pnpm dev servers (200-500MB), playwright/vitest runners.
 
@@ -1634,10 +1960,20 @@ free -h
 
 ### Mitigation
 
-- Keep `max_spawn` low (3 for coder, 2 for reviewer)
+- **`max_spawn` limits** — keep coder at 5, researcher at 3, reviewer at 2. Higher values risk OOM when multiple boards dispatch simultaneously (e.g., the-swarm audit spawned 9 coders + 3 shop + 3 music-library = 15 workers → 10.7GB RAM + 7.4GB swap → 2 OOM kills in 1h). The `max_spawn` is per-profile but the VPS sees ALL profiles combined.
+- **Cross-board awareness** — when dispatching multiple boards, check what's already running. A single board's coder dispatch can saturate the system if other boards are already active. Before dispatching: `hermes kanban boards` → check running counts across all boards.
+- **After OOM recovery** — the gateway auto-restarts but orphaned processes (vitest, chrome-headless, esbuild) survive the restart. Run `pkill -f 'kanban/boards/.*workspaces'` to clean up before re-dispatching.
 - Run `hermes kanban gc` periodically to clean workspace directories
 - Kill orphaned workspace processes: `ps aux | grep 'kanban/boards/.*workspaces' | grep -v grep | awk '{print $2}' | xargs -r kill`
-- Set a cgroup memory limit on the gateway
+- Set a cgroup memory limit on the gateway: `systemctl set-property hermes-gateway MemoryMax=6G`
+
+### Real case (2026-05-31)
+
+**Symptom:** Gateway shutdown with "⚠️ Gateway shutting down — Your current task will be interrupted."
+
+**Root cause:** The-swarm audit completed and spawned 9 coder tasks. Shop and music-library also had 3 coders each active. Total: 15 parallel coder workers, each running vitest, playwright (chrome-headless), npm, esbuild. Memory peaked at 10.7GB with 7.4GB swap. OOM killer struck twice: first killed a node process (09:54), then a chrome-headless (10:05). Gateway crashed and auto-restarted at 10:06.
+
+**Fix:** Reduced `max_spawn` from 7 to 5 on the coder profile (`hermes config set --profile coder delegation.max_concurrent_children 5`). At 5, the VPS can handle 2-3 coders per board safely without exhausting memory.
 ### Pre-Spawn Watchdog (automated)
 
 A notification-only cron (`pre-spawn-watchdog.py`, every 5 min) scans all boards

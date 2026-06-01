@@ -1,7 +1,7 @@
 ---
 name: the-swarm
 description: "THE SWARM project configuration — incremental game, Vite/TypeScript, Preact Signals, pipeline mechanics."
-version: 3.3.0
+version: 3.4.0
 metadata:
   hermes:
     tags: [the-swarm, game, incremental, web, project]
@@ -190,6 +190,11 @@ Access: `http://100.98.177.76:3456` (Tailscale IP, port 3456).
 - DOM selectors: `references/dom-selectors.md`
 - E2E selectors (post-ResourcePanel refactor): `references/e2e-selectors.md`
 - Save version: 11 (migrations cover v1→v11 in `src/persistence/migrations.ts`)
+- **⛔ Rebase pitfall — competing migration versions:** When two PRs independently add a
+  migration at the same version (e.g., both add `migrateV12toV13`), they conflict on rebase.
+  Do NOT renumber one to the next version — that breaks the chain. Combine both into a
+  SINGLE migration at that version. Example: if PR A adds `mutations` at v12→v13 and PR B
+  adds `prestige.totalWoodProduced` at v12→v13, the merged migration handles both fields.
 
 ### E2E CI Setup
 
@@ -310,6 +315,75 @@ Formula: `Math.floor(baseCost × 2.5^level)` — exponential, not linear.
 | Walls | 200 stone | 1250 stone | +5% defense/level (soft-capped >Lv.5) |
 | Warehouse | 150 wood, 100 stone | 937 wood, 625 stone | +25 nest capacity/level |
 
+## ⛔ Pitfall: `getEffectiveNestCapacity` Does NOT Exist on ResourceSystem
+
+`WorkerAssignment.ts` cannot call `this.resourceSystem.getEffectiveNestCapacity(s)` —
+this method does not exist. The call was introduced during a rebase conflict
+resolution that picked a non-existent method. Always compute effective capacity
+inline using `getEffects`:
+
+```ts
+import { getEffects } from '../../systems/BuildingSystem'
+const effectiveCap = s.resources.nestCapacity + (getEffects('warehouse', s.buildings.warehouse.level).nestCapacity ?? 0)
+```
+
+If `getEffects` was removed from imports during a refactor, re-add it.
+
+Real case: PR #170 (2026-05-31) — rebase conflict introduced
+`this.resourceSystem.getEffectiveNestCapacity(s)` which caused typecheck + vitest
+failures. Fixed by reverting to inline computation.
+
+## ⛔ Pitfall: Test Seed Thresholds Must Match Actual Guards
+
+E2E test seeds that set resource thresholds (e.g., transcendence victory) MUST use
+the ACTUAL guard values from `src/phases/transitions.ts`. The guards evolve over
+time — always cross-reference the source code, not comments or PR descriptions.
+
+| Resource | Old seed (wrong) | Actual guard |
+|----------|-----------------|--------------|
+| voidCrystals | 500 | 2000 |
+| antimatter | 100 | 400 |
+| darkMatter | 50 | 200 |
+
+Also fix the "below guard" test seeds — they must be BELOW the new guard
+(e.g., 499/99/49 when guard is 2000/400/200).
+
+Detection: if a test does `page.clock.runFor(4000)` then waits for a panel that
+never appears → the guard isn't being met → check thresholds.
+
+Real case: PR #155 (2026-05-31) — all 10 transcendence tests passed CI locally
+but failed in CI because the seed used old guard values (500/100/50). The actual
+guard had been raised to 2000/400/200.
+
+## ⛔ Pitfall: Migration Version Conflicts (v12→v13 Double-Booked)
+
+When two PRs both define a migration for the same version (e.g., both define
+`migrateV12toV13`), the rebase creates a conflict. Both migrations are needed.
+
+**Resolution:** merge both migration bodies into ONE function at the same version
+number — do NOT bump the version (that would break existing saves that already
+went through one of the migrations).
+
+```ts
+function migrateV12toV13(data: SaveData): SaveData {
+  const gameState = data.gameState as GameState & {
+    mutations?: { id: string; purchased: boolean }[];
+    prestige: {
+      totalWoodProduced?: number;
+      totalStoneProduced?: number;
+      totalNectarProduced?: number;
+    };
+  };
+  // Both features in one migration
+  gameState.mutations = gameState.mutations ?? [];
+  if (gameState.prestige.totalWoodProduced === undefined) { ... }
+  return { ...data, version: 13, gameState };
+}
+```
+
+Real case: PR #136 (2026-05-31) — conflict between "adds colony mutations"
+(main) and "adds prestige resource tracking" (PR). Merged into single v12→v13.
+
 ## Game Mechanics Reference
 
 Complete game guide: `references/game-mechanics.md` — phases, transitions, resources, workers, buildings, expeditions, space, prestige, timing constants.
@@ -317,6 +391,33 @@ Complete game guide: `references/game-mechanics.md` — phases, transitions, res
 Worker Assignment, Resource Panel, Soldier Panel, Building Panel, Map Panel,
 Expedition Panel (card grid), Battle Panel, Event Log, Exploration Panel,
 Spaceship Panel, Phase Indicator.
+
+## ⛔ Pitfall: ResourceSystem.getEffectiveNestCapacity — Does Not Exist
+
+`ResourceSystem` has NO `getEffectiveNestCapacity()` method. If a PR or rebase
+introduces `this.resourceSystem.getEffectiveNestCapacity(s)`, it will fail
+typecheck (`TS2339`). The correct inline formula is:
+
+```ts
+const effectiveCap = s.resources.nestCapacity + (getEffects('warehouse', s.buildings.warehouse.level).nestCapacity ?? 0);
+```
+
+Requires `import { getEffects } from '../../systems/BuildingSystem';` in the caller.
+The computed value accounts for warehouse level bonuses (25 cap/level).
+
+## Phase Transition Guards (authoritative, from `src/phases/transitions.ts`)
+
+| Transition | Guard |
+|---|---|
+| EGG_LAYING → COLONY | workers ≥ 50 |
+| COLONY → COMBAT | workers ≥ 50, battlesWon ≥ 0 |
+| COMBAT → EXPANSION | workers ≥ 25, battlesWon ≥ 3 |
+| COLONY → EXPANSION | workers ≥ 100, battlesWon ≥ 1 (alternate path) |
+| EXPANSION → SPACE | spaceship built + all colony buildings Lv.5 |
+| SPACE → TRANSCENDENCE | voidCrystals ≥ 2000, antimatter ≥ 400, darkMatter ≥ 200 |
+
+When writing E2E test seeds, match these exact thresholds — stale values in test
+seeds silently produce false failures (transition never triggers, panel never appears).
 
 ## Design Rules
 

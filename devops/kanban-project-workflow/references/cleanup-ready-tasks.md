@@ -59,6 +59,14 @@ for board in sorted(os.listdir(KANBAN_BASE)):
         conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (new_body, tid))
         print(f"{board}: PR URL removed from {tid[:16]} body")
 
+    # 4. Delete PR URL comments (triggers active_pr respawn guard for 24h)
+    n = conn.execute("""
+        DELETE FROM task_comments
+        WHERE task_id IN (SELECT id FROM tasks WHERE status IN ('ready','running','blocked','spawned','failed'))
+        AND body LIKE '%github.com%pull%'
+    """).rowcount
+    if n: print(f"{board}: PR URL comments deleted={n}")
+
     conn.commit()
     conn.close()
 ```

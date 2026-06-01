@@ -17,6 +17,8 @@ CI commands to run after any dependency change (`npm install`, `pnpm install`, e
 vitest run && tsc --noEmit && npm run lint && playwright test --workers=1
 ```
 
+For diagnosing and fixing flaky E2E tests (SQLite contention, networkidle hangs, timeout defaults, a11y color-contrast, CDP timing), see `references/flaky-e2e-fixes.md` — recurring patterns observed across shop, the-swarm, and music-library projects.
+
 ## Why All Four
 
 - **`vitest run`** — unit + integration tests (misses: type errors, ESLint, e2e)

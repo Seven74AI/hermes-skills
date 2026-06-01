@@ -1,7 +1,7 @@
 ---
 name: long-running-tests
 description: "Use when running test suites, benchmarks, or validation scripts that would exceed 90-turn iteration budget. Core pattern: background+notify+wait — never run test suites inline in the agent loop."
-version: 2.2.0
+version: 2.3.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -167,19 +167,22 @@ Each phase uses background+notify+wait for its own validation. No phase burns it
 
 ## Common Pitfalls
 
-### 1. Polling After Background Launch
+### 1. Polling After Background Launch (process poll / terminal polling loops)
 
-```
-# WRONG — burns 50-100 iterations polling
+```bash
+# WRONG — burns 50-100 iterations, user-visible annoyance
 terminal("npm test", background=true, notify_on_complete=true)
 # Then in a loop:
-terminal("tail /tmp/test-output.txt")  # iteration 2
-terminal("sleep 10")                    # iteration 3
-terminal("tail /tmp/test-output.txt")  # iteration 4
+terminal("tail /tmp/test-output.txt")        # iteration 2
+process(action="poll", session_id="...")      # iteration 3 — user hates this
+terminal("sleep 10")                          # iteration 4
+terminal("tail /tmp/test-output.txt")         # iteration 5
 # ... repeat 50 times ...
 ```
 
-**Fix:** Use `process(action="wait", timeout=3600)` — blocks without consuming iterations.
+**⛔ The user EXPLICITLY rejects this.** They said: "Why you polling? You should run background tasks." Polling is NOT just wasteful — it's a user-visible pattern of inactivity. Every poll is a turn where the agent does nothing useful.
+
+**Fix:** Use `process(action="wait", timeout=3600)` — blocks without consuming iterations. OR, even better, use `terminal(background=true, notify_on_complete=true)` and let the notification come to you. Then use the time to do other work (investigate other tests, check CI logs, review related PRs).
 
 ### 2. Running Tests in the Agent Loop
 
@@ -198,6 +201,51 @@ process(action="wait", timeout=60)  # Test suite takes 5 min
 ```
 
 **Fix:** Set timeout generously (2-3x expected duration). There's no penalty for setting it high — it returns instantly when done.
+
+### 3b. ⛔ `process(action="wait")` Timeout Clamping — The Real Fallback
+
+**`process(action="wait", timeout=N)` silently clamps to ~60s maximum.** Every wait call
+in this session returned `"timeout_note": "Requested wait of 600s was clamped to configured
+limit of 60s"` regardless of the requested timeout. The documented pattern (launch background
++ wait) still works for short suites under 60s, but long suites (Playwright 117+ tests,
+Godot full builds) will never complete within the clamped window.
+
+**Real working fallback for long suites:**
+
+```
+1. terminal("run-tests.sh", background=true, notify_on_complete=true, timeout=3600)
+   → Returns session_id
+
+2. process(action="poll", session_id="...")   ← check status (1 iter, sparse — 2-4 calls)
+   Check uptime_seconds and status. If "running" and < expected duration, move on.
+
+3. Read output from a log FILE, not from process output:
+   terminal("tail -20 /tmp/test-output.log")   ← 1 iter
+   OR read_file("/tmp/test-output.log")
+   The background command MUST tee output to a file ("> /tmp/test-out.log 2>&1").
+
+4. When process(action="poll") shows status="exited", read the final results.
+```
+
+**Why this works:** The notification fires on exit — you don't need to block. Between
+launch and notification, poll 2-3 times to check progress (uptime_seconds, log file growth).
+Each poll + log read costs 1-2 iterations but the total is ~5 iter vs 50-80 inline.
+
+**Alternative — use `execute_code` for the polling loop?** NO. `execute_code` scripts
+also timeout (300s observed) and the `terminal()` calls inside them block. The Python
+`time.sleep()` loop approach is worse than direct poll calls from the agent.
+
+**Key rule for the log file:** Always redirect background output to a file so you can
+read it mid-run:
+```bash
+terminal(
+  command="pnpm playwright test --workers=1 > /tmp/playwright-out.log 2>&1",
+  background=true,
+  notify_on_complete=true,
+  timeout=1800
+)
+# Then poll + read_file("/tmp/playwright-out.log") every few minutes
+```
 
 ### 4. Using kanban_block Instead of process wait
 

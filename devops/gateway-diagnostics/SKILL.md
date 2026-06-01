@@ -83,6 +83,29 @@ systemctl restart hermes-gateway
 Restart clears message queues. Only do this when a platform is confirmed
 disconnected (not just flood-controlled), as queued messages will be lost.
 
+## OOM Diagnosis (when gateway restarts unexpectedly)
+
+When the gateway restarts without an explicit command, suspect OOM:
+
+```bash
+# 1. Confirm OOM kills in dmesg
+dmesg -T | grep -i "oom.*killed" | tail -5
+
+# 2. Check gateway memory at time of crash
+journalctl -u hermes-gateway --since "2 hours ago" --no-pager | \
+  grep "memory peak\|swap peak" | tail -3
+
+# 3. Count concurrent workers (each spawns vitest + playwright + chrome-headless)
+systemctl status hermes-gateway --no-pager | grep "hermes.*kanban.*chat" | wc -l
+```
+
+**Common OOM root cause**: kanban dispatch spawns too many coder workers
+simultaneously (e.g., 15 coders after a large audit decomposition). Each coder
+runs vitest, playwright, chrome-headless, npm, esbuild — 200-800MB each.
+Quick fix: reduce `delegation.max_concurrent_children` on the coder profile.
+
+See `references/oom-diagnosis-example.md` for a real-world case (2026-05-31).
+
 ## Pitfalls
 
 - **Flood control ≠ disconnected**: Telegram rate-limiting is transient.
