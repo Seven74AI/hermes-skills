@@ -289,6 +289,30 @@ the user just wants a quick inventory.
 
 ## Pitfalls
 
+### ⛔ Empty cookie file trap — file exists ≠ cookies present
+
+yt-dlp/curl can create a Netscape-format cookie file (131 bytes) containing ONLY the header
+and zero actual cookies. Agents see the file exists and assume cookies are available — wrong.
+
+**Detection — ALWAYS verify before relying on a cookie file:**
+```bash
+grep -c sessionid /tmp/ig_cookies.txt   # MUST be ≥1
+grep -c sessionid /tmp/cookies.txt      # 0 = empty, useless
+```
+
+An empty `/tmp/cookies.txt` with just `# Netscape HTTP Cookie File` header is worthless.
+Delete it to avoid future confusion: `rm /tmp/cookies.txt`.
+
+### ⛔ Instagram rate-limiting escalates mid-batch — first downloads succeed, subsequent fail
+
+Instagram's anti-bot detection can trigger DURING a batch. The first 1-2 Reels may download
+fine without cookies, then subsequent ones fail with `login required`. Workers see the first
+downloads succeed and assume the approach works — they don't, IG just tightened after detecting
+the pattern.
+
+**Prevention:** Always use cookies for all Reels. Never rely on the cookie-less approach
+working just because the first few downloads succeeded.
+
 ### /p/ vs /reel/ URL — always verify before running pipeline
 
 Instagram `/p/` URLs are image carousels; `/reel/` URLs are videos. The pipelines are completely different. Users sometimes say "reel" while pasting a `/p/` URL. **Always confirm the URL type** before running. Running the wrong pipeline wastes time and produces unusable output. If ambiguous, ask: "C'est bien un Reel vidéo ou un post image ?"

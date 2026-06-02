@@ -1,7 +1,7 @@
 ---
 name: kanban-project-workflow
 description: "Shared kanban worker workflow patterns for all project boards — label-based PRs, respawn guard, selective profile skill management, worker tuning, PR consolidation, native vs custom infrastructure audit."
-version: 1.18.0
+version: 1.19.0
 metadata:
   hermes:
     tags: [kanban, workflow, pr, ci, shared, anti-specs-to-code]
@@ -1110,6 +1110,53 @@ rebuilding the hermes-devops profile, always sync this skill first.
 for hours because `kanban-project-workflow` was missing from the hermes-devops profile.
 The skill was present in coder/reviewer/researcher/planner but not hermes-devops —
 the profile sync table didn't list it. Fixed by rsync + reclaim.
+
+**⚠️ Pitfall: Planner profile missing `knowledge-base` + `obsidian` → KB import tickets crash-loop.**
+
+When a KB import planner ticket is created with `--skill knowledge-base`, the planner
+worker needs BOTH `knowledge-base` (productivity/) AND `obsidian` (note-taking/) in its
+profile. These are not core planner skills — they're loaded on-demand via `--skill`.
+If either is missing, the worker dies in ~60s with `pid X not alive` and
+`consecutive_crashes` climbs rapidly. The dispatcher keeps respawning but the worker
+never survives startup.
+
+**Symptoms:**
+- `hermes kanban show <task>` shows `consecutive_crashes=23+` with `pid X not alive`
+- No task log available ("task may not have spawned yet")
+- No errors.log in the profile directory
+- `hermes kanban dispatch` reports `Spawned: 1` but the task stays `running` and crashes
+- The skill exists in the main profile (`~/.hermes/skills/`) but NOT in the planner
+  profile (`~/.hermes/profiles/planner/skills/`)
+
+**Detection:**
+```bash
+# Check if knowledge-base and obsidian are in the planner profile
+ls /root/.hermes/profiles/planner/skills/productivity/knowledge-base/SKILL.md
+ls /root/.hermes/profiles/planner/skills/note-taking/obsidian/SKILL.md
+```
+
+**Fix:**
+```bash
+rsync -a --delete \
+  /root/.hermes/skills/productivity/knowledge-base/ \
+  /root/.hermes/profiles/planner/skills/productivity/knowledge-base/
+rsync -a --delete \
+  /root/.hermes/skills/note-taking/obsidian/ \
+  /root/.hermes/profiles/planner/skills/note-taking/obsidian/
+hermes kanban --board default reclaim <task_id>
+hermes kanban --board default dispatch
+```
+
+**Prevention:** Before creating KB import planner tickets on the `default` board,
+always verify the planner profile has `knowledge-base` AND `obsidian` synced. These
+are the two skills that KB import tasks depend on transitively (knowledge-base →
+skill_view("obsidian") for file ops).
+
+**Real case (2026-06-01):** `t_866f0e32` (KB: Import 22 contenus) — 23 consecutive
+crashes in under 2 minutes. Planner profile had `kanban-project-workflow` and
+`kanban-orchestrator` but was missing both `knowledge-base` (productivity/) and
+`obsidian` (note-taking/). Synced both with rsync → reclaimed → spawned successfully,
+decomposed into 6 researcher tickets.
 
 **Pre-spawn watchdog blind spot:** a task with `skills=["shop", "kanban-project-workflow"]`
 passes the NO-SKILLS check because the column is non-NULL. But if `shop` was

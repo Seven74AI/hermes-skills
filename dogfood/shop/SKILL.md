@@ -1,7 +1,7 @@
 ---
 name: shop
 description: "Shop project configuration — tech stack, repo, Prisma pitfalls, flaky tests, Phase roadmap."
-version: 3.5.0
+version: 3.6.0
 metadata:
   hermes:
     tags: [shop, project, ecommerce, reference]
@@ -19,8 +19,15 @@ Shop uses the **fork model** (`kanban-project-workflow` § GitHub Models):
 
 - Fork: `Seven74AI/shop` (workers push here)
 - Upstream: `mnlamart/shop` (consolidation PRs only, NEVER direct worker PRs)
-- Working copy: `/tmp/shop-original`
+- Working copy: `/root/shop-repo` (persistent — DO NOT use `/tmp/shop-*`; `/tmp` is cleaned between sessions)
 - Git remote: `https://oauth2:TOKEN@github.com/Seven74AI/shop.git`
+
+### ⛔ Temp-directory pitfall
+
+Never rely on `/tmp/shop-*` for persistent work. Temp directories are cleaned between
+sessions. Always clone to a persistent location (`/root/shop-repo`) and commit+push
+changes BEFORE the session ends. If you discover you're working in `/tmp`, clone to
+`/root/shop-repo` immediately and re-apply the fixes there.
 - Last merged PRs: `mnlamart/shop#99` (Node 24, pnpm, a11y, e2e, seed config) merged 2026-05-19; `mnlamart/shop#100` (cleanup sweep) merged 2026-05-19; `mnlamart/shop#198` (consolidation fork→upstream, 226 commits, **SQUASH-MERGED** — single commit `e26dfaa`) merged 2026-05-21; `mnlamart/shop#199` (2-shard Playwright matrix + gate, merged directly to upstream bypassing fork) merged 2026-05-21
 - Ghost PRs closed: #197, #194, #184, #182 (all stale, 0 reviews)
 - CI context fix: `Seven74AI/shop#146` — removed emoji job names so status checks match branch protection (covered by upstream #199)
@@ -83,6 +90,57 @@ See `kanban-project-workflow` § Branch Protection Hardening and
 ## Test Suite
 
 - 283 unit tests + 117 e2e tests
+
+### Build & Test Diagnosis
+
+**Fresh-clone requirements:** On a fresh clone, `pnpm run setup` must be run before
+anything else. The minimum for tests is:
+```bash
+cp .env.example .env
+pnpm install
+pnpm exec prisma migrate deploy
+pnpm run build                     # generates typed SQL + server-build/
+pnpm exec prisma generate --sql    # regenerates after build (sql/ dir)
+npx playwright install chromium    # 1.5s cache hit — NEVER --with-deps (see below)
+```
+
+**Playwright browser caching:** Chromium v1223 is pre-installed at
+`/root/.cache/ms-playwright/` (641MB). `PLAYWRIGHT_BROWSERS_PATH` is set
+globally (`/etc/environment`, Hermes dotenv, and `env_passthrough`) so all
+shells and subagents reuse the same cache. `playwright install chromium` hits
+the cache in ~1.5s. Never use `--with-deps` on this VPS — system dependencies
+(libnss3, libgbm, etc.) are already installed via apt and persist; `--with-deps`
+wastes 55s running `apt-get update` + rechecking all 30 packages that are
+already present. If a new Playwright version requires different system deps,
+run `playwright install --with-deps chromium` exactly once to satisfy them,
+then drop the flag permanently.
+
+Without `prisma generate --sql`, the Vite dev server crashes with:
+`[UNRESOLVED_IMPORT] Could not resolve '../../.prisma/client/sql/index.mjs'`
+
+When `react-router build` fails, check for corrupted source files FIRST — before
+chasing Vite/Oxc config fixes:
+
+```bash
+# Check for line-number prefixes in source (from broken inlining)
+grep -rPl '^ *[0-9]+\|' app/routes/
+```
+
+If files are listed → restore from git (don't patch manually). See
+`references/flaky-test-patterns.md` § "Corrupted Route Files" for full diagnosis.
+
+### Lazy Route Inlining
+
+Admin routes using `export const lazy` return JSON instead of HTML on SSR.
+Inline with the Python script (NOT awk/head):
+
+```bash
+python3 scripts/inline-lazy-routes.py \
+  app/routes/admin+/cache.tsx \
+  app/routes/admin+/__cache.lazy.tsx
+```
+
+Full procedure and pitfalls in `references/flaky-test-patterns.md` § "Admin Page a11y Tests".
 
 ## CI
 
@@ -226,9 +284,27 @@ Copy the component function from the `.lazy` file into the route file itself. Fu
 pnpm run build  # REQUIRED before every test run after source edits
 ```
 
-**⚠️ Related: Vite 8 + Oxc/Rolldown build failure** — if `react-router build` itself fails with `[builtin:vite-transform] Unexpected token` on `@conform-to/react` or `@epic-web/invariant`, the build pipeline is broken at the bundler level (not lazy routes). See `references/flaky-test-patterns.md` § Vite 8 + Oxc/Rolldown Build Failure for diagnostics and fix paths.
+**⚠️ Inlining pitfall: line-number prefixes.** The awk-based inlining procedure can corrupt files with literal line-number prefixes (`     1|`, `     2|`). Use the safe Python script instead: `scripts/inline-lazy-routes.py <route.tsx> <__component.lazy.tsx>`. After ANY inlining, run:
+```bash
+grep -rPl '^ *[0-9]+\|' app/routes/
+```
+If any files are listed, restore them from git — do NOT try to sed-strip the prefixes.
 
-Five recurring patterns — full details in `references/flaky-test-patterns.md`: 
+**⚠️ Inlining pitfall: missing client-side imports.** When you inline a lazy component into the parent route file, the lazy file's imports (`useLoaderData`, `Outlet`, `useTranslation`, UI components, etc.) are NOT automatically merged. The parent file only has server-side imports. After inlining, verify every hook and component used in the inlined component is imported in the parent:
+
+```bash
+# Scan for common missing-import patterns after inlining
+for f in $(find app/routes -name '*.tsx' ! -name '*.lazy.tsx'); do
+  body=$(sed -n '/^export default function/,$ p' "$f")
+  echo "$body" | grep -oP '\b(useLoaderData|useActionData|useFetcher|useNavigation|Outlet|useTranslation)\b' | sort -u | while read hook; do
+    head -20 "$f" | grep -q "$hook" || echo "MISSING: $hook in $f"
+  done
+done
+```
+
+Missing imports crash SSR with `ReferenceError: <hook> is not defined` — the error appears in the server logs (not the test output) as `[WebServer] ReferenceError: useLoaderData is not defined`. Real case: `checkout+/_layout.tsx` crashed because the lazy file imported `useLoaderData`, `Outlet`, `CheckoutSteps`, and `useTranslation` but the parent `_layout.tsx` only had server-side imports (`getUserId`, `prisma`, `redirectWithToast`).
+
+**⚠️ Related: Vite 8 build failure — check corruption first.** If `react-router build` fails with `[builtin:vite-transform] Unexpected token` and the error output shows `1|import`, the source files are corrupted with line-number prefixes. See `references/flaky-test-patterns.md` § Corrupted Route Files. Do NOT chase Vite config changes until you've ruled this out.
 
 Five recurring patterns — full details in `references/flaky-test-patterns.md`:
 
@@ -237,6 +313,20 @@ Five recurring patterns — full details in `references/flaky-test-patterns.md`:
 3. **shadcn checkbox hydration** — `<button role="checkbox">` fails `.check()` → use `.click()`
 4. **Toast race after redirect** — `waitForURL` before `toBeVisible` with explicit timeout
 5. **SQLite busy_timeout** — `PRAGMA busy_timeout = 5000` for parallel worker contention
+
+Three additional patterns discovered 2026-06-01 — separate reference files:
+
+6. **React 19 `<select>` onChange** — Playwright cannot trigger React 19 controlled selects → `references/react-19-playwright-select-pitfall.md`
+7. **Conform file input + insert** — `form.insert` re-render discards file selections → `references/conform-file-input-insert-pitfall.md`
+8. **`user.id` vs `user.username`** — route expects username, test passes CUID → `references/user-id-vs-username-route-pitfall.md`
+
+**⚠️ Temp-copy divergence pitfall:** Test fixes developed in `/tmp/shop-*` may
+not apply to the real repo. The temp copy can be a modified/divergent version
+from a prior session. Always re-verify by reading the actual file in the real
+repo before applying a fix. Real case: the 2fa test in `/tmp/shop-original` used
+`navigate(/users/${user.id})` (broken), but the upstream `Seven74AI/shop` already
+had the correct dropdown logout pattern. Applying the `user.id → user.username`
+fix to upstream was unnecessary.
 
 ### Pattern 1: WCAG color-contrast (a11y tests)
 

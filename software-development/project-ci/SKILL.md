@@ -133,7 +133,18 @@ jobs:
         with: { node-version: '22' }
       - run: npm ci  # or pnpm install --frozen-lockfile
       - run: npx playwright install --with-deps
-      - run: vitest run
+```
+
+**⚠️ `--with-deps` is for ephemeral CI runners only.** GitHub Actions runners
+are fresh VMs — system dependencies must be installed every run. On persistent
+hosts (VPS, dev machines), the system deps are already installed and persist
+across reboots. On those hosts, use plain `npx playwright install chromium`
+(~1.5s cache hit) instead of `--with-deps` (~55s of wasted `apt-get update`).
+Set `PLAYWRIGHT_BROWSERS_PATH` globally to point all projects at a shared
+browser cache and add it to Hermes `terminal.env_passthrough` so subagent
+shells inherit it.
+
+- `vitest run` → vitest step
       - run: tsc --noEmit
       - run: npm run lint
       - run: playwright test --workers=1
