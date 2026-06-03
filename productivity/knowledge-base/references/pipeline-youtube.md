@@ -12,7 +12,7 @@ isoler le travail CPU (whisper) du travail LLM (résumé).
 - `ffmpeg` (système)
 - `minio` Python client (pip) — pour l'upload MinIO
 - `node` ≥ v20 (système) — requis par yt-dlp pour le n-sig challenge solver
-- Cookies YouTube : `/tmp/yt_cookies.txt` (exportés depuis le navigateur desktop de l'utilisateur)
+- Cookies YouTube : `/root/.hermes/cookies/yt_cookies.txt` (exportés depuis le navigateur desktop de l'utilisateur)
 - HuggingFace token : dans `HF_TOKEN` (env) — généré gratuitement sur huggingface.co/settings/tokens, sert UNIQUEMENT à télécharger le modèle pyannote (pas d'appel API, pas de télémétrie). Sur les profils kanban, source from researcher-videos: `export HF_TOKEN=$(grep -oP 'HF_TOKEN=\K[^#\n]+' /root/.hermes/profiles/researcher-videos/.env | head -1)`
 
 ## Kanban two-phase pattern
@@ -72,7 +72,7 @@ Ces commandes sont utilisées par le worker dans le ticket DOWNLOAD+TRANSCRIBE.
 ### 1. Lister les chapitres YouTube natifs
 
 ```bash
-yt-dlp --cookies /tmp/yt_cookies.txt --js-runtimes node \
+yt-dlp --cookies /root/.hermes/cookies/yt_cookies.txt --js-runtimes node \
   --print "%(chapters)s" \
   --sleep-requests 1 --sleep-interval 3 --max-sleep-interval 10 --limit-rate 4M \
   "https://www.youtube.com/watch?v=VIDEO_ID"
@@ -83,7 +83,7 @@ Sortie formatée en JSON avec `start_time`, `end_time`, `title`. Si vide → pas
 ### 2. Extraire les métadonnées
 
 ```bash
-yt-dlp --cookies /tmp/yt_cookies.txt --js-runtimes node \
+yt-dlp --cookies /root/.hermes/cookies/yt_cookies.txt --js-runtimes node \
   --print "%(title)s||%(uploader)s||%(duration)s||%(view_count)s||%(upload_date)s" \
   --sleep-requests 1 --sleep-interval 3 --max-sleep-interval 10 --limit-rate 4M \
   "https://www.youtube.com/watch?v=VIDEO_ID"
@@ -94,7 +94,7 @@ Sortie : `Titre||Chaîne||Durée (secondes)||Vues||YYYYMMDD`
 ### 3. Télécharger la vidéo (WebM VP9, max 720p)
 
 ```bash
-yt-dlp --cookies /tmp/yt_cookies.txt --js-runtimes node \
+yt-dlp --cookies /root/.hermes/cookies/yt_cookies.txt --js-runtimes node \
   -f "bestvideo[height<=720][vcodec^=vp9]+bestaudio[acodec^=opus]/bestvideo[height<=720]+bestaudio/best[height<=720]" \
   --merge-output-format webm \
   -o "/tmp/yt_%(id)s.webm" \
@@ -339,7 +339,7 @@ rm /tmp/yt_SLUG.webm /tmp/yt_SLUG.mp3 /tmp/yt_SLUG_transcript.json
 - **Toujours** utiliser `--js-runtimes node` (n-sig challenge)
 - Max **2 vidéos** par worker session
 - Au-delà de 2 URLs, sérialiser avec `--parent`
-- Cookies fichier persistant `/tmp/yt_cookies.txt` — ne pas supprimer
+- Cookies fichier persistant `/root/.hermes/cookies/yt_cookies.txt` — ne pas supprimer
 
 ## Anti-pitfalls
 

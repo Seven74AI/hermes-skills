@@ -37,7 +37,7 @@ Lot X/N — N reels Instagram. Rate-limit strictly: sleep 8-15s between Reels, m
 3. URL
 ...
 
-For Instagram: use cookies at /tmp/ig_cookies.txt. For carousel posts: extract all slides (HARD CAP 2). **CRITICAL: do NOT translate content. Note language = source language.** Save to Knowledge base/. Push after each note.
+For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides (HARD CAP 2). **CRITICAL: do NOT translate content. Note language = source language.** Save to Knowledge base/. Push after each note.
 ```
 
 For mixed batches (Instagram + Threads):
@@ -48,7 +48,7 @@ Batch X — N URLs. Rate-limit strictly: sleep 8-15s between Reels, max 2MB/s.
 N. URL — Auteur/Topic (optional annotation)
 ...
 
-For Instagram: use cookies at /tmp/ig_cookies.txt. For carousel posts: extract all slides. For Threads: try web_extract or browser. CRITICAL: do NOT translate — note language = source language. Save to Knowledge base/. Push after each note.
+For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides. For Threads: try web_extract or browser. CRITICAL: do NOT translate — note language = source language. Save to Knowledge base/. Push after each note.
 ```
 
 ## Assignee selection
@@ -65,7 +65,7 @@ For Instagram: use cookies at /tmp/ig_cookies.txt. For carousel posts: extract a
 |---------|---------|
 | `Rate-limit strictly: sleep 8-15s` | Avoids Instagram rate-limiting / shadow-ban |
 | `max 2MB/s` | Throttle yt-dlp download speed |
-| `cookies at /tmp/ig_cookies.txt` | Required for Instagram authentication |
+| `cookies at /root/.hermes/cookies/ig_cookies.txt` | Required for Instagram authentication |
 | `HARD CAP 2 slides` | Carousel anti-bot limitation — slides 3+ are blocked |
 | `Keep original language` | Never translate content |
 | `Knowledge base/` | Target folder in Obsidian vault |

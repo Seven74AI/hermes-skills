@@ -41,7 +41,9 @@ For image posts (`/p/` URLs): run `scripts/ig-carousel-extract.py URL`. Extracts
 
 Vision tool pitfalls: see `references/vision-pitfalls.md` — dual-section config trap, session caching, model availability, direct Anthropic API fallback.
 
-Cookie requirements: Instagram needs a valid `sessionid` cookie. `csrftoken` + `mid` alone are insufficient. Validate with `grep -c sessionid /tmp/ig_cookies.txt` — must be ≥1. Export via a Reel URL (not homepage) or the sessionid won't be included. Re-export from browser if missing.
+Cookie requirements: Instagram needs a valid `sessionid` cookie. `csrftoken` + `mid` alone are insufficient. Validate with `grep -c sessionid /root/.hermes/cookies/ig_cookies.txt` — must be ≥1. Export via a Reel URL (not homepage) or the sessionid won't be included. Re-export from browser if missing.
+
+Cookies are stored persistently at `/root/.hermes/cookies/` (NOT `/tmp/` — gets cleared on reboot).
 
 ### Video Pipeline — Global Rules (ALL platforms: YouTube, Instagram, Mega)
 
@@ -123,7 +125,7 @@ Design decisions (grill session 2026-05-23, updated 2026-05-24):
   with `⚠️ Chevauchement` annotation.
 - **Speaker identification:** heuristic from video metadata. Unmatched → "Unknown".
 - **Hard fail on diarization failure:** no silent fallback to transcription-only.
-- **Cookies:** `/tmp/yt_cookies.txt` (YouTube), `/tmp/ig_cookies.txt` (Instagram).
+- **Cookies:** `/root/.hermes/cookies/yt_cookies.txt` (YouTube), `/root/.hermes/cookies/ig_cookies.txt` (Instagram).
 - **`--js-runtimes node` mandatory on all yt-dlp calls** — n-sig challenge.
 
 ### Books (ePub/PDF)
@@ -296,12 +298,9 @@ and zero actual cookies. Agents see the file exists and assume cookies are avail
 
 **Detection — ALWAYS verify before relying on a cookie file:**
 ```bash
-grep -c sessionid /tmp/ig_cookies.txt   # MUST be ≥1
-grep -c sessionid /tmp/cookies.txt      # 0 = empty, useless
-```
+grep -c sessionid /root/.hermes/cookies/ig_cookies.txt   # MUST be ≥1
 
-An empty `/tmp/cookies.txt` with just `# Netscape HTTP Cookie File` header is worthless.
-Delete it to avoid future confusion: `rm /tmp/cookies.txt`.
+An empty `/root/.hermes/cookies/ig_cookies.txt` with just `# Netscape HTTP Cookie File` header means the export failed — re-export from Chrome.
 
 ### ⛔ Instagram rate-limiting escalates mid-batch — first downloads succeed, subsequent fail
 

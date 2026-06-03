@@ -97,24 +97,24 @@ The user exports their Instagram cookies from Chrome/Firefox on their desktop an
 ```bash
 # Export cookies from Chrome — MUST use a Reel URL (not just instagram.com homepage,
 # otherwise the sessionid cookie won't be exported)
-yt-dlp --cookies-from-browser chrome --cookies /tmp/ig_cookies.txt "https://www.instagram.com/reel/ANY_REEL_ID/" -O "done"
+yt-dlp --cookies-from-browser chrome --cookies /root/.hermes/cookies/ig_cookies.txt "https://www.instagram.com/reel/ANY_REEL_ID/" -O "done"
 
 # Send to server
-scp /tmp/ig_cookies.txt root@<tailscale-ip>:/tmp/ig_cookies.txt
+scp /root/.hermes/cookies/ig_cookies.txt root@<tailscale-ip>:/root/.hermes/cookies/ig_cookies.txt
 ```
 
 #### Server-side — safe download with rate-limiting:
 
 ```bash
 # Step 1: List formats and metadata (lightweight)
-yt-dlp --cookies /tmp/ig_cookies.txt \
+yt-dlp --cookies /root/.hermes/cookies/ig_cookies.txt \
   --sleep-requests 3 --sleep-interval 5 --max-sleep-interval 15 \
   --limit-rate 2M \
   --print "%(duration)ss | %(like_count)s likes" \
   "https://www.instagram.com/reel/REEL_ID/"
 
 # Step 2: Download (combined stream if available, otherwise best video + audio)
-yt-dlp --cookies /tmp/ig_cookies.txt \
+yt-dlp --cookies /root/.hermes/cookies/ig_cookies.txt \
   -f "bv*[height<=720]+ba/b[height<=720]" \
   --merge-output-format mp4 \
   -o "/tmp/ig_reel.mp4" \
@@ -410,7 +410,7 @@ alone are NOT sufficient — yt-dlp will fail with "login required".
 
 ```bash
 # Check if cookies have sessionid
-grep -c 'sessionid' /tmp/ig_cookies.txt  # Must be ≥1
+grep -c 'sessionid' /root/.hermes/cookies/ig_cookies.txt  # Must be ≥1
 ```
 
 **Export tip**: when exporting cookies from Chrome, you MUST use a Reel URL
@@ -418,9 +418,9 @@ grep -c 'sessionid' /tmp/ig_cookies.txt  # Must be ≥1
 included:
 ```bash
 # Correct — uses a Reel URL:
-yt-dlp --cookies-from-browser chrome --cookies /tmp/ig_cookies.txt "https://www.instagram.com/reel/ANY_REEL_ID/" -O "done"
+yt-dlp --cookies-from-browser chrome --cookies /root/.hermes/cookies/ig_cookies.txt "https://www.instagram.com/reel/ANY_REEL_ID/" -O "done"
 # Wrong — homepage won't export sessionid:
-yt-dlp --cookies-from-browser chrome --cookies /tmp/ig_cookies.txt "https://www.instagram.com/" -O "done"
+yt-dlp --cookies-from-browser chrome --cookies /root/.hermes/cookies/ig_cookies.txt "https://www.instagram.com/" -O "done"
 ```
 
 Re-export from a browser with an active Instagram session if `sessionid` is missing.
@@ -431,4 +431,4 @@ Re-export from a browser with an active Instagram session if `sessionid` is miss
 - Never download more than 2-3 Reels per worker session
 - **Serialize batches with `--parent`** — if the user sends 15+ URLs, split into batches of 4-5 URLs and chain them: batch B has `--parent batch_A`, batch C has `--parent batch_B`. This prevents the dispatcher from spawning 2+ researcher workers simultaneously hitting Instagram from the same IP. Parallel workers = parallel Instagram requests = ban risk.
 - Never run in a loop or cron without `--sleep-interval 30+`
-- Cookies file is persisted at `/tmp/ig_cookies.txt` across sessions — do NOT delete it. Re-export from Chrome only if session expires (rare).
+- Cookies file is persisted at `/root/.hermes/cookies/ig_cookies.txt` across sessions — do NOT delete it. Re-export from Chrome only if session expires (rare).

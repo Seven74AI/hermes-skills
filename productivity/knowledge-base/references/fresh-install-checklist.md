@@ -80,8 +80,8 @@ xurl config: stored in system credential store (not file-based). Workers needing
 ## Cookies
 
 User provides from Mac via scp:
-- `/tmp/ig_cookies.txt` — Instagram (must have `sessionid`)
-- `/tmp/yt_cookies.txt` — YouTube
+- `/root/.hermes/cookies/ig_cookies.txt` — Instagram (must have `sessionid`)
+- `/root/.hermes/cookies/yt_cookies.txt` — YouTube
 
 Export: `yt-dlp --cookies-from-browser chrome --cookies /tmp/XX_cookies.txt "URL" -O "done"`
 

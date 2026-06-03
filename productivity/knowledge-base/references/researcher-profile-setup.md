@@ -43,7 +43,7 @@ cp /root/.gitconfig /root/.hermes/profiles/researcher/home/.gitconfig
 
 ## Instagram cookies
 
-Cookies are persisted at `/tmp/ig_cookies.txt` across sessions. The worker
+Cookies are persisted at `/root/.hermes/cookies/ig_cookies.txt` across sessions. The worker
 profile has access to `/tmp/` in its terminal environment. Rate-limiting
 is mandatory — the SOUL.md should encode the exact flags.
 
@@ -100,8 +100,8 @@ cp /root/.gitconfig /root/.hermes/profiles/researcher-videos/home/.gitconfig
 
 # YouTube cookies (user exports from desktop browser, then scp)
 # On user's Mac:
-#   yt-dlp --cookies-from-browser chrome --cookies /tmp/yt_cookies.txt "https://www.youtube.com/" -O "done"
-#   scp /tmp/yt_cookies.txt root@<server>:/tmp/yt_cookies.txt
+#   yt-dlp --cookies-from-browser chrome --cookies /root/.hermes/cookies/yt_cookies.txt "https://www.youtube.com/" -O "done"
+#   scp /root/.hermes/cookies/yt_cookies.txt root@<server>:/root/.hermes/cookies/yt_cookies.txt
 ```
 
 ### Key differences from researcher (Reels)
@@ -111,7 +111,7 @@ cp /root/.gitconfig /root/.hermes/profiles/researcher-videos/home/.gitconfig
 | `max_spawn` | 3 | 1 (whisper is CPU-heavy) |
 | `max_turns` | 90 | 240 (long videos) |
 | `max_iterations` | 120 | 240 |
-| Cookies | `/tmp/ig_cookies.txt` | `/tmp/yt_cookies.txt` |
+| Cookies | `/root/.hermes/cookies/ig_cookies.txt` | `/root/.hermes/cookies/yt_cookies.txt` |
 | Rate-limit | 2 MB/s, sleep 3-15s | 4 MB/s, sleep 1-10s |
 | Max per session | 2-3 Reels | 2 videos |
 | MinIO folder | — | `videos/` |
