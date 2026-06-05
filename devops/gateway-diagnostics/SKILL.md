@@ -106,6 +106,13 @@ Quick fix: reduce `delegation.max_concurrent_children` on the coder profile.
 
 See `references/oom-diagnosis-example.md` for a real-world case (2026-05-31).
 
+## Kanban Dispatcher Tick Failures
+
+When a kanban board shows 0 active workers but tasks exist, check for silent dispatcher
+failures — the gateway ticks the board but the tick fails without crashing.
+
+See `references/kanban-dispatcher-tick-failure.md` for diagnosis steps and a real-world case.
+
 ## Pitfalls
 
 - **Flood control ≠ disconnected**: Telegram rate-limiting is transient.
@@ -114,3 +121,7 @@ See `references/oom-diagnosis-example.md` for a real-world case (2026-05-31).
   A stale `updated_at` doesn't mean the platform is down — check logs instead.
 - **Don't curl Telegram API without user approval** when the bot token is
   involved. Prefer Hermes-native diagnostics (logs, dashboard) first.
+- **Kanban dispatcher failures are silent**: A board can be "active" (listed, DB OK)
+  but receiving no workers because the dispatcher tick keeps failing. Check
+  `/root/.hermes/logs/errors.log` for `kanban dispatcher.*tick failed` when a board
+  seems idle despite having todo tasks.
