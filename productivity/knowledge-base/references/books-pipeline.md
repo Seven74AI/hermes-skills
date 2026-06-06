@@ -1,5 +1,7 @@
 # Books Pipeline — PDF & ePub → Knowledge Base
 
+> **Superseded by `book-extraction.md`** — use that file as the canonical books pipeline.
+
 Full extraction pipeline for long-form documents (books, papers, manuals).
 
 ## ePub Extraction with ebooklib
@@ -66,7 +68,6 @@ Books are 50K-150K words — can't fit in a single note. Strategy:
 
 ```markdown
 ---
-topic: [topic1, topic2]
 date: YYYY-MM-DD
 source: <Book: Title by Author, Year, Publisher>
 source_url: <optional ISBN or URL>

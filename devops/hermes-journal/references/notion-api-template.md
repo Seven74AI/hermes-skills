@@ -2,9 +2,14 @@
 
 Exact curl + JSON payload for creating a journal entry in the Hermes Ops Journal database.
 
-## Database ID
+## Database IDs
 
-`365511b0-706b-8146-81bb-d2ecaac5682d`
+Two IDs refer to the same Notion database — use the right one for the right operation:
+
+- **database_id** (page creation, v2022-06-28): `376511b0-706b-8106-8710-c693d9d28014`
+- **data_source_id** (queries, v2025-09-03): `376511b0-706b-8177-8a2e-000bda604705`
+
+⚠️ Historical stale IDs: `365511b0-706b-8146-81bb-d2ecaac5682d`, `365511b0-706b-81d5-be62-000b4f377403`, `365511b0-706b-8160-887c-fba30df98145` — all broken. Recreated under Hermes Sevenai root page 2026-06-05.
 
 ## API Version
 
@@ -14,7 +19,7 @@ Use `Notion-Version: 2022-06-28` for page creation (select/date properties break
 
 ```json
 {
-  "parent": {"database_id": "365511b0-706b-8146-81bb-d2ecaac5682d"},
+  "parent": {"database_id": "376511b0-706b-8106-8710-c693d9d28014"},
   "properties": {
     "Entry": {"title": [{"text": {"content": "TITLE HERE"}}]},
     "Date": {"date": {"start": "2026-05-22"}},
@@ -67,7 +72,7 @@ When creating entries programmatically, write JSON with `python3` directly to av
 python3 -c "
 import json
 data = {
-    'parent': {'database_id': '365511b0-706b-8146-81bb-d2ecaac5682d'},
+    'parent': {'database_id': '376511b0-706b-8106-8710-c693d9d28014'},
     'properties': {
         'Entry': {'title': [{'text': {'content': 'Your title here'}}]},
         'Date': {'date': {'start': '2026-05-22'}},

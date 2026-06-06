@@ -1,5 +1,4 @@
 ---
-topic: [topic1, topic2]
 date: YYYY
 source: Author Name — Book Title (YYYY, Publisher, XXXp.)
 source_url: <optional URL>

@@ -1,7 +1,7 @@
 ---
 name: kanban-worker
 description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.
-version: 2.1.0
+version: 2.3.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -301,6 +301,9 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - Modify files outside `$HERMES_KANBAN_WORKSPACE` unless the task body says to.
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
 - Complete a task you didn't actually finish. Block it instead.
+- Process a URL that was delegated to a child ticket. When a batch parent delegates individual items to children, the next worker on the parent must check comments for delegation markers (e.g., "Reel X delegated to child t_XXXX") and skip those items. Parallel parent+child processing of the same URL wastes CPU/RAM and produces duplicate work. Observed 2026-06-05: two researcher-videos workers simultaneously transcribed the same 148s Reel.
+
+- **Create continuation children for batch overflow.** When a worker can't finish its batch and creates an overflow child via `kanban_create`, AND the planner already created the next batch as a child of the same parent, both become `ready` simultaneously when the parent completes → parallel dispatch of CPU-heavy workers → resource saturation. Use the Memento Pattern instead: `kanban_block` with a `handoff.md` in the workspace. One task = one worker at a time. Observed 2026-06-05: t_6d953883 completed → continuation child t_d00baacc AND planner chain child t_0f11f419 both dispatched → 4 whisper processes, load 15, 420MB free RAM, 5GB swap, 7 failed transcription attempts.
 
 ### `gh issue create` quoting trap (execute_code → terminal)
 
@@ -335,7 +338,13 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 
 ## Pitfalls
 
+**Task stuck in `ready` — dispatcher daemon may not be running.** The Kanban dispatcher is a foreground process (`hermes kanban daemon`) on a 60-second cycle — it is NOT a systemd service by default. If no terminal session is running the daemon, tasks sit in `ready` indefinitely. Check: `ps aux | grep 'hermes kanban daemon'`. Start: `hermes kanban daemon`. Full lifecycle, symptoms, and DB lock diagnosis: `references/dispatcher-daemon-lifecycle.md`.
+
 **Dispatcher DB corruption: `kanban.db is not a valid SQLite database`.** The dispatcher coordination DB (`/root/.hermes/kanban.db`) can get a corrupted header from an interrupted write (SIGKILL, OOM, host crash). Board DBs (`boards/<board>/kanban.db`) hold all the real data — the dispatcher DB is a coordination cache with zero critical data. Recovery: `mv kanban.db kanban.db.corrupted-backup` + restart gateway. It recreates the DB on the next dispatch tick. Board data is never at risk. Full diagnosis and recovery: `references/dispatcher-db-corruption.md`.
+
+**WAL leak → database locked in dispatcher ticks.** Gateway logs show repeated `kanban dispatcher: tick failed on board <name>` at `kanban_db.py line 1190` (`PRAGMA journal_mode=DELETE`). The gateway process has a leaked connection holding the DB in WAL mode, blocking the DELETE transition. Recovery: `hermes gateway restart` (kills all connections). The DB itself is usually healthy — no need to move it unless restart alone doesn't fix it. If restart fixes the WAL error but tasks still don't spawn, check for **stale claim_lock** (see `references/dispatcher-daemon-lifecycle.md` — two-phase failure pattern).
+
+**⛔ Dispatcher DB lock = silent dispatch failure (2026-06-05).** When `/root/.hermes/kanban.db` is locked, the dispatcher (which runs inside the gateway, not as a standalone daemon) silently fails every tick with `kanban dispatcher: tick failed on board <name>` at `kanban_db.py line 1190` (`PRAGMA journal_mode=DELETE`). Tasks sit in `ready` indefinitely with zero visible errors unless you check the gateway logs. The gateway itself stays up — only the dispatcher ticks fail. Diagnosis: `journalctl -u hermes-gateway --no-pager | grep "kanban dispatcher"`. Recovery: same as DB corruption — move the DB + restart gateway. Do NOT attempt to create a standalone daemon service; `hermes kanban daemon` is deprecated and exits with an error unless `--force` is used. Full lifecycle: `references/dispatcher-daemon-lifecycle.md`.
 
 **Task state can change between dispatch and your startup.** Between when the dispatcher claimed and when your process actually booted, the task may have been blocked, reassigned, or archived. Always `kanban_show` first. If it reports `blocked` or `archived`, stop — you shouldn't be running.
 
@@ -352,6 +361,20 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 **CRITICAL: Do NOT use `parent=` when creating reviewer tasks.** The kanban dispatcher does not promote `todo` children of blocked or running parent tasks. Creating a reviewer with `parent=coder_task_id` locks it in `todo` forever — the coder is blocked `review-required`, the reviewer never leaves `todo`, deadlock. Always create reviewers standalone (no `parent=`) and include the coder task ID in the body text instead. The block watchdog will unblock the coder when the reviewer completes. This deadlock was observed on music-library board 2026-05-18: 6 reviewer tasks stuck in `todo` until archived and recreated without parents.
 
 **`kanban_create()` creates tasks in `todo` state, NOT `ready`.** The kanban dispatcher only picks up `ready` tasks. A reviewer task created via `kanban_create()` will sit in `todo` forever unless promoted. Workaround: after creating the reviewer task, the coder must also promote it: `terminal(f"hermes kanban --board {board} promote {review_id}")` or the block-watchdog cron must handle promotion. This was observed on 2026-05-19 across 5 boards (videogame-lab, baguette, glance, shop, the-swarm) — all review tasks created by coders were stuck in `todo`.
+
+**⛔ `kanban_block` does NOT stop the worker process — it only prevents RE-dispatch.** The worker that called `kanban_block` keeps running: its agent loop continues, it keeps spawning subprocesses, and it keeps consuming CPU/RAM. When you block a task to stop a runaway worker, you MUST also kill the worker PID. Blocking alone leaves the worker alive indefinitely (observed 2026-06-05: a blocked researcher-videos worker spawned new whisper processes 53 minutes after the block).
+
+**Recovery checklist when blocking a misbehaving worker:**
+1. `hermes kanban --board <board> block <task_id> "reason"` — prevents RE-dispatch
+2. `kill -9 <worker_pid>` — kills the current worker
+3. `ps aux | grep transcribe` (or equivalent subprocess) → `kill -9` any orphans
+4. `ps aux | grep "kanban task t_"` — verify no other workers for same profile
+
+**Why subprocesses survive:** `terminal(background=true)` spawns the subprocess in its own process group via `os.setsid`. When the worker is SIGKILLed, the subprocess is reparented to init (PID 1) and keeps running. Always kill orphans after killing a worker.
+
+**Dispatcher race condition:** Between `kill -9` and `kanban block`, the dispatcher can respawn a new worker (observed at 11:44 on 2026-06-05: kill, then new run #119 spawned at 11:44, blocked at 11:45). This creates a brief window where a NEW worker is already running when the block lands. The block prevents further dispatches, but does not retroactively kill the just-spawned worker. Always re-verify after blocking.
+
+**`kanban archive` also doesn't kill.** Same behavior as block — the worker keeps running. Always follow the same kill-then-verify sequence.
 
 ```python
 # WRONG — creates deadlock (reviewer stuck in todo forever)
@@ -377,6 +400,28 @@ kanban_create(
 **Overspawn: too many workers = lock contention + CPU saturation.** If the system feels slow, `hermes profile list` hangs, or you see 40+ hermes processes in `ps aux`, the autoscale may have over-cloned profiles. The root cause is usually `MAX_PROFILES_PER_ROLE` set too high. See `references/kanban-autoscale.md` for diagnosis and recovery.
 
 **Even with moderate worker counts, CPU saturation is a distinct failure mode:** when multiple boards run CPU-intensive CI steps simultaneously (`tsc --noEmit` + `vitest`), each worker's CI can consume 100-400% CPU (tsc ~130%, vitest with 3 workers ~300% combined). On shared hosts with `max_spawn=5` and 10 active boards, this easily saturates a 4-core VM (load avg 8+ on 4 CPUs). Symptoms: workers timing out, `ps aux --sort=-%cpu` showing multiple tsc/vitest processes across different boards, `/proc/pressure/cpu some` values > 10. Mitigation: reduce `max_spawn` to match CPU cores available, or add admission control (check loadavg before spawning CI steps — see `project-ci` skill pitfalls).
+
+**⛔ Continuation children + planner chains = parallel CPU-heavy dispatch (resource collision).** This is a specific deadlock pattern that routinely saturates shared hosts. The collision:
+
+1. The **planner** creates a sequential chain via `parent=`: batch-1 → batch-2 → batch-3. When batch-2 completes, batch-3 is auto-promoted from `todo` to `ready`.
+2. A **worker** on batch-2 can't finish all items in one session, so it creates a **continuation child** (e.g. `t_d00baacc` for the remaining 3/5 reels) via `kanban_create(... parent=batch-2)`.
+3. Batch-2 completes → **both children become `ready` simultaneously** (batch-3 from the planner chain + batch-2-remainder from the worker).
+4. Dispatcher sees 2 ready tasks + available spawn slots → dispatches both → 2 workers run **the same CPU-heavy workload in parallel**.
+
+Observed 2026-06-05 on default board with researcher-videos: 3 workers spawned → 4 concurrent whisper large-v3 transcriptions → 377% CPU, load avg 11.69, 5.7GB swap used, CPU pressure 42%. Each transcription that should take ~7min was running at half speed due to CPU contention. One single-reel task (t_123f6f1b) had been running for 1+ hour.
+
+**The fix: prefer Memento Pattern over continuation children for CPU-heavy batch work.** When you can't finish a batch in one session, do NOT create a new child task. Instead:
+
+1. Write `handoff.md` in the workspace: completed items, remaining items, current state
+2. Push to git if applicable
+3. `kanban_block(reason="budget checkpoint: handoff.md in workspace — resume from item N of M")`
+4. The SAME task is re-dispatched; next worker reads handoff and continues
+
+This guarantees sequential execution (one task = one worker at a time) while preserving the planner's parent/child chain for actual batch-to-batch progression.
+
+**Rule of thumb:** `kanban_create` = parallelizable work. If the new task must NOT run alongside the current task (CPU/RAM contention, shared state, ordering dependency), use Memento Pattern + `kanban_block` instead. Continuation children are only safe when the work is I/O-bound, stateless, or explicitly designed for parallelism.
+
+Full diagnostic data from the 2026-06-05 incident and the OOM confirmation: `references/continuation-child-planner-chain-collision.md`.
 
 **False-positive budget blocks from background waits.** A worker that uses `background=true` + heartbeats while waiting for a long CPU task (transcription, large build, video encode) can hit the 60-turn checkpoint despite having minimal token context (< 5K tokens). The turn counter doesn't distinguish "working turns" from "waiting turns." This is NOT the smart/dumb zone problem Matt Pocock warned about — it's a false positive of the turn-based checkpoint system. When the transcription/build finishes right after the block, just re-dispatch. See `references/smart-zone-vs-turn-budget.md`.
 
@@ -426,7 +471,20 @@ This is the #2 cause of budget exhaustion: the worker launches correctly in back
 
 **When background instructions fail — the self-contained script fallback.** Workers sometimes ignore task-body instructions to use background mode, repeatedly burning their budget on inline test runs. When this happens and a task hits 3+ budget-exhaustion retries, do NOT just update the task body again. Instead, create a single shell script that does ALL the heavy work (benchmark, tweak, re-benchmark, report) and update the task body to say: "Run this ONE command in background, then wait. That's it." The script does the multi-step loop internally; the worker only calls it once. This eliminates the worker's opportunity to iterate. See `references/e2e-loop-script-pattern.md` for the explanation and `templates/e2e-iteration-loop.sh` for a starter script.
 
-**Disk saturation from scratch workspaces.** Each `scratch` workspace clones the full project repo (including node_modules). At 1.5–2.7 GB per workspace, 25 completed tasks can consume 40+ GB. When the disk fills, kanban DB operations fail with "disk I/O error" and the gateway cannot function. Prevention:
+**⛔ `kanban_block` does NOT kill the worker process — blocked workers keep spawning orphans.** The DB transition (running → blocked) prevents RE-dispatch but the existing process keeps running until it hits turn budget, crashes, or is killed externally. A blocked worker can continue spawning subprocesses (transcriptions, builds) for 50+ minutes after the block. Observed 2026-06-05: t_0f11f419 blocked at 11:45, worker spawned a new whisper process at 12:38 — 53 minutes later. The block→archive pattern also has a race: the dispatcher can respawn a worker between the `kill -9` and the `archive` command.
+
+  **Prevention:** After blocking/archiving a task, SIGKILL the worker PID to stop orphan work:
+  ```bash
+  hermes kanban --board <board> block <id> "reason"
+  kill -9 $(hermes kanban --board <board> show <id> --json | jq -r '.worker_pid')
+  ```
+  Then kill any orphan transcription/build processes: `ps aux | grep transcribe | grep -v grep | awk '{print $2}' | xargs kill -9`.
+
+**Dispatcher TERMINAL_TIMEOUT override:** When spawning workers, `_default_spawn` calls `_worker_terminal_timeout_env(task.max_runtime_seconds, ...)` (kanban_db.py:5516). If `max_runtime_seconds` is set, TERMINAL_TIMEOUT is overridden to `max(1, runtime - 30)`. If not set, the gateway's env TERMINAL_TIMEOUT is inherited (or the code default of 180s). This means `process(action="wait")` can time out at 180s even when the worker passes `timeout=3600` — the env var caps all process waits.
+
+**OOM is the #1 killer of CPU/RAM-heavy background processes, not SIGTERM from the agent loop.** Thorough investigation 2026-06-05 (traced every kill path in the codebase: claim expiry, max_runtime, crashed detection, TERMINAL_LIFETIME, process_registry.wait, agent.close, interrupt mechanism, step_callback, gateway agent cache eviction, kanban_heartbeat side effects, cgroup limits) found NO code path that kills background processes during normal kanban worker operation. Background processes tested successfully: 8-min sleep loop, 2GB+CPU stress test, and actual large-v3 transcription (19 min). All completed cleanly. The earlier "SIGTERM" reports were actually foreground timeouts (exit 124) and OOM SIGKILLs (exit -9) from parallel whisper processes. With a single worker, background mode works perfectly. Always check `free -h` and `ps aux | grep transcribe` before assuming a kill is internal — it's almost always resource exhaustion.
+
+**Disk saturation from scratch workspaces.** Each `scratch` workspace clones the full project repo (including node_modules). At 1.5–2.7 GB per workspace, 25 completed tasks can consume 40+ GB.
 - An automated GC cron job (`eb1ab33f9bf4`, every 15m) uses `~/.hermes/scripts/kanban-gc-workspaces.py` to delete workspaces of done/archived tasks older than 5 minutes.
 - The 5-minute delay prevents deleting a workspace mid-recovery. If a task is done/archived, no re-dispatch happens — so 5 minutes is safe.
 - If this cron job is ever missing, recreate it: `hermes cron create --name "kanban workspace GC" --schedule "every 15m" --script kanban-gc-workspaces.py --no-agent --deliver local`
@@ -443,3 +501,26 @@ Every tool has a CLI equivalent for human operators and scripts:
 - etc.
 
 Use the tools from inside an agent; the CLI exists for the human at the terminal.
+
+**`kanban edit` only supports `--result`/`--summary`/`--metadata` — no `--body`.** The original body (from `kanban_create --body`) is immutable via the CLI.
+
+For batch-ticket body corrections where a worker must skip already-processed items, a **comment alone is NOT sufficient** — workers read the body as their primary instruction and routinely re-process completed items even when a comment marks them done (observed 2026-06-05: DVzAWsEko0Q transcribed 3 times across 2 worker runs because the body still listed all 5 URLs unmarked). Instead, update the body directly via sqlite3:
+
+```python
+import sqlite3
+db = sqlite3.connect("/root/.hermes/kanban.db")  # default board — NOT kanban/kanban.db
+db.execute("UPDATE tasks SET body = ? WHERE id = ?", (new_body, task_id))
+db.commit()
+```
+
+**DB path for default board:** ``/root/.hermes/kanban.db`` (at hermes root), NOT ``/root/.hermes/kanban/kanban.db``. Per-board DBs live at ``/root/.hermes/kanban/boards/<slug>/kanban.db``. The root-level ``kanban/kanban.db`` is a coordination cache with 0 tables — never edit it.
+
+After updating the body, also reset `status` to `ready` and clear `worker_pid` + `current_run_id` so the dispatcher picks it up fresh:
+
+```python
+db.execute("UPDATE tasks SET status='ready', worker_pid=NULL, current_run_id=NULL, consecutive_failures=0 WHERE id=?", (task_id,))
+```
+
+Then kill any orphaned worker processes: `pkill -f "kanban.*<task_id>"`.
+
+For non-batch corrections where a comment is sufficient, use `hermes kanban comment` — it's simpler and audit-trailed.

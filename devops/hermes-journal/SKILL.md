@@ -1,7 +1,7 @@
 ---
 name: hermes-journal
 description: "Daily/weekly Hermes operations journal: extract infrastructure + debugging lessons from the past day's/week's sessions and write them to a Notion database as a searchable knowledge base."
-version: 1.1.0
+version: 1.2.0
 platforms: [linux]
 prerequisites:
   env_vars: [NOTION_API_KEY]
@@ -25,7 +25,9 @@ Weekly journal that captures technical lessons, infrastructure fixes, and debugg
 
 Create a page called "Hermes Journal" under any existing accessible page (internal integrations cannot create workspace-root pages). Inside it, create an inline database.
 
-**Database ID:** `365511b0-706b-8146-81bb-d2ecaac5682d` (Hermes Ops Journal)
+**Database ID:** `376511b0-706b-8106-8710-c693d9d28014` (v2022-06-28 — use for page creation)
+**Data Source ID:** `376511b0-706b-8177-8a2e-000bda604705` (v2025-09-03 — use for queries)
+**Root page:** `363511b0-706b-803d-ad97-fea5109c2aea` (Hermes Sevenai)
 
 ⚠️ **Notion API version pitfall:** The `2025-09-03` API version silently drops properties when creating databases — they appear in the JSON response but no properties are actually created. Always use `Notion-Version: 2022-06-28` for:
 - Creating databases (POST /databases)
@@ -120,7 +122,7 @@ For project-level architecture decisions (not infrastructure lessons), use ADRs 
 - **Don't mix journal entries with ADRs**: Journal = how to run Hermes. ADR = why we made a project decision.
 - **Don't over-capture**: Environment-specific issues (missing .env, wrong PATH) are not durable knowledge.
 - **Internal integrations can't create workspace pages**: Create the journal under an existing shared page.
-- **Hardcoded database ID is environment-specific**: The database ID `365511b0-706b-8146-81bb-d2ecaac5682d` lives only in this Notion workspace. If migrating to a different workspace, create a new database and update the ID in the curl commands. Consider storing it as a `HERMES_JOURNAL_DB_ID` env var for portability.
+- **Hardcoded database ID is environment-specific**: The database ID `376511b0-706b-8106-8710-c693d9d28014` lives only in this Notion workspace. If migrating to a different workspace, create a new database and update the ID in the curl commands. Consider storing it as a `HERMES_JOURNAL_DB_ID` env var for portability.
 - **Cron job must use the correct profile**: The journal cron job requires the `hermes-chronicler` profile with NOTION_API_KEY in its `.env`. Without this, curl calls to Notion will 401.
 - **Security scanner blocks pipe-to-interpreter patterns**: The Hermes security scanner (`tirith`) blocks any pattern that pipes output from an external tool directly to an interpreter. This includes:
   - `curl ... | python3 -c ...` → `tirith:pipe_to_interpreter` (HIGH)

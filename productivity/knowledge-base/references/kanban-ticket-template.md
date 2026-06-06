@@ -37,7 +37,7 @@ Lot X/N — N reels Instagram. Rate-limit strictly: sleep 8-15s between Reels, m
 3. URL
 ...
 
-For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides (HARD CAP 2). **CRITICAL: do NOT translate content. Note language = source language.** Save to Knowledge base/. Push after each note.
+For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides (HARD CAP 2). Diarization MANDATORY for ALL video — use canonical scripts/diarize.py + scripts/transcribe.py (never skip, even for apparent monologues). large-v3 whisper, cpu_threads=6. **Language: content in source language, labels in English.** Save to Knowledge base/. Push after each note.
 ```
 
 For mixed batches (Instagram + Threads):
@@ -48,10 +48,9 @@ Batch X — N URLs. Rate-limit strictly: sleep 8-15s between Reels, max 2MB/s.
 N. URL — Auteur/Topic (optional annotation)
 ...
 
-For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides. For Threads: try web_extract or browser. CRITICAL: do NOT translate — note language = source language. Save to Knowledge base/. Push after each note.
+For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. Diarization MANDATORY for ALL video — use canonical scripts/diarize.py + scripts/transcribe.py (never skip, even for apparent monologues). For carousel posts: extract all slides. For Threads: try web_extract or browser. **Language: content in source language, labels in English.** Save to Knowledge base/. Push after each note. 2 transcriptions max per worker.
 ```
 
-## Assignee selection
 ## Assignee selection
 
 | Content type | Assignee | Why |
@@ -66,8 +65,9 @@ For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel
 | `Rate-limit strictly: sleep 8-15s` | Avoids Instagram rate-limiting / shadow-ban |
 | `max 2MB/s` | Throttle yt-dlp download speed |
 | `cookies at /root/.hermes/cookies/ig_cookies.txt` | Required for Instagram authentication |
+| `Diarization MANDATORY for ALL video` | Never skip — use scripts/diarize.py + scripts/transcribe.py. Even monologues can have guest intros or Q&A segments |
 | `HARD CAP 2 slides` | Carousel anti-bot limitation — slides 3+ are blocked |
-| `Keep original language` | Never translate content |
+| `Keep original language` | Content in source language, labels in English |
 | `Knowledge base/` | Target folder in Obsidian vault |
 | `Push after each note` | Git push so Obsidian syncs |
 | `--parent <id>` | Chain tickets so they process sequentially |
@@ -78,3 +78,34 @@ For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel
 - 5 URLs per ticket max
 - Chain with `--parent` so each batch waits for the previous one
 - Skill: `knowledge-base`
+
+## Parent/child delegation
+
+When moving a URL (Reel, YouTube, Mega, etc.) to a child ticket:
+
+1. **Create** the child ticket for that URL only
+2. **Update the parent ticket body** — remove the delegated URL from the numbered list, or mark it `DELEGATED → child <child_id>`. The body drives execution; a comment alone is insufficient.
+3. **Comment** on the parent: `"URL N delegated to child <child_id>"`
+4. **handoff.md** — list each URL as `DONE`, `DELEGATED (child <id>)`, or `TO-DO`
+5. **On resume** — read comments and handoff.md before processing the next URL
+
+Duplicate transcription detection (`ps aux | grep transcribe`): `video-pipeline-global.md` (Pre-flight).
+
+## Pitfall: "skip diarization for solo"
+
+Do NOT write "skip diarization for solo" or "monologue — no diarization" in ticket bodies.
+Diarization is mandatory for ALL video per `SKILL.md` working principles.
+Even apparent monologues can have guest intros, Q&A segments, or off-camera remarks.
+If a worker already wrote this in a ticket body or handoff, add a BODY UPDATE comment
+correcting it to "Diarization MANDATORY — use canonical scripts/diarize.py".
+
+## Recently completed batch titles ("titre des done")
+
+When the user asks for titles of recently processed content from completed batches:
+
+```bash
+cd "$OBSIDIAN_VAULT_PATH" && git log --oneline -20
+# Then for range: git diff --name-only HEAD~N..HEAD | sort
+```
+
+Present note slugs as a bullet list. Don't re-read every note — quick inventory only.

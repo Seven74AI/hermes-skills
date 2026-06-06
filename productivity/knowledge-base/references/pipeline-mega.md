@@ -51,11 +51,10 @@ Body:
   2. Extract dual audio:
      a) ffmpeg -y -i /tmp/slug.mp4 -vn -acodec pcm_s16le -ar 16000 -ac 1 /tmp/slug_16k.wav
      b) ffmpeg -y -i /tmp/slug.mp4 -vn -acodec pcm_s16le -ar 8000 -ac 1 /tmp/slug_8k.wav
-  3. Diarization: pyannote on 8kHz WAV — follow Global Video Pipeline Rules from main SKILL.md
-     (background+wait mandatory, large-v3, skip for single-speaker).
-     See pipeline-youtube.md step 5 for the full Python script and anti-pitfalls.
+  3. Diarization: pyannote on 8kHz WAV (mandatory for ALL video) — use canonical `scripts/diarize.py`.
+     Follow `references/video-pipeline-global.md` (background+wait mandatory).
   4. Transcription: faster-whisper large-v3 int8 on 16kHz WAV, merged with diarization
-     segments — follow Global Video Pipeline Rules (background+wait mandatory, 7200s timeout).
+     segments — follow `references/video-pipeline-global.md` (background+wait mandatory, 7200s timeout).
      See pipeline-youtube.md step 5b for the full Python script.
   5. Chapter detection NLP (gap > 3s) → add 'chapters' key to JSON
   6. Cleanup: rm /tmp/slug_8k.wav /tmp/slug_16k.wav /tmp/slug_diarization.json

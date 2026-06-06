@@ -1,5 +1,4 @@
 ---
-topic: [topic1, topic2]
 date: YYYY-MM-DD
 source: <chaîne YouTube>, <date publication>
 source_url: https://youtube.com/watch?v=VIDEO_ID
@@ -13,9 +12,8 @@ tags: [tag1, tag2, tag3]
 
 # Titre de la video
 
-> **REGLE LANGUE** : Contenu = langue source. Labels = TOUJOURS en anglais
-> (Summary, Key Concepts, Chapters...), peu importe la langue de la video.
-> Jamais de traduction du contenu.
+> **Language:** Content in source language. Section labels in English
+> (Summary, Key Concepts, Chapters...) regardless of video language.
 
 ## Métadonnées
 - **Chaîne / Intervenant(s) :** ...

@@ -63,28 +63,22 @@ for label, pattern in [('LIKES', r'(\d+[\d,.]+)\s*likes'), ('COMMENTS', r'(\d+[\
 
 ## Limitations (text metadata only)
 
-- **No video content from curl alone** — metadata only (caption, author, engagement). For full transcript, use the video pipeline below.
+- **curl extracts metadata only** (caption, author, engagement). Full transcript: video pipeline below.
 - **Works for public Reels only** — private accounts won't return metadata.
 - **Instagram may rate-limit** aggressive crawling. Use sparingly.
 - **Some sites block Googlebot** — if 403, try `Bingbot/2.0` or `Twitterbot/1.0`.
 
 ## Video extraction + transcription (Instagram Reels)
 
-When you need the actual video transcript (not just caption/comments), use yt-dlp + faster-whisper. Two methods — **use Method A when cookies are available**, fall back to Method B for older public Reels.
+Use **Method A** (cookies + yt-dlp + faster-whisper). See `video-pipeline-global.md` for whisper/diarization rules.
 
-### ⚠️ Pitfall: `/p/` vs `/reel/` URL — verify before running pipeline
+**URL routing:** `/reel/` → this pipeline. `/p/` → `scripts/ig-carousel-extract.py`. Confirm when label and path disagree (`edge-cases.md`).
 
-Instagram URLs differ by content type: `/p/` = image carousel, `/reel/` = video. The pipelines are completely different (Playwright + alt text vs yt-dlp + whisper). If the user provides a URL, **confirm the type** before running — don't assume. Users sometimes say "reel" while pasting a `/p/` URL or vice versa. Ask: "C'est bien un Reel vidéo ou un post image ?" if the URL doesn't match the description.
+**Cookies required:** validate before starting (`edge-cases.md`). If missing:
 
-### ⚠️ Pitfall: `/p/` vs `/reel/` URL — verify before running pipeline
-
-Instagram URLs differ by content type: `/p/` = image carousel, `/reel/` = video. The pipelines are completely different (Playwright + alt text vs yt-dlp + whisper). If the user provides a URL, **confirm the type** before running — don't assume. Users sometimes say "reel" while pasting a `/p/` URL or vice versa. If the URL doesn't match the description, clarify before running any pipeline.
-
-### ⚠️ Pitfall: Instagram access varies by Reel age
-
-- **Older Reels (2025 and earlier):** often expose CDN video URLs in `sharedData` — Method B works.
-- **Recent Reels (2026):** Instagram locks these down harder. `yt-dlp --print formats` returns empty. **Cookies required (Method A).**
-- Always try `yt-dlp --print "%(formats)s"` first. If empty output, you need cookies.
+```
+kanban_block(reason="Instagram cookies missing — export from Chrome to /root/.hermes/cookies/ig_cookies.txt")
+```
 
 ---
 
@@ -97,10 +91,25 @@ The user exports their Instagram cookies from Chrome/Firefox on their desktop an
 ```bash
 # Export cookies from Chrome — MUST use a Reel URL (not just instagram.com homepage,
 # otherwise the sessionid cookie won't be exported)
-yt-dlp --cookies-from-browser chrome --cookies /root/.hermes/cookies/ig_cookies.txt "https://www.instagram.com/reel/ANY_REEL_ID/" -O "done"
 
-# Send to server
-scp /root/.hermes/cookies/ig_cookies.txt root@<tailscale-ip>:/root/.hermes/cookies/ig_cookies.txt
+# Step 1: Discover which Chrome profile you're on
+# Run with -v to see the actual profile path:
+yt-dlp --cookies-from-browser chrome --cookies /tmp/test.txt "https://www.instagram.com/" -O done -v 2>&1 | grep "Extracting cookies from"
+# Example output: Extracting cookies from: "/Users/.../Chrome/Profile 5/Cookies"
+# → use "chrome:Profile 5" in the export command below, NOT just "chrome"
+
+# Step 2: Export with the correct profile
+yt-dlp --cookies-from-browser "chrome:Profile 5" --cookies /tmp/ig_cookies.txt "https://www.instagram.com/reel/ANY_REEL_ID/" -O "done"
+
+# If yt-dlp still returns N/A for all profiles, use the Chrome extension fallback:
+# Install "Get cookies.txt LOCALLY" from Chrome Web Store → navigate to a Reel →
+# click extension → Export → pbpaste > /tmp/ig_cookies.txt
+
+# Step 3: Verify sessionid is present
+grep -c sessionid /tmp/ig_cookies.txt  # Must be ≥1
+
+# Step 4: Send to server
+scp /tmp/ig_cookies.txt root@<tailscale-ip>:/root/.hermes/cookies/ig_cookies.txt
 ```
 
 #### Server-side — safe download with rate-limiting:
@@ -124,64 +133,61 @@ yt-dlp --cookies /root/.hermes/cookies/ig_cookies.txt \
 
 **Rate-limiting is mandatory** — without it, Instagram flags the account. The settings above mimic human scrolling (~8s between requests, 15s between downloads, 2MB/s cap).
 
-#### Then diarize + transcribe (full pipeline, same as YouTube)
+#### Then diarize + transcribe (canonical scripts, same as YouTube)
 
-**Follow Global Video Pipeline Rules from main SKILL.md:** `background=true, notify_on_complete=true`
+**Follow `references/video-pipeline-global.md`:** `background=true, notify_on_complete=true`
 + `process(wait, timeout=7200)` for ALL pyannote and whisper calls. No foreground. No heartbeats.
-
-**For multi-speaker videos only.** For monologues/solo Reels (single person talking to camera), skip diarization and go directly to transcription with `speaker: 'SPEAKER_00'` for all segments.
 
 ```bash
 # Extract dual audio (16kHz for whisper, 8kHz WAV for pyannote)
 ffmpeg -y -i /tmp/ig_reel.mp4 -vn -acodec pcm_s16le -ar 16000 -ac 1 /tmp/ig_audio_16k.wav
 ffmpeg -y -i /tmp/ig_reel.mp4 -vn -acodec pcm_s16le -ar 8000 -ac 1 /tmp/ig_audio_8k.wav
 
-# Pyannote diarization on 8kHz WAV (pyannote.audio >=4.0 API)
-# ⚠️ pyannote 4.x returns DiarizeOutput, not Diarization. Use speaker_diarization.itertracks().
-python3 -c "
-from pyannote.audio import Pipeline
-import json, os
-pipeline = Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', token=os.environ['HF_TOKEN'])
-out = pipeline('/tmp/ig_audio_8k.wav')
-segments = []
-for turn, _, speaker in out.speaker_diarization.itertracks(yield_label=True):
-    segments.append({'start': round(turn.start,2), 'end': round(turn.end,2), 'speaker': speaker})
-with open('/tmp/ig_diarization.json','w') as f: json.dump(segments, f)
-print(f'{len(segments)} segments, {len(set(s[\"speaker\"] for s in segments))} speakers')
-" 2>&1
+# Diarization — canonical script
+cp "$SKILL_DIR/scripts/diarize.py" /tmp/diarize.py
+terminal(
+    "python3 /tmp/diarize.py /tmp/ig_audio_8k.wav /tmp/ig_diarization.json",
+    background=True, notify_on_complete=True
+)
+process(action="wait", timeout=28800)
 
-# Whisper transcription on 16kHz, merged with diarization segments (large-v3 — same as YouTube pipeline)
+# Transcription — canonical script
+cp "$SKILL_DIR/scripts/transcribe.py" /tmp/transcribe.py
+terminal(
+    "python3 /tmp/transcribe.py /tmp/ig_audio_16k.wav /tmp/ig_transcript.json 60",
+    background=True, notify_on_complete=True
+)
+process(action="wait", timeout=28800)
+
+# Merge diarization + transcription (inline — same as YouTube pipeline)
 python3 -c "
-from faster_whisper import WhisperModel
 import json
-model = WhisperModel('large-v3', device='cpu', compute_type='int8')
-segments, info = model.transcribe('/tmp/ig_audio_16k.wav', vad_filter=True, word_timestamps=True)
-
 with open('/tmp/ig_diarization.json') as f:
     diar = json.load(f)
-
-transcript = []
-for seg in segments:
-    mid = (seg.start + seg.end) / 2
-    speaker = 'Unknown'
-    for d in diar:
-        if d['start'] <= mid <= d['end']:
-            speaker = d['speaker']
+with open('/tmp/ig_transcript.json') as f:
+    trans = json.load(f)
+for seg in trans['segments']:
+    seg_mid = (seg['start'] + seg['end']) / 2
+    for dia in diar['segments']:
+        if dia['start'] <= seg_mid <= dia['end']:
+            seg['speaker'] = dia['speaker']
             break
-    transcript.append({'start': round(seg.start,2), 'end': round(seg.end,2), 'speaker': speaker, 'text': seg.text.strip()})
+    if 'speaker' not in seg:
+        seg['speaker'] = 'Unknown'
+with open('/tmp/ig_transcript.json', 'w') as f:
+    json.dump(trans, f, indent=2, ensure_ascii=False)
+print(f'Merged: {len(trans[\"segments\"])} segments with speaker labels')
+"
 
-with open('/tmp/ig_transcript.json','w') as f:
-    json.dump({'segments': transcript}, f, indent=2, ensure_ascii=False)
-print(f'Transcription done: {len(transcript)} segments')
-" 2>&1
-
-# Cleanup 8kHz audio
+# Cleanup 8kHz audio + diarization JSON
 rm /tmp/ig_audio_8k.wav /tmp/ig_diarization.json
 ```
 
 ---
 
-### Method B: CDN-direct (no login, inconsistent — older Reels only)
+### Method B: CDN-direct (⛔ DEPRECATED — DO NOT USE)
+
+> **Workers: if you have no cookies, BLOCK the task. Do NOT try Method B.** It's unreliable and will waste your turn budget. This section is kept only for reference.
 
 When Instagram exposes CDN URLs in the page's `sharedData`, you can bypass yt-dlp's download restriction by fetching the streams directly.
 
@@ -227,7 +233,7 @@ rm /tmp/ig_audio.m4a /tmp/ig_video.mp4 /tmp/ig_reel.mp4 /tmp/ig_audio_16k.wav
 - `ffmpeg` — system package
 - Whisper model: download with `snapshot_download('Systran/faster-whisper-large-v3', cache_dir='/root/.cache/huggingface')` (no HF_TOKEN needed for public model)
 
-**Diarization (multi-speaker videos only — skip for monologues):**
+**Diarization (mandatory for ALL video content):**
 - `pyannote.audio` — **Must use >=4.0** when torch >=2.5. Old API: `Pipeline().itertracks()`. New 4.x API: `Pipeline().speaker_diarization.itertracks()`. Pin: `pip install 'pyannote.audio>=4.0'`
 - **HF_TOKEN** — required for pyannote model download. Source from `researcher-videos` profile: `export HF_TOKEN=$(grep -oP 'HF_TOKEN=\K[^#\n]+' /root/.hermes/profiles/researcher-videos/.env | head -1)`
 - CPU-only performance: ~3x realtime (~40 min for 13-min audio), 350% CPU
@@ -271,7 +277,6 @@ sed -i 's/tokenizers>=0.22.0,<=0.23.0/tokenizers>=0.22.0,<=0.24.0/' $(find / -pa
 **Performance expectations (CPU-only, no GPU):**
 - pyannote diarization on 13-min audio: ~3x realtime (~40 min), 350% CPU
 - faster-whisper large-v3 with int8 on 13-min audio: ~2-3x realtime (~30 min), 200-300% CPU
-- Single-speaker content: skip diarization entirely, whisper-only ~2x realtime
 - `pyannote.audio` — installed via pip. **Must use >=4.0** when torch >=2.5 (torch 2.5+ removed `AudioMetaData` and `list_audio_backends`, which pyannote 3.x requires). Pin: `pip install 'pyannote.audio>=4.0'` (~2 min, pulls torch 2.12+ deps). The generic `pip install pyannote.audio` resolves to 3.x which will crash on modern torch.
 - `playwright` + chromium — needed for `/p/` image carousel extraction: `pip install playwright && python -m playwright install chromium`
 - **HF_TOKEN** — required for pyannote diarization model download. The main `~/.hermes/.env` may have it commented out. Source it from `researcher-videos` profile: `export HF_TOKEN=$(grep -oP 'HF_TOKEN=\K[^#\n]+' /root/.hermes/profiles/researcher-videos/.env | head -1)`
@@ -284,7 +289,7 @@ sed -i 's/tokenizers>=0.22.0,<=0.23.0/tokenizers>=0.22.0,<=0.24.0/' $(find / -pa
 | `web_extract` (Firecrawl) | Firecrawl available, simple extraction. Gets metadata + first 2-3 slides. No actions (Fire Engine is cloud-only). |
 | **Image Posts** (Playwright + cookies) | Any Instagram `/p/` carousel — extracts first 2 slides with full alt text. Slides 3+ blocked by anti-bot. See `scripts/ig-carousel-extract.py`. |
 | **Video Method A** (cookies + yt-dlp) | Any Instagram Reel — reliable, requires browser cookies from user |
-| **Video Method B** (CDN-direct) | Older Reels (2025-) where Instagram exposes CDN URLs in sharedData. No login needed but inconsistent |
+| **Video Method B** (CDN-direct) | ⛔ DEPRECATED — do not use. Block task instead if cookies are missing. |
 | `curl + Googlebot` | Firecrawl down, no Playwright, simple metadata extraction (caption, likes, comments). Only 1 image. |
 | Browser (`browser_navigate`) | JavaScript-heavy SPA, need to click/interact, CAPTCHAs |
 
@@ -425,10 +430,9 @@ yt-dlp --cookies-from-browser chrome --cookies /root/.hermes/cookies/ig_cookies.
 
 Re-export from a browser with an active Instagram session if `sessionid` is missing.
 
-## Anti-ban rules for Instagram
+## Rate-limiting for Instagram
 
-- **ALWAYS** use rate-limiting with cookies: `--sleep-requests 3 --sleep-interval 5 --max-sleep-interval 15 --limit-rate 2M`
-- Never download more than 2-3 Reels per worker session
-- **Serialize batches with `--parent`** — if the user sends 15+ URLs, split into batches of 4-5 URLs and chain them: batch B has `--parent batch_A`, batch C has `--parent batch_B`. This prevents the dispatcher from spawning 2+ researcher workers simultaneously hitting Instagram from the same IP. Parallel workers = parallel Instagram requests = ban risk.
-- Never run in a loop or cron without `--sleep-interval 30+`
-- Cookies file is persisted at `/root/.hermes/cookies/ig_cookies.txt` across sessions — do NOT delete it. Re-export from Chrome only if session expires (rare).
+- yt-dlp with cookies: `--sleep-requests 3 --sleep-interval 5 --max-sleep-interval 15 --limit-rate 2M`
+- 2–3 Reels per worker session
+- Chain batches with `--parent` (4–5 URLs per ticket)
+- Cookies persist at `/root/.hermes/cookies/ig_cookies.txt` — re-export from Chrome when session expires

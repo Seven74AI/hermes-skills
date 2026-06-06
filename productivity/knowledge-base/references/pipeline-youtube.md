@@ -4,6 +4,9 @@ Pipeline complet pour télécharger, transcrire, résumer et archiver une vidéo
 dans le knowledge base. Utilise un pattern kanban **two-phase** (comme Mega) pour
 isoler le travail CPU (whisper) du travail LLM (résumé).
 
+**Global rules** (background execution, whisper, rate limits, transcription persistence):
+`references/video-pipeline-global.md`
+
 ## Prérequis
 
 - `yt-dlp` (pip) — **toujours utiliser `--js-runtimes node`** (YouTube bloque les IP datacenter via n-sig challenge, même avec cookies)
@@ -120,40 +123,23 @@ ffmpeg -y -i /tmp/yt_VIDEO_ID.webm -vn -acodec pcm_s16le -ar 8000 -ac 1 /tmp/yt_
 
 ### 5. Diarization (pyannote, étape 1/2 — MANDATORY: background+wait)
 
-**Skip for single-speaker content.** If the video is a monologue, lecture, or solo presentation (one person talking to camera), skip diarization entirely. Use `speaker: 'SPEAKER_00'` for all whisper segments. Diarization on a 13-min CPU monologue costs ~40 min for zero value.
+**Diarization is mandatory for ALL video content.** Always run pyannote — even for apparent monologues (guest introductions, Q&A segments, off-camera remarks are common in "solo" videos).
 
 Pipeline manuel (pas whisperx) pour contrôle total : pyannote seul d'abord, whisper seul ensuite.
 Les deux étapes sont **séquentielles** — jamais en même temps (sécurité RAM).
 
-Pyannote sur audio 8kHz identifie les locuteurs. ~10% de la durée audio. **TOUJOURS utiliser `process(wait)` — jamais de heartbeats.**
+**Use the CANONICAL script** `scripts/diarize.py` from this skill. Do NOT generate ad-hoc scripts.
 
-```python
-# Script Python : diarize.py
-import json
-from pyannote.audio import Pipeline
-import os
+```bash
+# Copy canonical script to /tmp/ and run
+cp "$SKILL_DIR/scripts/diarize.py" /tmp/diarize.py
 
-pipeline = Pipeline.from_pretrained(
-    "pyannote/speaker-diarization-3.1",
-    token=os.environ["HF_TOKEN"]
+terminal(
+    "python3 /tmp/diarize.py /tmp/yt_VIDEO_ID_8k.wav /tmp/yt_VIDEO_ID_diarization.json",
+    background=True, notify_on_complete=True
 )
-
-# Audio 8kHz pour économiser la RAM
-diarization = pipeline("/tmp/yt_VIDEO_ID_8k.wav")
-
-segments = []
-# pyannote >=4.0: use out.speaker_diarization.itertracks()
-for turn, _, speaker in diarization.speaker_diarization.itertracks(yield_label=True):
-    segments.append({
-        "start": round(turn.start, 2),
-        "end": round(turn.end, 2),
-        "speaker": speaker
-    })
-
-with open("/tmp/yt_VIDEO_ID_diarization.json", "w") as f:
-    json.dump({"segments": segments}, f, indent=2)
-
-print(f"Diarization done: {len(segments)} segments")
+process(action="wait", timeout=28800)  # 8h for long videos
+read_file("/tmp/yt_VIDEO_ID_diarization.json", limit=10)  # verify
 ```
 
 **Sortie :** `/tmp/yt_VIDEO_ID_diarization.json` — segments bruts avec étiquettes.
@@ -341,19 +327,14 @@ rm /tmp/yt_SLUG.webm /tmp/yt_SLUG.mp3 /tmp/yt_SLUG_transcript.json
 - Au-delà de 2 URLs, sérialiser avec `--parent`
 - Cookies fichier persistant `/root/.hermes/cookies/yt_cookies.txt` — ne pas supprimer
 
-## Anti-pitfalls
+## Pre-flight & edge cases
 
-- **⛔ STALE AD-HOC SCRIPTS — model drift:** Workers generate transcription scripts in `/tmp/` (e.g. `transcribe_v1.py`, `transcribe_v2.py`). These are CACHED from the session that created them and may use the WRONG model (small, base, tiny). When large-v3 was mandated, old workers kept spawning stale scripts. **Before ANY transcription, check the script's model:** `grep WhisperModel /tmp/transcribe_*.py`. If it says `small`, `base`, `medium`, or `tiny` → DELETE the script and use the CANONICAL one from this skill (`scripts/transcribe.py`). Do NOT generate ad-hoc scripts — always use the canonical one. Real case (2026-05-27): worker spawned `transcribe_v1.py` (small) and `transcribe_v2.py` (base/tiny) for 5h, wasting all CPU time, because these scripts predated the large-v3 mandate.
-- **⛔ DOUBLE-SPAWN — same file transcribed twice:** Workers may spawn 2+ transcription processes on the SAME audio file (e.g. small AND base in parallel). This wastes RAM (2× model loaded = 6-7 GB) and CPU (180%+) for zero gain. Check `ps aux | grep transcribe` before launching — if the same file appears twice, kill the duplicate immediately. Single process per file, always.
-- **⛔ WORKER MUST USE SKILL SCRIPTS, NOT GENERATE THEIRS:** The canonical transcription script is at `scripts/transcribe.py` inside this skill. Workers load the skill via `--skills productivity/knowledge-base` — the script is at `<skill_dir>/scripts/transcribe.py`. Never write an ad-hoc script to `/tmp/`; copy and invoke the canonical one. If the worker's session predates the script, the worker MUST check for its existence and use it.
-- **Worker ignores model mandate in task body.** The worker (an LLM agent) reads the
-  task body but may default to a smaller/faster model despite `large-v3` being
-  specified. The body MUST use imperative, unambiguous language:
-  `⚠️ MODÈLE IMPÉRATIF : faster-whisper large-v3 int8 (CPU) UNIQUEMENT. INTERDICTION
-  d'utiliser small, medium, base, ou tiny.` Vague language like "large-v3 int8 (CPU)"
-  alone is insufficient — the worker may still choose small. Real case (2026-05-27):
-  worker spawned 5 runs all using small despite the body saying large-v3; only
-  after adding `IMPÉRATIF` + `INTERDICTION` did it comply.
+Pre-flight checks (canonical scripts, single process per file, orphan workers): `video-pipeline-global.md`.
+Operational branches: `edge-cases.md`.
+
+## Platform-specific notes
+- **Ticket body model:** Workers follow the ticket body. Include explicitly:
+  `faster-whisper large-v3 int8 (CPU)` in every DOWNLOAD+TRANSCRIBE ticket.
 - **n-sig challenge:** Sur IP datacenter, yt-dlp échoue avec "n challenge solving failed". Le flag `--js-runtimes node` est OBLIGATOIRE (Node ≥ v20 requis). Sans lui, yt-dlp ne voit que les images storyboard.
 - **Bot detection:** Si yt-dlp retourne "Sign in to confirm you're not a bot", les cookies sont expirés. L'utilisateur doit les ré-exporter depuis son navigateur.
 - **Format non trouvé:** Si VP9 720p non dispo, fallback `-f "best[height<=720]"` sur le meilleur format natif.
@@ -367,7 +348,7 @@ rm /tmp/yt_SLUG.webm /tmp/yt_SLUG.mp3 /tmp/yt_SLUG_transcript.json
 - **Identification locuteur — limites:** L'heuristique basée sur la description/titre/channel est approximative. Ne pas forcer un mapping si ambigu. `"Unknown"` est préférable à une identification erronée.
 - **Chapitres vides:** YouTube peut lister des chapitres sans titre. Les ignorer et fallback NLP.
 - **Vidéo privée/non listée:** yt-dlp échoue. Le worker doit catcher l'erreur et notifier.
-- **⛔ TICKET BODY OVERRIDES SKILL — model mismatch:** Workers follow the ticket BODY, not the skill. If a ticket says "small int8", the worker WILL use small even though the skill mandates large-v3. When the skill changes (e.g., model upgrade from small → large-v3), ALL existing tickets MUST have their bodies updated: `UPDATE tasks SET body=REPLACE(body, 'small int8', 'large-v3 int8') WHERE body LIKE '%small%'`. Then reclaim the task to restart with the correct model. Real case (2026-05-27): ticket `t_38f28120` created May 26 with "small int8" was restored from DB backup — worker spawned 3 times with small, wasting hours, until the DB body was patched.
+- **Ticket body updates:** When upgrading model in tickets, patch existing bodies to `large-v3 int8` and reclaim.
 - **Diarization — API pyannote v4:** pyannote 4.x returns `DiarizeOutput`. Use `diarization.speaker_diarization.itertracks(yield_label=True)`. pyannote 3.x returned `Diarization` with direct `.itertracks()`. The `DiarizeOutput` object replaces the old `Diarization`. Version 4.x is required with torch >=2.5. The parameter `use_auth_token=` was renamed to `token=`.
 
 ### Performance benchmarks
