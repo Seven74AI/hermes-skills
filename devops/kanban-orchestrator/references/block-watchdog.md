@@ -41,10 +41,11 @@ hermes cronjob create \
 
 The agent prompt should cover these cases:
 
-1. **TECHNICAL FAILURE** — crash, OOM, iteration budget, timeout → `unblock` + comment
-2. **REVIEW-REQUIRED (coder)** — coder finished, blocking for review → check if a DISPATCHABLE reviewer task exists; if not, `kanban create` one WITHOUT `--parent`
-3. **REVIEWER BLOCKED** — reviewer created follow-up, follow-up is now done → `unblock` the reviewer
-4. **LEGITIMATE** — human-in-the-loop, explicit phase gate → do nothing
+1. **PIPELINE LIMIT** — worker reached pipeline cap ("2-video limit", "budget checkpoint", "handoff created") → `unblock` + comment. Cooldown: only if blocked > 3 min.
+2. **TECHNICAL FAILURE** — crash, OOM, iteration budget, timeout → `unblock` + comment
+3. **REVIEW-REQUIRED (coder)** — coder finished, blocking for review → check if a DISPATCHABLE reviewer task exists; if not, `kanban create` one WITHOUT `--parent`
+4. **REVIEWER BLOCKED** — reviewer created follow-up, follow-up is now done → `unblock` the reviewer
+5. **LEGITIMATE** — human-in-the-loop, explicit phase gate, "cookies expired" → do nothing
 
 ### Dispatchability check (CRITICAL — must verify before skipping)
 
@@ -167,6 +168,12 @@ hermes cron list | grep -B1 "Kanban Block Watchdog"
 
 # Update with cronjob tool — pass the full prompt from the canonical section above
 hermes cronjob update <job_id> --prompt "<canonical prompt from this doc>"
+
+# ⛔ REQUIRED: restart gateway for the updated prompt to take effect
+# The cron scheduler caches prompts at startup. Without a restart, the watchdog
+# keeps using the old prompt indefinitely — it will appear to run (last_status=ok)
+# but classify tasks under obsolete rules.
+hermes gateway restart
 ```
 
-**Prevention:** Treat the reference doc and the cron job's prompt as a single unit. When one changes, change the other. Never update the reference and walk away.
+**Prevention:** Treat the reference doc, the cron job's prompt, AND the gateway restart as a single unit. When one changes, change the other two. Never update the reference and walk away.

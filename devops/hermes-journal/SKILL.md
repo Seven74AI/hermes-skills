@@ -1,7 +1,7 @@
 ---
 name: hermes-journal
 description: "Daily/weekly Hermes operations journal: extract infrastructure + debugging lessons from the past day's/week's sessions and write them to a Notion database as a searchable knowledge base."
-version: 1.2.0
+version: 1.3.0
 platforms: [linux]
 prerequisites:
   env_vars: [NOTION_API_KEY]
@@ -34,13 +34,17 @@ Create a page called "Hermes Journal" under any existing accessible page (intern
 - Updating database schema (PATCH /databases)
 - Creating pages with select/date properties (POST /pages)
 
-Use `2025-09-03` for read-only operations (GET, search, query).
+Use `2025-09-03` for read-only operations (GET, search, query) — **except** `GET /databases/{id}` schema inspection, which requires `2022-06-28` (see next paragraph).
+
+⚠️ **`GET /databases/{id}` with `2025-09-03` omits the `properties` field.** When you need to inspect the actual database schema (property names, types, select options), you MUST use `Notion-Version: 2022-06-28`. The `2025-09-03` response has no `properties` key — it returns metadata only (id, title, parent, url, etc.). This matters for payload validation: before constructing a page creation JSON, fetch the live schema with `GET /databases/{id}` + `2022-06-28` to verify property names match. See `references/notion-schema-validation.md` for the technique.
+
+⚠️ **Data source ID may not work for `/databases/{id}/query`.** The `data_source_id` (`376511b0-706b-8177-8a2e-000bda604705`) returned "Invalid request URL" during testing (2026-06-06). Fallback: use the `database_id` (`376511b0-706b-8106-8710-c693d9d28014`) with `Notion-Version: 2022-06-28` for queries — it works reliably for both page creation and querying. This is why the Morning Report prompt now hardcodes the database_id for both operations.
 
 ### Database Schema
 
 | Property | Type | Purpose |
 |----------|------|---------|
-| Entry | title | Descriptive title |
+| Name | title | Descriptive title |
 | Date | date | When the lesson was learned |
 | Category | select | Infrastructure, Tooling, Lesson Learned, Configuration, Debugging |
 | Impact | select | 🔴 Critical, 🟡 Important, 🟢 Nice to Know |
@@ -89,7 +93,7 @@ Rules:
 - Only durable knowledge that a future session would benefit from
 - Skip environment-specific transient issues (missing npm package, wrong PATH)
 - Each entry: title, category, impact, and a concise explanation (<500 words)
-- Write directly to Notion using curl with the database ID. See `references/notion-api-template.md` for the exact JSON payload format, curl command, and category/impact valid values.
+- Write directly to Notion using curl with the database ID. See `references/notion-api-template.md` for the exact JSON payload format, curl command, and category/impact valid values. Before constructing payloads, validate property names against the live schema — see `references/notion-schema-validation.md`.
 ```
 
 ### Cron setup
@@ -122,7 +126,7 @@ For project-level architecture decisions (not infrastructure lessons), use ADRs 
 - **Don't mix journal entries with ADRs**: Journal = how to run Hermes. ADR = why we made a project decision.
 - **Don't over-capture**: Environment-specific issues (missing .env, wrong PATH) are not durable knowledge.
 - **Internal integrations can't create workspace pages**: Create the journal under an existing shared page.
-- **Hardcoded database ID is environment-specific**: The database ID `376511b0-706b-8106-8710-c693d9d28014` lives only in this Notion workspace. If migrating to a different workspace, create a new database and update the ID in the curl commands. Consider storing it as a `HERMES_JOURNAL_DB_ID` env var for portability.
+- **Notion silently ignores unrecognized property keys in page creation payloads.** If your JSON references a property name that doesn't exist in the database schema (e.g., `"Entry"` when the DB uses `"Name"`), Notion returns HTTP 200 and creates the page but silently drops that property's value. No error, no warning — the page appears with empty/missing data. This allowed the `hermes-journal` template to reference `"Entry"` for months while the DB used `"Name"`. **Prevention:** before constructing page creation payloads, fetch the live schema with `GET /databases/{id}` + `Notion-Version: 2022-06-28` and validate every property key in your payload exists in the response's `properties` dict. See `references/notion-schema-validation.md`.
 - **Cron job must use the correct profile**: The journal cron job requires the `hermes-chronicler` profile with NOTION_API_KEY in its `.env`. Without this, curl calls to Notion will 401.
 - **Security scanner blocks pipe-to-interpreter patterns**: The Hermes security scanner (`tirith`) blocks any pattern that pipes output from an external tool directly to an interpreter. This includes:
   - `curl ... | python3 -c ...` → `tirith:pipe_to_interpreter` (HIGH)

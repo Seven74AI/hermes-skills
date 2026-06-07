@@ -1,7 +1,7 @@
 ---
 name: kanban-worker
 description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.
-version: 2.3.0
+version: 2.4.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -490,6 +490,37 @@ This is the #2 cause of budget exhaustion: the worker launches correctly in back
 - If this cron job is ever missing, recreate it: `hermes cron create --name "kanban workspace GC" --schedule "every 15m" --script kanban-gc-workspaces.py --no-agent --deliver local`
 - When diagnosing disk pressure: `du -sh /root/.hermes/kanban/boards/*/workspaces/` then `df -h /`.
 - For bulk manual cleanup during emergencies, see `references/workspace-disk-cleanup.md`.
+
+**`hermes kanban list --status` takes only ONE value, not comma-separated.** Passing `--status ready,running,blocked` fails with `invalid choice`. The workaround: use `--json` and filter in Python.
+
+```bash
+# ❌ FAILS
+hermes kanban --board shop list --status ready,running,blocked
+
+# ✅ Workaround — single status per call, or filter --json
+hermes kanban --board shop list --json | python3 -c "
+import sys, json
+tasks = json.load(sys.stdin)
+for t in tasks:
+    if t.get('status') not in ('done','archived'):
+        print(f\"{t['status']:10s} {t['id'][:12]}  {t['title'][:90]}\")
+"
+
+# For scanning ALL boards at once
+for board in $(ls /root/.hermes/kanban/boards/); do
+  hermes kanban --board "$board" list --json | python3 -c "
+import sys, json
+tasks = json.load(sys.stdin)
+active = [t for t in tasks if t.get('status') not in ('done','archived')]
+if active:
+    print(f'=== $board ({len(active)} active) ===')
+    for t in active:
+        print(f\"  {t['status']:10s} {t['id'][:12]}  {t.get('assignee',''):20s} {t['title'][:90]}\")
+" 2>/dev/null
+done
+```
+
+This pattern also avoids one `hermes kanban list` call per status value, saving turn budget.
 
 ## CLI fallback (for scripting)
 

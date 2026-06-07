@@ -5,8 +5,10 @@ to process URLs into the knowledge base.
 
 ## Ticket creation command
 
+**For Threads URLs:** Run Phase 0 detection FIRST (`references/pipeline-threads.md`) to determine VIDEO vs TEXT, then use the appropriate command below.
+
 ```bash
-# For video content (Reels, YouTube, Threads) — uses transcription pipeline
+# For video content (Reels, YouTube, Threads VIDEO) — uses transcription pipeline
 hermes kanban --board default create \
   --assignee researcher-videos \
   --skill knowledge-base \
@@ -72,6 +74,12 @@ For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. Diarization 
 | `Push after each note` | Git push so Obsidian syncs |
 | `--parent <id>` | Chain tickets so they process sequentially |
 | `--max-runtime 3600` | 1h safety net per ticket |
+
+## Pitfalls
+
+### Threads tickets must explicitly say "use curl, not Firecrawl"
+
+Workers default to `web_extract` / `browser` for web content. Threads posts need curl + cookies per `pipeline-threads.md`. Ticket bodies MUST include: **"Use ONLY curl + cookies per pipeline-threads.md. Do NOT use Firecrawl, web_extract, or browser."** If the ticket body is ambiguous about extraction method, the worker will try Firecrawl/browser first and fail.
 
 ## Convention
 

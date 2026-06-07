@@ -1,7 +1,7 @@
 ---
 name: knowledge-base
 description: "Manage a personal knowledge base in the Obsidian vault: capture and structure information"
-version: 1.7.0
+version: 1.10.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -25,6 +25,25 @@ Pipeline: download → diarize → transcribe → summarize → archive with fas
 - Phase B: `references/resume-prompt.md` + `references/youtube-note-template.md`
 - Kanban pattern: same two-phase flow as Mega (`references/pipeline-mega.md`)
 
+### Threads
+
+`references/pipeline-threads.md` — detect text vs video via `video_versions` in JSON (NOT `og:type`), session cookies required, content gate (skip login-wall and og-only posts). 7 known pitfalls documented in the pipeline reference.
+
+- Cookies: `/root/.hermes/cookies/threads_cookies.txt` (export from Chrome Profile 5)
+- `video_versions` present → `researcher-videos` (video, diarize). No `video_versions` → `researcher` (text).
+- **Never create a note from `og:description` alone** — it's a preview, not the post. Skip inaccessible posts.
+- yt-dlp does NOT support Threads. Use curl + cookies for extraction.
+- Note prefix: `threads-`
+- **Phase 0 — Pre-ticket detection** (`references/pipeline-threads.md`): run content-type detection BEFORE creating kanban ticket. `video_versions` present → `--assignee researcher-videos`. Absent → `--assignee researcher`.
+- `media_type=19` is an Instagram video cross-post (NOT a carousel). Always check for `video_versions` regardless of outer type. See `references/threads-media-types.md`.
+- Dedup: check vault for existing `source_url` before creating a note
+
+### Substack
+
+`references/pipeline-substack.md` — extraction Firecrawl, nettoyage markdown, note Obsidian. Pas besoin de cookies pour les articles publics.
+
+- Dedup: check vault for existing `source_url` **before creating kanban ticket** (Phase -2).
+
 ### Instagram
 
 Route by URL path:
@@ -46,7 +65,7 @@ When the user's description disagrees with the URL path, confirm the type first.
 
 ### Books (ePub/PDF)
 
-`references/book-extraction.md` — extract text, read chapter by chapter, synthesize. Template: `templates/book-note-template.md`.
+`references/books-extraction.md` — extract text, read chapter by chapter, synthesize. Template: `templates/book-note-template.md`. Upload source to MinIO (see `references/minio-upload.md`).
 
 ### Web search
 
@@ -62,6 +81,19 @@ See `references/kanban-ticket-template.md`.
 - `--max-runtime 3600`
 - Assignee: `researcher` (text/image) or `researcher-videos` (video)
 - Worker setup: `references/researcher-profile-setup.md`
+
+## Cookie handling
+
+All pipelines that require cookies (YouTube, Instagram, Threads) must run a pre-flight validation before processing. If validation fails, **skip the URL, do not block the ticket**:
+
+```bash
+echo "URL" >> /root/.hermes/queues/skipped_<platform>.txt
+# + send Telegram notification
+```
+
+Queue files: `skipped_yt.txt`, `skipped_threads.txt`, `skipped_ig.txt`, `skipped_substack.txt` under `/root/.hermes/queues/`.
+
+When the user refreshes cookies and says "relance": validate cookies → load `knowledge-base` skill → process queue file from the top. Full procedure: `references/edge-cases.md` (Cookie validation section).
 
 ## When to add a note
 
@@ -148,19 +180,26 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 - Verify every upload and reference: check MinIO files exist (`references/minio-integrity.md`), confirm diarization was applied (speaker labels must not be `?`), then push.
 - Document discoveries in skill files (skills over memory)
 - Show non-trivial commands before running them
+- **Pipeline debugging: diagnose first, then confirm, then fix.** When identifying pipeline problems, present the evidence and root cause to the user BEFORE applying fixes. The user will verify on their end and may correct the diagnosis. Do not rush to patch — wait for confirmation, then apply the fix.
+- **Keep skill docs minimal.** Reference files delegate to the main skill or umbrella reference — don't duplicate pipeline steps across files. If a procedure is already covered by loading `knowledge-base`, just say so.
+- **Happy path only.** Pipeline references must contain only the workflow: what to do, in what order, with what commands. No edge cases, failure modes, deprecated methods, known pitfalls, "✅ FIXED" markers, or bad-path pollution. Those belong in the operator's journal, not in worker-facing skill files.
+- **Sync profiles after editing skill files.** Worker profiles (`researcher`, `researcher-videos`) have their own copies of the skill directory. After changing any reference, template, or script, run `scripts/sync-to-profiles.sh` or the worker will use stale versions.
 
 ## Reference index
 
 | Topic | File |
 |-------|------|
+| Substack | `references/pipeline-substack.md` |
 | Edge cases | `references/edge-cases.md` |
 | Video global rules | `references/video-pipeline-global.md` |
 | YouTube pipeline | `references/pipeline-youtube.md` |
+| Threads pipeline | `references/pipeline-threads.md` |
+| Threads media types | `references/threads-media-types.md` |
 | Instagram pipeline | `references/pipeline-instagram.md` |
 | Mega / external video | `references/pipeline-mega.md` |
 | Video summarization | `references/resume-prompt.md` |
 | YouTube note template | `references/youtube-note-template.md` |
-| Books | `references/book-extraction.md` |
+| Books | `references/books-extraction.md` |
 | Kanban tickets | `references/kanban-ticket-template.md` |
 | Worker profiles | `references/researcher-profile-setup.md` |
 | MinIO | `references/minio-storage.md`, `references/minio-upload.md`, `references/minio-integrity.md` |

@@ -93,7 +93,42 @@ print(f'Chapters: {len(items)}')
 
 Save to `Knowledge base/<slug>.md`. The template defines the required structure. Key sections that MUST be populated:
 
-### Step 5: Push to Git
+### Step 5: Upload source to MinIO
+
+**Always upload. Do not skip this step.** The source file (ePub/PDF) and extracted full text must be archived in MinIO so the note can link back to the original.
+
+```bash
+# Upload original ebook
+mc cp /tmp/book.epub "minio/knowledge-base/books/<slug>.epub"
+
+# Upload extracted full text (with chapters preserved)
+mc cp /tmp/book_full.txt "minio/knowledge-base/books/<slug>.txt"
+
+# Verify both uploaded
+mc ls "minio/knowledge-base/books/<slug>"
+```
+
+For PDFs, same pattern: `mc cp /tmp/book.pdf "minio/knowledge-base/books/<slug>.pdf"`
+
+**File naming:** Use the same slug as the note filename (matching what goes in `source_file` frontmatter).
+
+### Step 6: Create structured note
+
+**Load the template first:** `skill_view(name='knowledge-base', file_path='templates/book-note-template.md')`
+
+Save to `Knowledge base/<slug>.md`. The template defines the required structure. **Fill in `source_file` frontmatter** with the MinIO URL of the original ebook:
+
+```yaml
+source_file: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+```
+
+Also mention the archived files in the **Sources** section of the note:
+```
+- Original file archived: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+- Full extracted text archived: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.txt (~XK chars, ~XK words, X chapters)
+```
+
+### Step 7: Push to Git
 
 ```bash
 cd "$OBSIDIAN_VAULT_PATH"
@@ -104,7 +139,7 @@ git push
 
 ## PDF pipeline
 
-For PDFs, use the `ocr-and-documents` skill. `pymupdf` for text-based PDFs, `marker-pdf` for scanned/OCR. Then follow the same reading and structuring steps as ePub (Step 3-5 above).
+For PDFs, use the `ocr-and-documents` skill. `pymupdf` for text-based PDFs, `marker-pdf` for scanned/OCR. Then follow the same reading and structuring steps as ePub (Step 3-7 above).
 
 ## Language rule
 

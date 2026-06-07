@@ -243,6 +243,8 @@ Keep the base profile — it's the only one for that role.
 
 **Ideation pipeline (multi-agent brainstorming):** For open-ended project ideation ("generate N ideas for a service that helps people"), decompose into planner → N parallel researchers → reviewer. Each researcher explores different domains, reviewer selects and polishes the top ideas. Full task graph, body templates, and scaling rules in `references/ideation-pipeline.md`.
 
+**Postpone a blocked task to the end of a chain:** When the head of a sequential chain is blocked on an external resource (expired cookies, missing credential) but downstream tasks can run independently, reorder the chain: unblock → unlink old parent → link last child as new parent. The blocked task moves to the end; everything else proceeds. Full recipe and multi-parent awareness in `references/postpone-blocked-task.md`.
+
 **Board migration (moving tasks between boards):** When a tenant's tasks are on the wrong board (e.g. `music-library` tasks on `default`), use the recreate+archive pattern: reclaim/unblock → recreate on target board → archive on source. Step-by-step recipe, CLI pitfalls (`--board` position, board switch unreliability, shell quoting), and parent/child link handling in `references/board-migration.md`.
 
 **Team creation from scratch:** When the user wants a new specialist AI agent team (profiles, Kanban board, GitHub repo, Notion page, cron jobs), follow the full 7-step recipe in `references/team-creation-checklist.md`. Covers: roster design, profile creation, SOUL.md authoring, infrastructure setup, task decomposition, recurring jobs, and verification.

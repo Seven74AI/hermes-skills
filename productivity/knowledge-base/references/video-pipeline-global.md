@@ -1,6 +1,6 @@
 # Video Pipeline — Global Rules
 
-Applies to all video pipelines. Platform commands: `pipeline-youtube.md`, `pipeline-instagram.md`, `pipeline-mega.md`.
+Applies to all video pipelines. Platform commands: `pipeline-youtube.md`, `pipeline-instagram.md`, `pipeline-mega.md`, `pipeline-threads.md`.
 
 ## Background execution
 
@@ -102,8 +102,8 @@ Numbered fallbacks: `/tmp/ig_transcript_1.json`, `_2.json`, …
 - Transcription engine: faster-whisper `large-v3`
 - Overlap segments: keep composite labels (`SPEAKER_00 | SPEAKER_01`) with `⚠️ Chevauchement`
 - Speaker ID: heuristic from metadata; unmatched → `Unknown`
-- Cookies: `/root/.hermes/cookies/yt_cookies.txt` (YouTube), `ig_cookies.txt` (Instagram)
-- yt-dlp: `--js-runtimes node` on every call
+- Cookies: `/root/.hermes/cookies/yt_cookies.txt` (YouTube), `ig_cookies.txt` (Instagram), `threads_cookies.txt` (Threads)
+- yt-dlp: `--js-runtimes node` on every call. Config file `/etc/yt-dlp.conf` preferred — workers may forget the CLI flag, and yt-dlp ≥2026.03 defaults to Deno-only JS runtime detection.
 - After `marker-pdf` install: re-pin packages per `dependencies.md`
 
 Benchmarks: `whisper-model-comparison.md`

@@ -14,7 +14,7 @@ isoler le travail CPU (whisper) du travail LLM (résumé).
 - `pyannote.audio>=4.0` (pip) — téléchargement unique du modèle `pyannote/speaker-diarization-3.1`, token HuggingFace requis pour l'accès initial uniquement (gratuit, tout tourne en local ensuite). Version 4.x nécessaire avec torch ≥2.5 (3.x crash sur `AudioMetaData` / `list_audio_backends` manquants). Pin exact: `pip install 'pyannote.audio>=4.0'`.
 - `ffmpeg` (système)
 - `minio` Python client (pip) — pour l'upload MinIO
-- `node` ≥ v20 (système) — requis par yt-dlp pour le n-sig challenge solver
+- `node` ≥ v20 (système) — requis par yt-dlp pour le n-sig challenge solver. Configuré via `/etc/yt-dlp.conf` (system-wide) et `~/.config/yt-dlp/config` (profil kanban) avec `--js-runtime node`.
 - Cookies YouTube : `/root/.hermes/cookies/yt_cookies.txt` (exportés depuis le navigateur desktop de l'utilisateur)
 - HuggingFace token : dans `HF_TOKEN` (env) — généré gratuitement sur huggingface.co/settings/tokens, sert UNIQUEMENT à télécharger le modèle pyannote (pas d'appel API, pas de télémétrie). Sur les profils kanban, source from researcher-videos: `export HF_TOKEN=$(grep -oP 'HF_TOKEN=\K[^#\n]+' /root/.hermes/profiles/researcher-videos/.env | head -1)`
 
@@ -335,8 +335,8 @@ Operational branches: `edge-cases.md`.
 ## Platform-specific notes
 - **Ticket body model:** Workers follow the ticket body. Include explicitly:
   `faster-whisper large-v3 int8 (CPU)` in every DOWNLOAD+TRANSCRIBE ticket.
-- **n-sig challenge:** Sur IP datacenter, yt-dlp échoue avec "n challenge solving failed". Le flag `--js-runtimes node` est OBLIGATOIRE (Node ≥ v20 requis). Sans lui, yt-dlp ne voit que les images storyboard.
-- **Bot detection:** Si yt-dlp retourne "Sign in to confirm you're not a bot", les cookies sont expirés. L'utilisateur doit les ré-exporter depuis son navigateur.
+- **n-sig challenge:** Sur IP datacenter, yt-dlp échoue avec "n challenge solving failed". yt-dlp ≥2026.03 default `js_runtimes` to `{'deno': {}}` only — Node is NOT auto-detected even when `/usr/bin/node` exists. The flag `--js-runtime node` is OBLIGATOIRE (Node ≥ v20 requis). Sans lui, yt-dlp ne voit que les images storyboard (debug: `JS runtimes: none`). **Fix permanent :** config files pour éviter que les workers oublient le flag : `/etc/yt-dlp.conf` (system-wide) + `~/.config/yt-dlp/config` (par profil kanban) avec `--js-runtime node`.
+- **Bot detection:** Si yt-dlp retourne "Sign in to confirm you're not a bot", TWO possible causes (diagnose with `edge-cases.md` Tier 2 check): (1) **IP fingerprinting** — cookies are structurally valid (oembed works) but the server IP ≠ the Mac's browser IP. Must run yt-dlp directly on the Mac via `--cookies-from-browser "chrome:Profile 5"`. (2) **Expired cookies** — oembed also fails, re-export from Chrome Profile 5.
 - **Format non trouvé:** Si VP9 720p non dispo, fallback `-f "best[height<=720]"` sur le meilleur format natif.
 - **Audio > 2h:** Le WAV 16kHz fait ~700 MB pour 2h. Vérifier l'espace disque avant.
 - **whisper OOM:** `large-v3` int8 utilise ~3 Go RAM. Vérifier ~4 Go libres avant lancement.

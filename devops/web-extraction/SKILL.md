@@ -35,12 +35,34 @@ Choose the right tool in order of cost/speed:
 
 ### 1. Confirm Firecrawl is running
 
+**CRITICAL: `docker ps | grep firecrawl` can lie.** Support containers (redis, rabbitmq, postgres) may be running while the actual `api` and `playwright-service` are stopped. Always check for the `api` container specifically:
+
 ```bash
-docker ps | grep firecrawl
-# Should show firecrawl-api-1, playwright-service, redis, rabbitmq, postgres
-curl -s http://localhost:3002/v1/scrape -X POST \
+# Check ALL containers, not just running ones
+docker ps -a --filter "name=firecrawl" --format "{{.Names}} {{.Status}}"
+
+# The api container must show "Up" — if it's "Exited" or missing, Firecrawl is down
+# If only redis/rabbitmq/postgres show up, the main service is dead
+```
+
+If the `api` container is stopped but support containers are up:
+```bash
+cd /opt/firecrawl && docker compose up -d api playwright-service
+```
+
+The `playwright-service` builds from source (downloads Chrome Headless Shell ~113MB) — expect 2-3 minutes on first start.
+
+**Verify the API is responding** — Firecrawl does NOT expose a `/health` endpoint (returns 404 "Cannot GET /health"). Test with a real scrape:
+
+```bash
+# Check logs for "listening on port 3002"
+docker logs firecrawl-api-1 --tail 20 | grep "listening"
+
+# Then test with a lightweight scrape
+curl -s --max-time 10 http://localhost:3002/v2/scrape \
   -H "Content-Type: application/json" \
-  -d '{"url":"https://httpbin.org/get","formats":["markdown"]}' | head -c 200
+  -d '{"url":"https://httpbin.org/get","formats":["markdown"]}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('data',{}).get('markdown','')))"
+# >50 chars = working
 ```
 
 ### 2. Check that `FIRECRAWL_API_URL` is set
@@ -122,9 +144,46 @@ Key params:
 - `formats` — `["markdown"]` gives clean text
 - No API key needed for self-hosted
 
+## OOM Kill Pattern (exit code 137)
+
+When Firecrawl starts, logs "All services running" / "listening on port 3002", then all processes die ~36s later with "Killed" / "exit code 137" — the container hit its `mem_limit` and the kernel OOM-killed it.
+
+**Why:** `harness.js` (the startup orchestrator) spawns a fixed set of Node.js processes regardless of `NUM_WORKERS_PER_QUEUE`:
+```
+api             (~300 MB)
+worker          (~290 MB)
+extract-worker  (~290 MB)
+nuq-worker × 4  (~290 MB each)
+nuq-prefetch-worker
+nuq-reconciler
+```
+Total: ~1.8 GB minimum. With the default `mem_limit: 2G` in docker-compose, there's no headroom.
+
+**The `NUM_WORKERS_PER_QUEUE` env var is misleading** — it controls internal queue parallelism within workers, NOT how many workers are spawned. Reducing it does NOT reduce memory usage.
+
+**Fix:** Bump `mem_limit` in `/opt/firecrawl/docker-compose.yaml`:
+```yaml
+# Under services.api:
+    cpus: 2.0
+    mem_limit: 3G   # was 2G
+    memswap_limit: 3G
+```
+
+Then `cd /opt/firecrawl && docker compose up -d api`.
+
+**Diagnosis checklist when Firecrawl won't stay up:**
+1. `docker logs firecrawl-api-1 2>&1 | grep "exit code 137"` — if found, it's OOM
+2. `docker logs firecrawl-api-1 2>&1 | grep "listening"` — confirm it reached startup before crash
+3. `free -h` — verify host has enough RAM for the new limit (need 3-4 GB free)
+
 ## Pitfalls
 
-- **Don't assume Firecrawl isn't available**: it's self-hosted and doesn't need an API key. Check `docker ps | grep firecrawl` before telling the user you can't extract content.
+- **`docker ps | grep firecrawl` says running but Firecrawl is down:** Support containers (redis, rabbitmq, postgres) may be up while `api` is stopped/crashed. Always check `docker ps -a --filter "name=firecrawl"` to see the `firecrawl-api-1` status specifically. Exited or missing = down.
+- **Firecrawl `/health` endpoint doesn't exist:** Returns 404. Verify with a real scrape to httpbin or by checking logs for "listening on port 3002".
+- **OOM kill exit 137:** Container starts, logs "listening", then all processes die ~36s in. Bump `mem_limit` from 2G to 3G in docker-compose. See "OOM Kill Pattern" section above.
+- **`playwright-service` builds from source:** If the container is stopped, `docker compose up` triggers a full rebuild (~2-3 min, downloads Chrome Headless Shell 113MB). Not a failure — just wait.
+- **API endpoint is `/v2/scrape` for self-hosted Firecrawl** — the `/v1/scrape` path may not exist on newer versions. Use `v2`.
+- **Don't assume Firecrawl isn't available**: it's self-hosted and doesn't need an API key. Check `docker ps -a | grep firecrawl-api` before telling the user you can't extract content.
 - **`FIRECRAWL_API_URL` set but no Docker container running**: the provider will try to connect and time out after 60s. Check `docker ps` first.
 - **Provider module caching**: code changes to `plugins/web/firecrawl/provider.py` require a process restart to take effect. The `execute_code` sandbox always gets fresh imports.
 - **`execute_code` sandbox doesn't inherit `.env`**: it runs in an isolated environment. Pass `os.environ["FIRECRAWL_API_URL"]` explicitly when testing from `execute_code`.

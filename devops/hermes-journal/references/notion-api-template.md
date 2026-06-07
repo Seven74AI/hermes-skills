@@ -21,7 +21,7 @@ Use `Notion-Version: 2022-06-28` for page creation (select/date properties break
 {
   "parent": {"database_id": "376511b0-706b-8106-8710-c693d9d28014"},
   "properties": {
-    "Entry": {"title": [{"text": {"content": "TITLE HERE"}}]},
+    "Name": {"title": [{"text": {"content": "TITLE HERE"}}]},
     "Date": {"date": {"start": "2026-05-22"}},
     "Category": {"select": {"name": "Infrastructure"}},
     "Impact": {"select": {"name": "🔴 Critical"}}
@@ -74,7 +74,7 @@ import json
 data = {
     'parent': {'database_id': '376511b0-706b-8106-8710-c693d9d28014'},
     'properties': {
-        'Entry': {'title': [{'text': {'content': 'Your title here'}}]},
+        'Name': {'title': [{'text': {'content': 'Your title here'}}]},
         'Date': {'date': {'start': '2026-05-22'}},
         'Category': {'select': {'name': 'Infrastructure'}},
         'Impact': {'select': {'name': '🟡 Important'}}
@@ -97,6 +97,7 @@ print('written OK')
 
 ## Notes
 
+- **Always validate property names before constructing payloads.** Fetch the live schema with `GET /databases/{id}` + `Notion-Version: 2022-06-28` and confirm every property key in your payload exists. Notion silently ignores unrecognized keys — no error, no warning. See `references/notion-schema-validation.md`.
 - Each entry should have 1-3 paragraph blocks in `children` — keep it under 500 words total
-- The `Entry` title property is a **title** type — use `{"title": [{"text": {"content": "..."}}]}` not `{"rich_text": [...]}`
+- The `Name` title property is a **title** type — use `{"title": [{"text": {"content": "..."}}]}` not `{"rich_text": [...]}`
 - Date property uses ISO format: `{"date": {"start": "YYYY-MM-DD"}}`
