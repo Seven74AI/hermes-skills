@@ -722,9 +722,9 @@ PYEOF
 python3 /tmp/cleanup-system-caches.py
 ```
 
-### 2p. Backup archives — /tmp + /root (safe — already uploaded to remote)
+### 2p. Backup archives — /tmp + /root + /root/.hermes/backups (safe — already uploaded to remote)
 
-The Hermes backup cron creates large zip/tar.gz archives in `/tmp/` and `/root/` before uploading them to remote storage. These are left behind and can be 1.6G–16G+ each (observed range: 1.6G typical, 16G when backups include full profiles — 2026-05-28). They're not caught by 2e (<24h old) nor 2ea/2eb (they're files or non-project dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan both `/tmp` and `/root`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) that was missed by a `/tmp`-only scan.
+The Hermes backup cron creates large zip/tar.gz archives in `/tmp/`, `/root/`, and `/root/.hermes/backups/` before uploading them to remote storage. These are left behind and can be 1.6G–16G+ each (observed range: 1.6G typical, 16G when backups include full profiles — 2026-05-28). Also catches anomalous `.tar.gz.zip` artifacts (1.2G observed 2026-06-07) from partial/failed backup runs. They're not caught by 2e (<24h old) nor 2ea/2eb (they're files or non-project dirs). Safe to delete — the originals live in Hermes data and the remote copy was already uploaded. **Scan `/tmp`, `/root`, AND `/root/.hermes/backups/`** — observed 2.6G of `hermes-final-backup.zip` in `/root/` (2026-05-24) and 1.2G of `hermes-critical-*.tar.gz.zip` in `/root/.hermes/backups/` (2026-06-07) that were missed by earlier scans.
 
 **Two phases: files first, then directories.** The backup cron can leave behind both `.zip`/`.tar.gz` files AND entire unpacked directories (e.g., `hermes-backup-20260529-072807/` at 496M, `hermes-critical-20260529-094443/` at 506M — 2026-05-29). Directories aren't caught by the file-only scan and don't match the project-clone heuristic in 2eb (no `.git`/`package.json`/`node_modules`).
 
@@ -735,11 +735,12 @@ import os, shutil
 PREFIXES = ['hermes-backup', 'hermes-critical', 'hermes-final', 'hermes-bkp',
              'test-backup', 'test-restore', 'inspect_backup', 'inspect-latest',
              'test-prev', 'test-inspect']
-EXTENSIONS = ['.zip', '.tar.gz']
+EXTENSIONS = ['.zip', '.tar.gz', '.tar.gz.zip']
 total = 0
 
 # Phase 1: archive FILES (including .part-* fragments from interrupted uploads)
-for base in ['/tmp', '/root']:
+# Scan /tmp, /root, AND /root/.hermes/backups/ — backup artifacts accumulate in all three
+for base in ['/tmp', '/root', '/root/.hermes/backups']:
     try:
         for f in os.listdir(base):
             fp = os.path.join(base, f)
@@ -757,7 +758,7 @@ for base in ['/tmp', '/root']:
         pass
 
 # Phase 2: unpacked backup DIRECTORIES (e.g. hermes-backup-20260529-072807/)
-for base in ['/tmp', '/root']:
+for base in ['/tmp', '/root', '/root/.hermes/backups']:
     try:
         for d in os.listdir(base):
             dp = os.path.join(base, d)
@@ -775,9 +776,9 @@ for base in ['/tmp', '/root']:
         pass
 
 # Phase 3: backup archives nested ONE level deep in temp dirs (e.g. /tmp/tmp.XXXXXX/hermes-critical-*.tar.gz).
-# Phase 1 only scans top-level /tmp/ and /root/ — misses archives wrapped in a temp directory.
+# Phase 1 only scans top-level of /tmp/, /root/, and /root/.hermes/backups/ — misses archives wrapped in a temp directory.
 # Observed: 814M (tar.gz 219M + unpacked dir 662M) in /tmp/tmp.5TPyx2em9I/ — 2026-05-31.
-for base in ['/tmp', '/root']:
+for base in ['/tmp', '/root', '/root/.hermes/backups']:
     try:
         for d in os.listdir(base):
             dp = os.path.join(base, d)
@@ -813,6 +814,44 @@ for base in ['/tmp', '/root']:
 print(f'Total: {total/1024/1024:.0f}M')
 PYEOF
 python3 /tmp/cleanup-backup-zips.py
+```
+
+### 2q. /tmp orphaned SQLite databases from backup processes (NOT caught by 2e, 2ea, 2eb, 2ec, 2ed, or 2p)
+
+The Hermes backup process (`hermes backup --quick` or `hermes backup -o /tmp/...`) creates temporary copies of `state.db` in `/tmp/` (e.g., `tmpwr8z65am.db`). These are SQLite 3.x databases, often 1-2G (state.db decompressed), and are NOT caught by any existing step: 2e is files-only <24h, 2ea targets cache dirs, 2eb targets project clones, 2ec targets media, 2ed targets pip artifacts, 2p targets backup archives. They match NO existing heuristic. Safe to delete after a 10-min grace period — the backup was already uploaded to remote.
+
+Observed accumulation: 1.77G in a single `tmpwr8z65am.db` (2026-06-07).
+
+```bash
+cat > /tmp/cleanup-tmp-dbs.py << 'PYEOF'
+import os, time
+
+cutoff = time.time() - 600  # 10 min grace period
+total = 0
+for f in os.listdir('/tmp'):
+    fp = os.path.join('/tmp', f)
+    if not os.path.isfile(fp):
+        continue
+    if not f.startswith('tmp') or not f.endswith('.db'):
+        continue
+    if os.path.getmtime(fp) > cutoff:
+        continue
+    # Verify it's actually SQLite (not a random .db file)
+    try:
+        with open(fp, 'rb') as fh:
+            header = fh.read(16)
+        if header[:16] != b'SQLite format 3\x00':
+            continue
+    except (OSError, PermissionError):
+        continue
+    sz = os.path.getsize(fp)
+    os.remove(fp)
+    total += sz
+    print(f'Removed orphaned backup DB: {fp} ({sz/1024/1024:.0f}M)')
+
+print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-tmp-dbs.py
 ```
 
 ## Step 3 — Verify
@@ -858,6 +897,8 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **🔴 `node_modules.broken-*` dirs are NOT caught by 2eb's heuristic.** Step 2eb checks for `.git/`, `package.json`, and `node_modules/` subdirectory inside the target dir. But dirs named `node_modules.broken-*` ARE the node_modules themselves (no `node_modules/` subdir, no `.git/`, no `package.json`) — they match none of the checks. Observed: `node_modules.broken-t189f4234` at 742M (2026-05-31). Fixed: 2eb now also matches dirs whose name contains `node_modules`.
 - **🔴 `playwright-download-*` dirs are NOT caught by 2ea.** Step 2ea caught `playwright-transform-cache-*` and `camoufox-*` but Playwright's browser download temp dirs use a different prefix (`playwright-download-ZlR1tK`, 113M — 2026-05-31). Fixed: 2ea now matches both `playwright-transform-cache-*` and `playwright-download-*`.
 - **🔴 /tmp project clones are NOT caught by Step 2e.** Step 2e only removes orphaned files >24h, but kanban worker workspaces in `/tmp/` are full git clones (`.git/`, `node_modules/`, etc.) that are directories, not individual files. They survive 2e indefinitely. In the 2026-05-22 incident, `/tmp/` held 25G of stale workspace clones (shop ×12, music-library ×3, edgee-lab ×3, etc.) — the largest single disk consumer. To clean these: identify project dirs (those with `.git/` or `package.json`), verify they're not the active workspace, then remove. Keep an allowlist for the current working project(s).
+- **🔴 Anomalous `.tar.gz.zip` backup artifacts in `/root/.hermes/backups/` are NOT caught by 2p.** Failed or partial backup runs can leave behind `.tar.gz.zip` wrappers (1.2G observed 2026-06-07) that differ from normal `.tar.gz` archives (140K). The original 2p scan only covered `/tmp/` and `/root/` — not `/root/.hermes/backups/`. Fixed: 2p now scans all three base directories and `.tar.gz.zip` is in the EXTENSIONS list.
+- **🔴 Orphaned SQLite DBs in /tmp from backup processes are NOT caught by any step.** `hermes backup` creates temporary copies of `state.db` in `/tmp/` (e.g., `tmpwr8z65am.db`, 1.77G — 2026-06-07). These match NO existing heuristic: they're SQLite files, not cache dirs, not project clones, not media, not pip artifacts, not backup archives. Fixed: new step 2q scans for `/tmp/tmp*.db` files with SQLite magic bytes >10 min old.
 - **`find /root -type f -size +100M` can time out on busy or large filesystems.** Give it at least 60s timeout; if it still times out, skip it — rely on `du -sh` of known directories instead. The escape hatch doesn't mention this but the same logic applies: I/O starvation at high usage makes filesystem walks slow.
 - **`du -sh` on workspace directories can time out even at moderate usage.** The escape hatch in Step 1 says to skip `du` only at ≥95%, but `du -sh /root/.hermes/kanban/boards/*/workspaces` timed out at 180s on a 79%-full disk with 38 shop workspaces (2026-05-23). The workspace count script (`ws-count.py`) is fast — prefer it. If `du` times out, skip it and rely on `ws-count.py` + `find /root -type f -size +100M` to identify large consumers.
 - **`du -sh /tmp/*/` undercounts vs `df`.** The glob `/tmp/*/` only matches top-level subdirectories — it misses files directly in `/tmp/` (notably `hermes-backup-*.zip`/`.tar.gz` archives, 1.6G+ each, and orphaned media files `.mp4`/`.mp3`/`.wav` that can total 3-4G), dot-directories (`/tmp/.cache/`), and files inside directories that `du` can't traverse (permissions). When `df` reports 7.8G in `/tmp` but `du -sh /tmp/*/ | sort -rh` only shows ~2G, the rest is in non-globbed locations — always run a full Python walk (`os.walk('/tmp')`) for accurate accounting, or at minimum `du -sh /tmp`. `hermes update` ran on a full disk, the git part succeeds but npm install, web build, and stash pop fail silently. The gateway won't restart. After disk cleanup, run the recovery checklist in `references/post-update-recovery.md` (pop stash → npm install → web build → restart gateway).

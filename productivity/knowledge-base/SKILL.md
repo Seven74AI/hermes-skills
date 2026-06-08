@@ -149,8 +149,9 @@ What the source omits, exaggerates, or distorts. Limitations.
 - Consulted sources
 
 ## See Also
-- [[Related note 1]]
-- [[Related note 2]]
+- [[existing-note-slug]] — verified with `grep -rl "slug:" "$OBSIDIAN_VAULT_PATH/Knowledge base/"` before linking
+- Only link to notes that actually exist. No invented wikilinks.
+- If no existing note is relevant, omit this section entirely.
 ```
 
 ## Confidence levels
@@ -175,6 +176,7 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 
 ## Working principles
 
+- **Ticket bodies are neutral.** Just the facts: URL, source, date, content type, technical instructions. No editorializing, no judgment on the content, no confidence level pre-assigned. Let the worker determine confidence after processing.
 - Complete every pipeline step — the user will wait for quality
 - **Diarization is mandatory for ALL video content** (YouTube, Instagram Reels, Mega). Use canonical `scripts/diarize.py` + `scripts/transcribe.py`. Never skip diarization — even for apparent monologues (guest intros, Q&A segments, off-camera remarks are common in "solo" videos).
 - Verify every upload and reference: check MinIO files exist (`references/minio-integrity.md`), confirm diarization was applied (speaker labels must not be `?`), then push.
