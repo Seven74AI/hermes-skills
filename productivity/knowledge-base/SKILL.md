@@ -73,14 +73,16 @@ When the user's description disagrees with the URL path, confirm the type first.
 
 ## Kanban batch processing
 
-When the user drops URLs, create tickets on the `default` board.
-See `references/kanban-ticket-template.md`.
+When the user drops URLs, create tickets on the **`knowledge-base`** board.
+The `default` board is a sandbox only — never create KB tickets there.
+See `references/kanban-ticket-template.md` and `references/kb-board-plan.md`.
 
 - 5 URLs per ticket; chain with `--parent`
 - 2 video transcriptions per worker session (`video-pipeline-global.md`)
 - `--max-runtime 3600`
 - Assignee: `researcher` (text/image) or `researcher-videos` (video)
 - Worker setup: `references/researcher-profile-setup.md`
+- Prefix tickets with `KB:` in the title for clarity
 
 ## Cookie handling
 
@@ -185,7 +187,7 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 - **Pipeline debugging: diagnose first, then confirm, then fix.** When identifying pipeline problems, present the evidence and root cause to the user BEFORE applying fixes. The user will verify on their end and may correct the diagnosis. Do not rush to patch — wait for confirmation, then apply the fix.
 - **Keep skill docs minimal.** Reference files delegate to the main skill or umbrella reference — don't duplicate pipeline steps across files. If a procedure is already covered by loading `knowledge-base`, just say so.
 - **Happy path only.** Pipeline references must contain only the workflow: what to do, in what order, with what commands. No edge cases, failure modes, deprecated methods, known pitfalls, "✅ FIXED" markers, or bad-path pollution. Those belong in the operator's journal, not in worker-facing skill files.
-- **Sync profiles after editing skill files.** Worker profiles (`researcher`, `researcher-videos`) have their own copies of the skill directory. After changing any reference, template, or script, run `scripts/sync-to-profiles.sh` or the worker will use stale versions.
+- **Sync profiles after editing skill files.** Worker profiles (`researcher`, `researcher-videos`, `planner`, `reviewer`, `coder`, etc.) have their own copies of the skill directory. After creating a new skill, editing any `SKILL.md`, reference, template, or script, run `scripts/sync-to-profiles.sh`. It syncs **all** productivity skills to **all** profiles that have a `skills/productivity/` directory — not just `knowledge-base` to `researcher`. Workers crash-loop with `Error: Unknown skill(s)` when a ticket references a skill via `--skill` that hasn't been synced to their profile.
 
 ## Reference index
 
@@ -208,6 +210,7 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 | Dependencies / fresh install | `references/dependencies.md`, `references/fresh-install-checklist.md` |
 | Fact-checking | `references/fact-check-workflow.md` |
 | Web search | `references/web-providers.md` |
+| **KB board plan** | `references/kb-board-plan.md` |
 
 Vault path: `OBSIDIAN_VAULT_PATH` (from `~/.hermes/.env`). Git sync: obsidian skill `references/git-sync.md`.
 Persist transcripts and source files to MinIO

@@ -1,7 +1,9 @@
 # Kanban Ticket Template for KB URL Batches
 
-Use this template when creating tickets on the `default` board for the researcher
+Use this template when creating tickets on the **`knowledge-base`** board for the researcher
 to process URLs into the knowledge base.
+
+The `default` board is a **sandbox only** — never create KB tickets there.
 
 ## Ticket creation command
 
@@ -9,7 +11,7 @@ to process URLs into the knowledge base.
 
 ```bash
 # For video content (Reels, YouTube, Threads VIDEO) — uses transcription pipeline
-hermes kanban --board default create \
+hermes kanban --board knowledge-base create \
   --assignee researcher-videos \
   --skill knowledge-base \
   --max-runtime 3600 \
@@ -18,7 +20,7 @@ hermes kanban --board default create \
   "KB: <description> (lot X/N)"
 
 # For text/image content (carousels, threads, posts) — no transcription needed
-hermes kanban --board default create \
+hermes kanban --board knowledge-base create \
   --assignee researcher \
   --skill knowledge-base \
   --max-runtime 3600 \

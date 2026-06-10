@@ -1,7 +1,7 @@
 ---
 name: kanban-orchestrator
 description: Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill is the deeper playbook when you're specifically playing the orchestrator role.
-version: 4.2.0
+version: 4.3.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -255,6 +255,8 @@ Keep the base profile — it's the only one for that role.
 
 **Reaching for external tools before checking internal Kanban.** If a user asks to set up a team, project, or multi-agent workflow, the Hermes Kanban system (profiles + dispatcher) is the first tool to consider — not Linear, Jira, Notion, or any external SaaS. Load this skill before suggesting external tools.
 
+**GitHub issues are NOT kanban tickets — ops workers never see them.** The hermes-ops team (`hermes-devops`, `hermes-researcher`, etc.) processes tasks exclusively through the `hermes-ops` kanban board. When a user says "create a ticket for the ops team," the task MUST be created as a kanban ticket (`hermes kanban --board hermes-ops create ...`). A GitHub issue alone — even on `Seven74AI/hermes-agent` — will sit with zero comments indefinitely because ops workers don't monitor GitHub issues. GitHub issues are for external-facing requests and code-related tracking; kanban is the ops team's work queue. **Real case (2026-06-08):** MCP Knowledge Base issue (#2) created on GitHub, never dispatched to kanban → 24h later, 0 comments, task untouched. Fix: also create the kanban ticket on `hermes-ops` with `--assignee researcher`.
+
 **Inventing profile names that don't exist.** The dispatcher silently fails to spawn unknown assignees — the card just sits in `ready` forever. Always assign to a profile from your Step 0 discovery; ask the user if you're unsure.
 
 **Unassigned tasks (no assignee at all).** Tasks created without an `--assignee` sit in `ready` forever — the dispatcher only claims tasks that have a valid assignee. This is different from wrong-assignee (above): here the task was never assigned to anyone. When you see `(unassigned)` on a board, the tasks will never run. Fix: batch-reassign them to a valid profile.
@@ -271,6 +273,22 @@ done
 **Never guess task body content when the user is about to supply it.** If the user says "add a task for X" and X involves a URL, file, or data the user hasn't provided yet, do NOT fill the task body with assumed content from context. Wait for the user to give you the actual source. Creating a task with guessed content wastes a task slot (the dispatcher picks it up immediately) and forces an archive+recreate cycle. **Real case (2026-05-25):** user said "on va lancer un ticket pour ajouter un reel" — agent created a task for the Rich Sol Foods reel from earlier KB context instead of waiting for the URL the user was about to send. Task archived 30s later and recreated with the correct URL.
 
 **Never say "cause probable" — user demands definitive root cause.** When investigating failures (corruption, crashes, missing data), do not present speculative conclusions. Either prove the cause with evidence (logs, file timestamps, integrity checks, code traces) or state what remains unknown. "Probable" is not acceptable. **Real case (2026-05-27):** agent said "Cause probable : une notification malformée" — user rejected this and demanded "une cause sûre." Full investigation revealed the real cause (WAL corruption from a 2-day-old crash). The notification error was a red herring.
+
+**"Unknown skill(s)" crash-loop — worker profiles missing skills referenced in `--skill` flags.** Workers crash with `Error: Unknown skill(s): <name>` when a ticket's `--skill` flag references a skill that doesn't exist in the worker profile's skills directory (`/root/.hermes/profiles/<name>/skills/`). This is a silent crash — zero useful output, exit code 1, repeats indefinitely.
+
+**Diagnose:** `hermes kanban --board <board> log <task_id> | tail -5` — look for `Error: Unknown skill(s)`.
+
+**Root cause:** Worker profiles have isolated skill directories. Adding a new skill to the main `/root/.hermes/skills/` does NOT propagate to profiles.
+
+**Fix:**
+```bash
+# Sync ALL productivity skills to ALL active profiles
+bash /root/.hermes/skills/productivity/knowledge-base/scripts/sync-to-profiles.sh
+# Then reclaim the crashed tasks
+hermes kanban --board <board> reclaim <task_id>
+```
+
+**Prevention:** Run `sync-to-profiles.sh` after: (a) installing a new skill, (b) editing any skill's SKILL.md/references/templates/scripts, (c) creating a new worker profile. The script syncs every skill under `productivity/` to every profile that already has a `skills/productivity/` directory. **Real case (2026-06-09):** planners crashed 54 times each on `book-extraction` because the skill was only in the main skills dir, not in the planner profile.
 
 **Bundling independent lanes into one card.** If the user asks for two independent outcomes, create two cards. Example: "fix blockers and check model variants" is not one fixer task; create a fixer/engineer card for the fixes and an explorer/researcher card for the variant check, then optionally gate review on both.
 
@@ -320,11 +338,13 @@ hermes kanban --board <board> reclaim <id>
 
 **Real case (2026-05-20):** planner on the-swarm and coder on videogame-lab both timed out at 120s despite profile `max_runtime_seconds: 600`. Root cause: the per-task DB column was `max_runtime_seconds = 120` and took precedence. 717 cumulative timeout runs across 3 tasks, all invisible to both watchdogs until `check-crash-loops.py` was upgraded with Phase 2 detection.
 
-**Dispatcher DB corruption — silent dispatch failure.** If the gateway log shows `kanban dispatcher: board default database /root/.hermes/kanban.db is not a valid SQLite database`, the dispatcher has disabled itself. No new tasks are dispatched; watchdogs stop. Board DBs and `hermes kanban boards list` still work normally. The dispatcher DB (`/root/.hermes/kanban.db`) is a coordination cache — all real data is in per-board DBs. Fix: `rm /root/.hermes/kanban.db && hermes gateway restart`. Full diagnosis and recovery in `references/kanban-db-architecture.md`.
+**Dispatcher DB corruption — silent dispatch failure (⚠️ DATA LOSS).** The default board's DB (`/root/.hermes/kanban.db`) can silently degrade to an empty file (4,096 bytes, 0 tables) after extended gateway uptime. Symptoms: `hermes kanban list` still shows tasks (ghost state — likely from an in-memory cache), but no workers spawn, and direct SQLite access returns zero tables. The dispatcher logs may show `no such table: kanban_notify_subs` or nothing at all.
+
+**Fix:** `rm /root/.hermes/kanban.db && systemctl restart hermes-gateway`. ⚠️ **ALL default board tasks are lost** — the DB is recreated empty with fresh schema. The backup at `/root/.hermes/kanban.db.corrupt.*.bak` (if any exists from a prior integrity check) is a snapshot, not a recovery target. After restart, `hermes kanban list` should show `(no matching tasks)` and the DB should be ~100KB+ with all tables. **After restart, reclaim any ghost tasks** that the dispatcher may still think are running: `hermes kanban --board default list | grep '●' | awk '{print $2}' | while read id; do hermes kanban --board default reclaim "$id"; done`.
+
+**Prevention:** The kanban DB integrity watchdog (`kanban-integrity-watchdog.py`, cron `b568a8418cf3`) checks every hour and alerts on corruption BEFORE the DB goes fully empty. Ensure this cron job is active.
 
 **WAL mode → DELETE migration (corruption prevention).** SQLite WAL mode is vulnerable to checkpoint corruption on unclean shutdown. Hermes kanban DBs now use DELETE journal mode + FULL synchronous (patched in `kanban_db.py` May 2026). If you see WAL mode on a kanban DB, convert it and restart gateway. Full rationale and procedure in `references/kanban-db-corruption-recovery.md`.
-
-**Dispatcher DB corruption — silent dispatch failure.** If the gateway log shows `kanban dispatcher: board default database /root/.hermes/kanban.db is not a valid SQLite database`, the dispatcher has disabled itself.
 
 **Budget exhaustion on migration/refactoring tasks.** When a task asks a worker to apply a migration AND re-verify the full test suite inline, the worker exhausts its iteration budget on test output (e.g. 90 iterations burned on 283 test logs in 95s). Fix: split verification from application. Reference prior benchmark results in the task body and explicitly tell workers to SKIP tests — CI will catch regressions. Seen on shop pnpm migration (2026-05-18): task blocked at 90/90 after 20min because it ran `pnpm test` inline despite a prior benchmark proving 283/283 pass.
 
@@ -352,7 +372,19 @@ Do NOT mix modes: if you read `HERMES_TENANT` for some cards and pass literals f
 
 **`archive` has no `--yes` flag.** Unlike `hermes profile delete --yes`, archive is non-interactive by default — just pass task IDs: `hermes kanban --board <board> archive <id1> <id2> ...`. **However**, `hermes kanban transition <id> archive` silently fails from `blocked` state — tasks remain blocked even though the command returns success. To archive blocked tasks, use direct SQL: `UPDATE tasks SET status='archived', completed_at=<unix_ts> WHERE id='<tid>';`. See `devops/disk-cleanup/references/kanban-db-schema.md`.
 
-**Shell quoting breaks on complex `--body` content.** Em dashes (`—`), French accents, backticks, and single quotes defeat `shlex.quote()` when creating tasks. Workaround: recreate with `--title` and `--assignee` only; skip `--body`. Body content can be reconstructed from context or added later via `kanban comment`.
+**Shell quoting breaks on complex `--body` content.** Em dashes (`—`), French accents, backticks, and single quotes defeat `shlex.quote()` when creating tasks.
+
+**Workaround A (preferred — preserves full body):** Use `execute_code` to write the body to a temp file, then call `terminal()` with `$(cat /tmp/body.txt)`:
+```python
+from hermes_tools import write_file, terminal
+write_file('/tmp/kanban_body.txt', body_content)
+terminal(f'hermes kanban --board {board} create '
+         f'--assignee {profile} --max-runtime 3600 '
+         f'--body "$(cat /tmp/kanban_body.txt)" '
+         f'"Task Title"')
+```
+
+**Workaround B (fallback — body-lite):** Create with `--title` and `--assignee` only; skip `--body`. Body content can be reconstructed from context or added later via `kanban comment`. Use this when execute_code is unavailable or the body is simple enough to reconstruct.
 
 **`reclaim` does not support `--force`.** `hermes kanban reclaim <id> --force` errors with `unrecognized arguments: --force`. Reclaim stops the worker, kills the PID, and resets the task — there's no separate force mode. If reclaim says `not running or unknown id`, the task's status isn't `running` from the dispatcher's perspective, even if the DB column says `running`.
 

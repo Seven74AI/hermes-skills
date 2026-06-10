@@ -204,6 +204,14 @@ The watchdog (block-watchdog cron) handles the "reviewer blocked after creating 
 
 If the reviewer profile doesn't exist on this machine, use the generic `reviewer` profile.
 
+**⛔ Design-gate tasks: when the user wants manual approval BEFORE implementation.** Some tasks are explicitly "design only" — the user wants to review the design document themselves before ANY code is written. Detect this from explicit blocking language in the task body: "do NOT implement", "design only", "wait for user approval", "feu vert", "green light", "ne rien implémenter avant mon GO", "AUCUNE implémentation". In this case:
+
+1. **Do NOT use the `review-required` / reviewer-task pattern.** Creating a reviewer task will lead the reviewer to auto-approve and spawn implementation tickets — exactly what the user doesn't want. The standard reviewer pattern (approve → unblock coder + auto-create next phase) is designed for implementation review, not human-gated design review.
+2. **Instead:** produce the design artifact, then `kanban_block(reason="design complete — awaiting user review before implementation. Do NOT auto-spawn implementation tickets.")`. No reviewer task, no child tasks.
+3. **As a reviewer who receives a design-review task:** when the parent design task's body contains design-gate language, do NOT auto-create implementation tickets. Approve or request changes on the design itself only, and note "user must approve before Phase 1" in your summary. Creating implementation tickets from a gated design review defeats the gate.
+
+**Real case (2026-06-09):** hermes-ops board, MCP KB design task explicitly said "Ce ticket est UNIQUEMENT pour produire le document de design. Ne rien implémenter. Le user veut lire le rapport d'abord et décider ensuite." The worker used the standard review-required pattern → reviewer auto-approved and created Phase 1 implementation (t_0cafeeb3, 1,351 lines of Python) → user had to archive all 6 MCP tickets and recreate on a different board. The gate was in the task body but the worker ignored it in favor of the standard reviewer flow.
+
 Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
 
 **Research task:**

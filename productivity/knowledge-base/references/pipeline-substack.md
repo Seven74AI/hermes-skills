@@ -6,21 +6,43 @@ Substack articles (long-form newsletters) and Notes (short-form posts, may conta
 
 Substack Notes can embed video or image attachments. Detect before creating the ticket — this determines assignee and pipeline.
 
+**Two detection layers** — the `"attachments"` JSON in preloads works for some Notes but not all. The SSR HTML fallback catches Notes where video data is loaded client-side.
+
 ```bash
-# Check attachment types in the page's preloaded JSON
 HTML=$(curl -sL --max-time 15 "$URL")
 
+# Layer 1: preloads JSON (fast, works for Notes with inline attachment metadata)
+HAS_VIDEO=0
+HAS_IMAGE=0
+
 if echo "$HTML" | grep -q '"attachments":\[.*"type":"video"'; then
+    HAS_VIDEO=1
     VIDEO_NAME=$(echo "$HTML" | grep -oP '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
     DURATION=$(echo "$HTML" | grep -oP '"duration":\K[0-9.]+' | head -1)
-    echo "VIDEO: $VIDEO_NAME (${DURATION}s)"
-    # → create ticket with --assignee researcher-videos (see below)
-
+    echo "VIDEO (preloads): $VIDEO_NAME (${DURATION}s)"
 elif echo "$HTML" | grep -q '"attachments":\[.*"type":"image"'; then
+    HAS_IMAGE=1
     IMG_URL=$(echo "$HTML" | grep -oP '"type":"image","imageUrl":"[^"]*"' | grep -oP 'https://[^"]+')
-    echo "IMAGE: $IMG_URL"
-    # → create ticket with --assignee researcher, include image URL in body
+    echo "IMAGE (preloads): $IMG_URL"
+fi
 
+# Layer 2: SSR HTML fallback — catches Notes whose video data is loaded client-side
+# The Substack video player always renders a <div aria-label="Video player"> in SSR HTML
+if [ "$HAS_VIDEO" -eq 0 ] && echo "$HTML" | grep -q 'aria-label="Video player"'; then
+    HAS_VIDEO=1
+    # Count video elements for multi-video posts
+    VIDEO_COUNT=$(echo "$HTML" | grep -o 'aria-label="Video player"' | wc -l)
+    [ "$VIDEO_COUNT" -gt 1 ] && echo "VIDEO (SSR): ${VIDEO_COUNT} videos detected" || echo "VIDEO (SSR): 1 video detected"
+fi
+
+# Decision
+if [ "$HAS_VIDEO" -eq 1 ]; then
+    # → create ticket with --assignee researcher-videos (see below)
+    # Multi-video: mention count in ticket body so worker processes ALL videos
+    echo "→ assignee=researcher-videos"
+elif [ "$HAS_IMAGE" -eq 1 ]; then
+    # → create ticket with --assignee researcher, include image URL in body
+    echo "→ assignee=researcher"
 else
     echo "TEXT: no media attachment"
     # → create ticket with --assignee researcher (see below)
@@ -73,20 +95,20 @@ Langue: contenu en langue source, labels en anglais. Save to Knowledge base/. Pu
   "KB: <publication> — <title>"
 ```
 
-For **video** (has attachment):
+For **video** (has video player):
 
 ```bash
 hermes kanban --board default create \
   --assignee researcher-videos \
   --skill knowledge-base \
   --max-runtime 3600 \
-  --body "Substack Note WITH VIDEO — <publication> (<author>), <date>.
+  --body "Substack Note WITH VIDEO (<N> video(s)) — <publication> (<author>), <date>.
 
-Video: <video_name>, <duration>s, Mux (Substack CDN). Download the video (see 'Substack Video Notes' section) → diarize (scripts/diarize.py) → transcribe (scripts/transcribe.py, large-v3, cpu_threads=6) → Obsidian note.
+Download ALL videos via Substack API (see 'Substack Video Notes' section). For each: diarize (scripts/diarize.py) → transcribe (scripts/transcribe.py, large-v3, cpu_threads=6) → Obsidian note. Include all transcriptions in a single note.
 
 1. <URL>
 
-Diarization MANDATORY. Langue: contenu en langue source, labels en anglais. Save to Knowledge base/. Push après la note." \
+Diarization MANDATORY for every video. Langue: contenu en langue source, labels en anglais. Save to Knowledge base/. Push après la note. Background+wait pour toutes les étapes lourdes." \
   "KB: <publication> — <title> [VIDEO]"
 ```
 

@@ -1,21 +1,23 @@
 #!/bin/bash
-# Sync knowledge-base skills to all worker profiles
+# Sync ALL productivity skills to ALL worker profiles
 # Run after any skill file change (references, templates, scripts, SKILL.md)
 set -e
-SRC="/root/.hermes/skills/productivity/knowledge-base"
-for p in researcher researcher-videos; do
-  DST="/root/.hermes/profiles/$p/skills/productivity/knowledge-base"
-  if [ -d "$DST" ]; then
-    rsync -a --delete "$SRC/" "$DST/"
-    echo "$p: OK"
-  fi
+SKILLS_SRC="/root/.hermes/skills/productivity"
+PROFILES_DIR="/root/.hermes/profiles"
+
+echo "=== Syncing productivity skills to all profiles ==="
+for skill_dir in "$SKILLS_SRC"/*/; do
+  skill_name=$(basename "$skill_dir")
+  # Skip DESCRIPTION.md (not a skill dir)
+  [ "$skill_name" = "DESCRIPTION.md" ] && continue
+  
+  for profile_dir in "$PROFILES_DIR"/*/; do
+    profile_name=$(basename "$profile_dir")
+    dst="$profile_dir/skills/productivity/$skill_name"
+    if [ -d "$dst" ]; then
+      rsync -a --delete "$skill_dir/" "$dst/"
+      echo "  $skill_name -> $profile_name: OK"
+    fi
+  done
 done
-# Also sync to any other profiles that have the skill
-for p in /root/.hermes/profiles/*/; do
-  name=$(basename "$p")
-  DST="$p/skills/productivity/knowledge-base"
-  if [ -d "$DST" ] && [ "$name" != "researcher" ] && [ "$name" != "researcher-videos" ]; then
-    rsync -a --delete "$SRC/" "$DST/"
-    echo "$name: OK"
-  fi
-done
+echo "=== Done ==="
