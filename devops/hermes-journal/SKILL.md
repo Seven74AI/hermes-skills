@@ -67,6 +67,8 @@ Use `2025-09-03` for read-only operations (GET, search, query) — **except** `G
 
 For kanban DB query patterns (safe from security scanner blocks), see `references/kanban-db-queries.md` — covers unix timestamps, schema details, and safe `python3 -c` query templates for cron jobs.
 
+For cron job inventory and other non-kanban data sources the Morning Report needs, see `references/morning-report-data-sources.md` — covers `jobs.json` structure, session search tips, and GitHub activity patterns.
+
 | Job | Time | Deliver | Scope |
 |---|---|---|---|
 | **Morning Report** (`82a083aaa98e`) | 06:00 | Discord `#daily-recap` | General activity, sessions, decisions, alerts, wins |
