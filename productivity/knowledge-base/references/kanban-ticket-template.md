@@ -77,16 +77,101 @@ For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. Diarization 
 | `--parent <id>` | Chain tickets so they process sequentially |
 | `--max-runtime 3600` | 1h safety net per ticket |
 
+## Books (ePub/PDF)
+
+```bash
+hermes kanban --board knowledge-base create \
+  --assignee researcher \
+  --skill knowledge-base \
+  --max-runtime 3600 \
+  --body "..." \
+  "KB: <Book Title> — <Author> (YYYY)"
+```
+
+**Never chain books** — each book gets its own independent ticket, no `--parent`.
+
+### Book ticket body template
+
+```
+Book: Title — Author (YYYY)
+
+Source file: /tmp/books_extracted/<filename>.epub
+CRITICAL: Use unique temp paths — multiple workers run in parallel! Use /tmp/book_<slug>.epub and /tmp/book_<slug>_full.txt. NEVER /tmp/book.epub.
+
+FOLLOW books-extraction.md pipeline EXACTLY:
+1. Extract full text from ePub — preserve chapter order, no sorting by size
+2. Read EVERY chapter in full — no sampling, no exceptions. Even short prefaces/intros.
+3. Create structured note from book-note-template.md (English labels, quotes in original language)
+   - Chapter Summaries: EVERY chapter gets a substantive paragraph — this must be the dominant section
+   - ≥4 direct quotes with chapter numbers (> format)
+4. ≥2 fact-checks via web_search per fact-check-workflow.md
+5. Critical Analysis MUST be shorter than Chapter Summaries + Key Claims combined. Content first, critique second.
+6. Upload source epub + full extracted txt to MinIO (books/<slug>)
+7. source_file frontmatter must be set to MinIO URL
+8. Git add + commit + push
+
+Minimum quality bar BEFORE pushing: ≥4 quotes, ≥2 fact-checks, chapter summaries are the dominant section (not critical analysis), Who Is the Author section, ≥100 lines (excl. frontmatter). Budget 2-3 rounds. Never push v1.
+```
+
 ## Pitfalls
 
 ### Threads tickets must explicitly say "use curl, not Firecrawl"
 
 Workers default to `web_extract` / `browser` for web content. Threads posts need curl + cookies per `pipeline-threads.md`. Ticket bodies MUST include: **"Use ONLY curl + cookies per pipeline-threads.md. Do NOT use Firecrawl, web_extract, or browser."** If the ticket body is ambiguous about extraction method, the worker will try Firecrawl/browser first and fail.
 
+## Books
+
+Books follow a distinct pattern from URLs — one ticket per book, no chaining.
+
+```bash
+# One ticket per book — no --parent, no chaining
+hermes kanban --board knowledge-base create \
+  --assignee researcher \
+  --skill knowledge-base \
+  --max-runtime 3600 \
+  --body "..." \
+  "KB: <book-title> — <author>"
+```
+
+### Book ticket body template
+
+```
+Book: <title> — <author> (<year>)
+
+The ePub source is at /tmp/books/<filename>.epub (or download from MinIO with mc cp).
+CRITICAL: Use unique temp paths — multiple workers run in parallel. Use /tmp/book_<slug>.epub and /tmp/book_<slug>_full.txt. NEVER /tmp/book.epub.
+
+Pipeline:
+1. Extract ePub to /tmp/book_full.txt — preserve chapter order (references/books-extraction.md Step 2)
+2. Read EVERY chapter in full — no sampling, no exceptions. Use read_file with offset/limit.
+3. Create structured note from templates/book-note-template.md:
+   - Chapter Summaries: EVERY chapter gets a substantive paragraph — this must be the dominant section
+   - ≥4 direct quotes with chapter numbers (> format)
+   - ≥2 fact-checks via web_search (references/fact-check-workflow.md)
+   - Critical Analysis MUST be shorter than Chapter Summaries + Key Claims combined
+   - Author background, nuances
+   - Note ≥ 100 lines (excluding frontmatter)
+   - Budget 2-3 rounds — never push v1
+4. Upload source + full text to MinIO: minio/knowledge-base/books/<slug>.epub + .txt
+5. Push to Git: git add -A && git commit -m "add: <slug> — <author>" && git push
+
+Language: ALL English. Labels in English, quotes in original language.
+```
+
+### Book-specific rules
+
+| Rule | Rationale |
+|------|-----------|
+| 1 ticket per book | Books are 50-150K words — one book fills a worker session |
+| No `--parent` chaining | Each book is independent, no ordering dependency |
+| Assignee: `researcher` | Text extraction, no video/transcription needed |
+| `--skill knowledge-base` | Covers books-extraction.md, book-note-template.md, fact-check-workflow.md, minio-upload.md |
+
 ## Convention
 
 - 5 URLs per ticket max
-- Chain with `--parent` so each batch waits for the previous one
+- Chain URL tickets with `--parent` so each batch waits for the previous one
+- Books: 1 ticket per book, no `--parent`
 - Skill: `knowledge-base`
 
 ## Parent/child delegation

@@ -12,11 +12,29 @@ From researcher profile env:
 
 ## Upload
 
+**CRITICAL: Multiple book workers run in parallel. NEVER use `/tmp/book.epub` — use unique paths per slug.**
+
 ```bash
 source /root/.hermes/profiles/researcher/.env
 mc alias set minio http://localhost:9000 "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
-mc cp /tmp/book.epub "minio/$MINIO_BUCKET/books/<slug>.epub"
-mc cp /tmp/book_full.txt "minio/$MINIO_BUCKET/books/<slug>.txt"
+
+# Use unique paths — parallel workers will overwrite /tmp/book.epub otherwise!
+mc cp "/tmp/book_<slug>.epub" "minio/$MINIO_BUCKET/books/<slug>.epub"
+mc cp "/tmp/book_<slug>_full.txt" "minio/$MINIO_BUCKET/books/<slug>.txt"
+```
+
+**After every upload, verify integrity immediately:**
+```bash
+# Verify the epub metadata matches expected title/author
+python3 -c "
+from ebooklib import epub
+book = epub.read_epub('/tmp/book_<slug>.epub')
+t = book.get_metadata('DC', 'title')[0][0]
+a = book.get_metadata('DC', 'creator')[0][0]
+print(f'{t} — {a}')
+"
+# Should match the book you just processed. If it doesn't, the file was
+# overwritten by a parallel worker — stop, block, do not push the note.
 ```
 
 ## Public URL for notes
