@@ -16,6 +16,54 @@ Use when setting up, troubleshooting, or modifying Hermes backup cron jobs, when
 | Quick | `hermes backup -q` | config, state.db, .env, auth, cron | ~130 MB | 2h |
 | Full | `hermes backup` | Quick + sessions + state-snapshots | 130-500 MB (can explode) | Daily |
 
+## 🔴 CRITICAL: .env contains ALL tokens — never push to public repos
+
+`hermes backup` includes `.env` and `auth.json`. These files contain **every API key, bot token, and secret** for the installation: Telegram, Discord, GitHub, Anthropic, DeepSeek, Notion, Firecrawl, etc. Pushing a backup to a public GitHub repo exposes ALL of these tokens to anyone who finds the commit.
+
+**`hermes backup -q` (quick backup) is MORE dangerous than full backup.** The `-q` flag explicitly targets `.env` and `auth.json` as "critical state files" and includes them unconditionally. The help text confirms: "only critical state files (config, state.db, .env, auth, cron)." A quick backup pushed to a public repo guarantees token exposure.
+
+**The backup repo MUST be private.** Even then, prefer to exclude `.env` and `auth.json` from remote backups — keep them local-only.
+
+### Sanitized backup (for public/private repos)
+
+**Recommended: use the script.** The deterministic script at `scripts/sanitized-backup.sh` strips `.env` and `auth.json` from the tar.gz, handles rotation, and pushes to git. Deploy it as a `no_agent=true` cron job — see "CRITICAL: Do NOT use an LLM agent for backup cron jobs" above.
+
+**Manual approach** (if the script doesn't fit):
+
+```bash
+# Strip tokens before committing to git
+BACKUP_FILE="hermes-backup-$(date '+%Y-%m-%d').zip"
+hermes backup -o /tmp/$BACKUP_FILE
+# Unpack, remove secrets, repack
+mkdir /tmp/backup-clean
+unzip -q /tmp/$BACKUP_FILE -d /tmp/backup-clean
+rm -f /tmp/backup-clean/.env /tmp/backup-clean/auth.json
+cd /tmp/backup-clean && zip -qr /tmp/${BACKUP_FILE} .
+# Now safe to push
+cp /tmp/$BACKUP_FILE /path/to/backup-repo/
+```
+
+### Post-leak cleanup: purge git history
+
+If tokens were already pushed, revoke them FIRST (the tokens themselves, not the commit). Then force-push a history rewrite. Contact GitHub Support to purge the commit from their object cache — otherwise it remains accessible by hash indefinitely.
+
+### Audit: find all backup commits that contain secrets
+
+```bash
+# Find every commit across all branches that added .env, auth.json, or tar.gz backups
+cd <repo>
+git log --all --oneline --diff-filter=A -- '*.env' 'auth.json' '*.tar.gz' '*.zip'
+
+# Check if a specific poisonous commit is reachable from any remote branch
+git branch -r --contains <commit_hash>
+
+# Inspect a tar.gz backup for .env without extracting
+git show <commit>:path/to/backup.tar.gz | tar tzf - | grep -E '\.env$|auth\.json'
+
+# Extract exposed token names from a committed .env
+git show <commit>:path/to/.env | grep -E '^[A-Z_]+=' | sed 's/=.*/=***EXPOSED***/'
+```
+
 ## Git LFS is the real limit
 
 The backup repo uses Git LFS for .zip files (`.gitattributes` with LFS filter). GitHub's limits:
@@ -120,7 +168,23 @@ Diagnose current state:
 cd /root/.hermes/backups && git count-objects -vH
 ```
 
+## 🔴 CRITICAL: Do NOT use an LLM agent for backup cron jobs
+
+**LLM-driven cron jobs ignore security instructions.** Even when the prompt explicitly says "Ne JAMAIS pousser .env ou auth.json. Strip ces fichiers avant le push," the agent will push raw backups with `.env` included. Observed June 2026: the quick backup cron (job `8d322a4ec332`) had the correct prompt with explicit strip instructions, but every single run pushed tar.gz files containing `.env` and `auth.json`.
+
+**Root cause**: LLM agents in cron are stateless optimizers — they find the shortest path to "done." Stripping secrets is an extra step they skip when the prompt doesn't create a hard gate they can't bypass.
+
+**Fix**: Use `no_agent=true` with a shell script (`cronjob(no_agent=true, script='sanitized-backup.sh')`). The script is deterministic, cannot skip steps, and strips `.env`/`auth.json` unconditionally. See `scripts/sanitized-backup.sh` for the production pattern.
+
+**Transition checklist**:
+1. Stop the LLM-driven backup cron (pause or update it)
+2. Deploy `scripts/sanitized-backup.sh` to `/root/.hermes/scripts/`
+3. Update the cron: `cronjob(action='update', job_id='...', no_agent=true, script='sanitized-backup.sh', prompt='')`
+4. Verify the next run's output shows "Stripped .env" and "Stripped auth.json"
+
 ## Pitfalls
+
+- **🔴 Token leak via public repo (May/June 2026 incidents)**: A `state-backups` branch with full `.env` was pushed to a public fork (`Seven74AI/hermes-agent`). Within 24h, the Telegram bot token was exploited — another instance started polling the same bot, causing "polling conflict" errors and injecting foreign messages into user chats. 743 conflicts over 3 weeks. ALL tokens (Telegram, Discord, GitHub, Anthropic, DeepSeek, Notion, Firecrawl, etc.) were exposed. **Lesson:** never push `.env` or `auth.json` to any remote, and verify repo visibility before every automated push. See `token-compromise-response` skill for detection and remediation.
 
 - **Security scanner blocks pipe-to-interpreter patterns (tirith)**: The Hermes security scanner blocks ALL patterns that pipe output from an external tool to an interpreter. This includes `cat file | python3 -c "..."`, `curl ... | python3`, and some `python3 -c "..."` patterns. The backup cron agent hits this 23+ times/day — each blocked command appears as `pending_approval` in errors.log and the agent retries. **Fix:** Write all JSON payloads with `python3 -c "...; json.dump(data, f)"` (inline, no pipe). Never use `cat | python3` or heredocs. See the `hermes-journal` skill's `references/notion-api-template.md` for the exact pattern that passes the scanner.
 - **Security scanner blocks `rm -f` in cron — use `os.remove()` instead**: Tirith blocks `rm -f` commands (and `rm` generally) in cron contexts because there is no user to approve. The workaround is Python's `os.remove()` which bypasses the scanner entirely: `python3 -c "import os; os.remove('/path/to/file')"`. This works for single files; for directories use `shutil.rmtree()` similarly. Pattern confirmed June 10 2026: `rm -f` blocked 2× during backup cleanup, `os.remove()` succeeded immediately.
@@ -130,3 +194,5 @@ cd /root/.hermes/backups && git count-objects -vH
 - **`rm` in /tmp needs approval**: The terminal tool may block `rm` commands in `/tmp` as "delete in root path". Cleanup should happen inside the backup repo directory.
 - **State-snapshots bloat**: If `hermes backup` produces abnormally large files, check `~/.hermes/state-snapshots/` first.
 - **Repo missing after cleanup**: `/tmp/hermes-backup-repo/` may be cleaned by the disk cleanup agent. Re-clone if needed: `git clone https://github.com/Seven74AI/hermes-backup.git /tmp/hermes-backup-repo`
+- **Force push fails with HTTP 500 after `git filter-branch`**: The repo still holds the old objects (tar.gz files) in packfiles, bloating it to 4+ GB. GitHub's HTTP layer rejects pushes that large. Fix: run `git reflog expire --expire=now --all && git gc --prune=now --aggressive` before force pushing. This drops the unreferenced objects and shrinks the repo to its real size (typically < 10 MB for a cleaned backup repo). Observed June 2026: hermes-backup repo was 4.3 GB post-filter-branch; gc reduced it enough for the push to succeed.
+- **GitHub object cache**: After force-pushing a history rewrite, the old commits remain accessible by hash for ~90 days via GitHub's object cache. Contact GitHub Support to purge them if tokens were exposed. This is a separate step from force push — the push removes them from branch history; the cache makes them still fetchable by hash.
