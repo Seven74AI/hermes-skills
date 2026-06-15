@@ -30,7 +30,7 @@ When disk usage exceeds 75%, systematically analyze and clean up. Never delete p
 
 Run each command as a separate `terminal()` call. Do NOT combine into one block — multi-command blocks trigger `shell command via -c/-lc` rejection. The two shell-loop constructs (workspace count and profile cache subdirs) use Python scripts to avoid `-exec sh -c` and `for` loop blockers.
 
-**Escape hatch — skip analysis when ≥95% full:** At critical fullness, `du` and `find` will time out (I/O starvation). Confirmed 2026-05-23 at 100% (72G/72G, 361M free) — every `du -sh`, `find -size`, and `sort` command hung. Don't waste turns retrying. Jump straight to high-impact cleanup steps: 2ea (/tmp cache dirs), 2eb (/tmp project clones — often 15-25G), 2ec (/tmp media files — often 3-4G), 2ed (/tmp pip build artifacts — often 1-3G per `pip-unpack-*` dir), 2o (system caches — often 1-2G), 2ma (profile HF caches — often 1-2G), 2p (/tmp backup archives — often 1-3G), 2n (snapshots), 2j (profile caches), 2i (Playwright). Run `df -h /` after each batch. Resume analysis only after usage drops below ~90%.
+**Escape hatch — skip analysis when ≥95% full:** At critical fullness, `du` and `find` will time out (I/O starvation). Confirmed 2026-05-23 at 100% (72G/72G, 361M free) — every `du -sh`, `find -size`, and `sort` command hung. Don't waste turns retrying. Jump straight to high-impact cleanup steps: 2ea (/tmp cache dirs), 2eb (/tmp project clones — often 15-25G), 2ec (/tmp media files — often 3-4G), 2ed (/tmp pip build artifacts — often 1-3G per `pip-unpack-*` dir), 2o (system caches — often 1-2G, datalab can be 3G+), 2ma (profile HF/datalab caches — often 1-3G, datalab can be 3G+), 2p (/tmp backup archives — often 1-3G), 2n (snapshots), 2j (profile caches), 2i (Playwright). Run `df -h /` after each batch. Resume analysis only after usage drops below ~90%.
 
 ```bash
 df -h /
@@ -631,7 +631,7 @@ python3 /tmp/cleanup-rustup.py
 
 ### 2ma. Profile HuggingFace model caches (safe — regeneratable via Hub download)
 
-Per-profile `.cache/huggingface/` directories store downloaded model weights and tokenizers. These are regenerated on first `model.from_pretrained()` call — fully safe to purge, same class as Playwright/Puppeteer/Camoufox. System-level `/root/.cache/huggingface` is covered by 2o, but profile-level caches are NOT. Observed accumulation: 1.2G across 2 profiles — 927M (researcher-videos) + 282M (researcher) on 2026-05-24.
+Per-profile `.cache/huggingface/` and `.cache/datalab/` directories store downloaded model weights (transformers, tokenizers for HuggingFace; OCR model weights for datalab). These are regenerated on first `model.from_pretrained()` or equivalent call — fully safe to purge, same class as Playwright/Puppeteer/Camoufox. System-level `/root/.cache/huggingface` and `/root/.cache/datalab` are covered by 2o, but profile-level caches are NOT. Observed accumulation: 3.3G datalab in researcher profile + 3.3G datalab system-level = 6.6G total (2026-06-14); 1.2G HuggingFace across 2 profiles — 927M (researcher-videos) + 282M (researcher) on 2026-05-24.
 
 ```bash
 cat > /tmp/cleanup-hf-caches.py << 'PYEOF'
@@ -647,6 +647,17 @@ for hf in glob.glob('/root/.hermes/profiles/*/home/.cache/huggingface'):
         shutil.rmtree(hf, ignore_errors=True)
         total += size
         print(f'Removed: {hf} ({size/1024/1024:.0f}M)')
+
+# Also clean datalab model caches (OCR models, same regeneratable class as HuggingFace)
+for dl in glob.glob('/root/.hermes/profiles/*/home/.cache/datalab'):
+    if os.path.isdir(dl):
+        size = sum(
+            os.path.getsize(os.path.join(dp, f))
+            for dp, _, files in os.walk(dl) for f in files
+        )
+        shutil.rmtree(dl, ignore_errors=True)
+        total += size
+        print(f'Removed: {dl} ({size/1024/1024:.0f}M)')
 
 print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
 PYEOF
@@ -696,7 +707,7 @@ Observed accumulation (2026-05-22): 306M per snapshot (state.db grows with sessi
 
 ### 2o. System-level regeneratable caches (safe — reinstalled on next use)
 
-`/root/.cache/` accumulates framework and package manager caches at the system level (distinct from per-profile caches in 2j). These are all safe to purge — regenerated on next build/install/download. Observed accumulation: 12.1G across huggingface (11.9G), uv (281M) — 2026-05-26. huggingface alone can reach 10G+ after heavy model downloads.
+`/root/.cache/` accumulates framework and package manager caches at the system level (distinct from per-profile caches in 2j). These are all safe to purge — regenerated on next build/install/download. Observed accumulation: 6.6G across datalab (3.3G) + huggingface (3.3G) — 2026-06-14; 12.1G across huggingface (11.9G) + uv (281M) — 2026-05-26. huggingface and datalab alone can reach 10G+ after heavy model downloads.
 
 ```bash
 cat > /tmp/cleanup-system-caches.py << 'PYEOF'
@@ -704,6 +715,7 @@ import shutil, os
 
 targets = [
     '/root/.cache/huggingface',
+    '/root/.cache/datalab',
     '/root/.cache/uv',
     '/root/.cache/prisma',
     '/root/.cache/typescript',
@@ -899,6 +911,6 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **🔴 /tmp project clones are NOT caught by Step 2e.** Step 2e only removes orphaned files >24h, but kanban worker workspaces in `/tmp/` are full git clones (`.git/`, `node_modules/`, etc.) that are directories, not individual files. They survive 2e indefinitely. In the 2026-05-22 incident, `/tmp/` held 25G of stale workspace clones (shop ×12, music-library ×3, edgee-lab ×3, etc.) — the largest single disk consumer. To clean these: identify project dirs (those with `.git/` or `package.json`), verify they're not the active workspace, then remove. Keep an allowlist for the current working project(s).
 - **🔴 Anomalous `.tar.gz.zip` backup artifacts in `/root/.hermes/backups/` are NOT caught by 2p.** Failed or partial backup runs can leave behind `.tar.gz.zip` wrappers (1.2G observed 2026-06-07) that differ from normal `.tar.gz` archives (140K). The original 2p scan only covered `/tmp/` and `/root/` — not `/root/.hermes/backups/`. Fixed: 2p now scans all three base directories and `.tar.gz.zip` is in the EXTENSIONS list.
 - **🔴 Orphaned SQLite DBs in /tmp from backup processes are NOT caught by any step.** `hermes backup` creates temporary copies of `state.db` in `/tmp/` (e.g., `tmpwr8z65am.db`, 1.77G — 2026-06-07). These match NO existing heuristic: they're SQLite files, not cache dirs, not project clones, not media, not pip artifacts, not backup archives. Fixed: new step 2q scans for `/tmp/tmp*.db` files with SQLite magic bytes >10 min old.
-- **`find /root -type f -size +100M` can time out on busy or large filesystems.** Give it at least 60s timeout; if it still times out, skip it — rely on `du -sh` of known directories instead. The escape hatch doesn't mention this but the same logic applies: I/O starvation at high usage makes filesystem walks slow.
+- **🔴 Datalab model caches (OCR weights) are NOT caught by 2o or 2ma without the fix.** The datalab library downloads OCR model weights (text_recognition, layout, table_recognition, etc.) into `/root/.cache/datalab/` (system) and per-profile `.cache/datalab/`. Each model is 200M–1.4G, totaling 3–7G across system + profile levels. These were missed because 2o only listed `huggingface/uv/prisma/typescript` and 2ma only scanned for `huggingface`. Observed: 6.6G (3.3G system + 3.3G researcher profile) on 2026-06-14. Fixed: 2o now includes `/root/.cache/datalab`, 2ma now scans both `huggingface` and `datalab`. When Step 1 shows large `.cache/` but 2o/2ma reclaim 0, check for datalab manually with `du -sh /root/.cache/datalab /root/.hermes/profiles/*/home/.cache/datalab`. Give it at least 60s timeout; if it still times out, skip it — rely on `du -sh` of known directories instead. The escape hatch doesn't mention this but the same logic applies: I/O starvation at high usage makes filesystem walks slow.
 - **🔴 Stale backup git clones in `/root/` are NOT caught by any step.** Backup operations can leave full git clone directories (e.g., `/root/hermes-backup-temp/` at 1.3G — observed 2026-06-13) that are not backup archives (2p), not in `/tmp/` (2e/2eb), and not a cache directory (2o). They're found by the Step 1 `find /root -type f -size +100M` (large pack files inside `.git/objects/`). Safe to delete — the canonical backup lives at `/root/.hermes/backups/`. Verify with `du -sh /root/*backup* /root/*-temp*` before removing.\n- **`git gc --aggressive` on `/root/.hermes/backups/` can time out.** The backup repo's pack files can be 6-7G. A 120s timeout is insufficient for git gc on repos this large. Skip git gc during cleanup — the objects are the canonical backup and shouldn't be deleted anyway.\n- **`du -sh` on workspace directories can time out even at moderate usage.** The escape hatch in Step 1 says to skip `du` only at ≥95%, but `du -sh /root/.hermes/kanban/boards/*/workspaces` timed out at 180s on a 79%-full disk with 38 shop workspaces (2026-05-23). The workspace count script (`ws-count.py`) is fast — prefer it. If `du` times out, skip it and rely on `ws-count.py` + `find /root -type f -size +100M` to identify large consumers.
 - **`du -sh /tmp/*/` undercounts vs `df`.** The glob `/tmp/*/` only matches top-level subdirectories — it misses files directly in `/tmp/` (notably `hermes-backup-*.zip`/`.tar.gz` archives, 1.6G+ each, and orphaned media files `.mp4`/`.mp3`/`.wav` that can total 3-4G), dot-directories (`/tmp/.cache/`), and files inside directories that `du` can't traverse (permissions). When `df` reports 7.8G in `/tmp` but `du -sh /tmp/*/ | sort -rh` only shows ~2G, the rest is in non-globbed locations — always run a full Python walk (`os.walk('/tmp')`) for accurate accounting, or at minimum `du -sh /tmp`. `hermes update` ran on a full disk, the git part succeeds but npm install, web build, and stash pop fail silently. The gateway won't restart. After disk cleanup, run the recovery checklist in `references/post-update-recovery.md` (pop stash → npm install → web build → restart gateway).

@@ -356,6 +356,8 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 
 **Task state can change between dispatch and your startup.** Between when the dispatcher claimed and when your process actually booted, the task may have been blocked, reassigned, or archived. Always `kanban_show` first. If it reports `blocked` or `archived`, stop — you shouldn't be running.
 
+**Crash-loop on `kanban_complete` — work done, kanban_complete fails.** Pattern: `hermes kanban diagnostics` shows `repeated_crashes` (480+ consecutive) with `last_error=pid N not alive`. The worker completed all work (note saved, git pushed, MinIO uploaded) but `kanban_complete` errored out. Dispatcher keeps respawning. Fix: verify work is done via `hermes kanban log <id>` (check last run output for completion indicators), then manually `hermes kanban --board <board> complete <id>`. Observed 2026-06-14 on knowledge-base board: 6 tickets crash-looped, all work already done.
+
 **No `cancel` command — use `archive` to remove dead tasks.** The CLI has `archive` but no `cancel`. When you need to clean up duplicate/spurious/obsolete tasks (e.g. multiple identical review tasks created for the same parent), use `hermes kanban --board <board> archive <task_id>`. Archived tasks still appear in counts but are excluded from `list` by default.
 
 **`respawn_guarded` / `active_pr` — 24h comment window blocks respawn.** The dispatcher blocks respawn when a task comment from the last 24 hours contains a GitHub PR URL (`_RESPAWN_GUARD_PR_WINDOW = 86400` in `hermes_cli/kanban_db.py`). This means: once a worker comments a PR URL (e.g. `https://github.com/Seven74AI/shop/pull/88`), the task is blocked from respawning for a full day — even after the PR is merged or closed. The guard checks task_comments, not the GitHub API.
@@ -379,6 +381,16 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 4. `ps aux | grep "kanban task t_"` — verify no other workers for same profile
 
 **Why subprocesses survive:** `terminal(background=true)` spawns the subprocess in its own process group via `os.setsid`. When the worker is SIGKILLed, the subprocess is reparented to init (PID 1) and keeps running. Always kill orphans after killing a worker.
+
+**⛔ Post-credential-rotation board-wide crash loop.** When credentials are rotated (e.g., after a token compromise), ALL workers on a board may crash simultaneously if their profiles reference the old tokens. The dispatcher enters an infinite respawn cycle: `spawned=N crashed=N promoted=N auto_blocked=N` every ~60 seconds. The auto-block → promote → spawn → crash loop never self-heals because the workers die on startup (auth errors before the agent loop starts).
+
+**Detection:** `grep "kanban dispatcher.*crashed=" gateway.log | grep -v "crashed=0"` — look for `spawned=N crashed=N` where N is identical and >0 across 3+ consecutive dispatches. Example from June 2026: 446 dispatches in 12 hours, 7 tickets looping endlessly.
+
+**Resolution:** (1) Identify which credential is stale — compare profile `.env` tokens against the main `.env` (e.g., `grep -o 'DEEPSEEK_API_KEY=.*' /root/.hermes/.env | tail -c 5` vs the profile's `.env`). (2) Update the token(s) — copy the current key from main `.env` into the profile `.env`. (3) Reset ALL affected tickets to `ready` and zero their failure counters via SQL. **Use `status='ready'` not `status='todo'`** — the dispatcher picks up `ready` tasks immediately; `todo` tasks require promotion which the dispatcher may not handle during a crash cycle. **Include both `running` and `blocked`** in the WHERE clause — tickets in a crash loop are typically `running` (the dispatcher auto-promotes them), not `blocked`:
+```sql
+UPDATE tasks SET status='ready', worker_pid=NULL, current_run_id=NULL, consecutive_failures=0 WHERE board='<name>' AND status IN ('running', 'blocked');
+```
+(4) Kill any zombie workers that may still be running with the old credential: `pkill -f "hermes.*profile <name>"`. (5) The dispatcher picks up `ready` tasks on its next tick (~60s). Verify with `hermes kanban show <id> | grep "run "` — the latest run should show `active` and last >60s (the old-key runs all died in <61s). Do NOT rely on `hermes kanban promote` — this subcommand does not exist in all versions.
 
 **Dispatcher race condition:** Between `kill -9` and `kanban block`, the dispatcher can respawn a new worker (observed at 11:44 on 2026-06-05: kill, then new run #119 spawned at 11:44, blocked at 11:45). This creates a brief window where a NEW worker is already running when the block lands. The block prevents further dispatches, but does not retroactively kill the just-spawned worker. Always re-verify after blocking.
 

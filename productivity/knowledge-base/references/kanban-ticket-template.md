@@ -90,6 +90,8 @@ hermes kanban --board knowledge-base create \
 
 **Never chain books** — each book gets its own independent ticket, no `--parent`.
 
+**Exception: scanned PDFs requiring OCR.** Chain the OCR ticket with `--parent` to the last non-OCR ticket so `marker_single` runs solo (no concurrent workers = no OOM risk). For scanned PDFs >100 pages, OCR inline with `--page_range` chunks before ticketing (see book-extraction skill).
+
 ### Book ticket body template
 
 ```

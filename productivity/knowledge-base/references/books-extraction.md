@@ -10,6 +10,52 @@ Pipeline for processing books into the knowledge base. Books are 50-150K words �
 | PDF (text) | `pymupdf` | `pip install pymupdf` |
 | PDF (scanned/OCR) | `marker-pdf` | `pip install marker-pdf` (~5GB) |
 
+## Receiving books via Mega archive
+
+When the user sends a Mega.nz link to a zip archive of books:
+
+### Step A: Download the archive
+
+**Primary method — megadl (megatools).** No Python dependency, works on all versions:
+
+```bash
+mkdir -p /tmp/book_archives
+megadl "https://mega.nz/file/FILE_ID#FILE_KEY" --path /tmp/book_archives/batch_<YYYYMMDD>.zip
+```
+
+Check file was written: `ls -la /tmp/book_archives/batch_<YYYYMMDD>.zip`
+
+**Fallback — mega.py** (broken on Python ≥3.12 — `asyncio.coroutine` removed):
+
+```python
+from mega import Mega
+import shutil
+
+m = Mega()
+f = m.download_url('https://mega.nz/file/FILE_ID#FILE_KEY')
+shutil.move(f, '/tmp/book_archives/batch_<YYYYMMDD>.zip')
+```
+
+### Step B: Extract to a CLEAN directory
+
+**Always use a fresh, empty directory.** Never extract into a pre-existing directory — it may contain stale books from a prior session, and you will misreport them as new.
+
+```bash
+rm -rf /tmp/books_extracted
+mkdir -p /tmp/books_extracted
+unzip /tmp/books_archive_<batch>.zip -d /tmp/books_extracted
+```
+
+### Step C: Identify books
+
+List only the book files (ePub, PDF, MOBI, AZW3) and present them to the user for confirmation before creating tickets:
+
+```bash
+find /tmp/books_extracted -type f \( -iname "*.epub" -o -iname "*.pdf" -o -iname "*.mobi" -o -iname "*.azw3" \) | sort
+```
+
+Keep the files in `/tmp/books_extracted/` — workers will access them from there. Each ticket body references the full path.
+
 ## ePub pipeline
 
 ### Step 0: Use unique temp paths
@@ -155,6 +201,97 @@ git push
 
 For PDFs, use the `ocr-and-documents` skill. `pymupdf` for text-based PDFs, `marker-pdf` for scanned/OCR. Then follow the same reading and structuring steps as ePub (Step 3-7 above).
 
+### Pre-flight OCR check — scan ALL PDFs BEFORE creating tickets
+
+Before creating any book tickets, scan every PDF in the batch to determine which need OCR. Use `execute_code` to batch-check all PDFs in one turn:
+
+```python
+# Efficient batch scan — checks every PDF's extractable text in one pass
+from hermes_tools import terminal
+import glob
+
+for pdf in sorted(glob.glob("/tmp/books_batch/*.pdf")):
+    out = terminal(
+        f"python3 -c \"import pymupdf; doc=pymupdf.open('{pdf}'); "
+        f"total=sum(len(doc[i].get_text().strip()) for i in range(doc.page_count)); "
+        f"print(f'{{doc.page_count}}|{{total}}')\"",
+        timeout=60
+    )
+    name = os.path.basename(pdf)[:80]
+    pages, chars = out['output'].strip().split('|')
+    needs_ocr = int(chars) < 500
+    print(f"{'⚠️ OCR' if needs_ocr else '✓ text'} | {pages}p | {int(chars):,} chars | {name}")
+```
+
+PDFs with < 500 chars total across all pages are fully scanned (images only) — they need OCR. PDFs with substantial text can be processed directly with pymupdf.
+
+### Scanned PDF / OCR pipeline
+
+When a PDF is confirmed scanned (pymupdf returns < 500 chars), `marker-pdf` is the OCR tool.
+
+**⚠️ CRITICAL MEMORY CONSTRAINT:** `marker-pdf` loads OCR/detection models that consume **8+ GB RAM at baseline** — regardless of how many pages you process. The models are loaded before page processing begins, so `--page_range` chunks do NOT reduce model memory. `--disable_multiprocessing` also doesn't help significantly.
+
+**Server sizing rule:** marker-pdf needs ≥ 12 GB free RAM to run safely (8 GB models + per-page overhead + OS baseline). On an 11 GB server with ~4 GB baseline usage, marker-pdf WILL OOM-kill the gateway.
+
+**When the server can't run marker-pdf in bulk:**
+
+**Strategy A — Chain after all other tickets.** Chain the OCR ticket after all other books with `--parent` so it runs alone:
+```bash
+hermes kanban --board knowledge-base create \
+  --assignee researcher --skill knowledge-base \
+  --max-runtime 7200 \
+  --parent <last_non_ocr_ticket_id> \
+  --body "..." \
+  "KB: <Title> — <Author>"
+```
+
+**Strategy B — 1 page per invocation (tested on 11 GB server, works).** marker-pdf loads all models upfront (~8 GB) regardless of page count, but 1 page per invocation stays at ~8 GB RSS and completes in ~70s. Processing 10+ pages at once causes extreme slowdown (20+ min, may never finish) because layout/recognition doesn't scale linearly.
+
+To process a scanned book page-by-page:
+```bash
+# Process each page individually — slow but safe
+for p in $(seq 0 625); do
+  marker_single --page_range "$p-$p" \
+    --output_dir "/tmp/ocr_pages/page_${p}" \
+    --output_format markdown \
+    --disable_image_extraction \
+    --disable_multiprocessing \
+    "/tmp/books_batch/<filename>.pdf"
+done
+# Then concatenate all markdown files into one text file for note creation
+find /tmp/ocr_pages -name "*.md" | sort -V | xargs cat > /tmp/book_full.txt
+```
+
+**Strategy C — lighter OCR.** Tesseract (~200 MB), EasyOCR (~2-3 GB). Lower quality but zero OOM risk.
+
+**Strategy D — skip.** For books where even 1-page-per-invocation is impractical (12+ hours for 600+ pages), skip and notify. This book needs ≥ 16 GB RAM or an external API (Google Vision, Azure OCR).
+
+**marker-pdf model inventory (5 models, ~3.3 GB on disk, ~6.7 GB loaded in RAM):**
+
+| Model | Disk | ~RAM (float32) | Role |
+|-------|------|----------------|------|
+| Layout detection | 1.4 GB | ~2.8 GB | Page structure (columns, paragraphs) |
+| Text recognition | 1.4 GB | ~2.8 GB | OCR engine |
+| OCR error detection | 262 MB | ~500 MB | Post-OCR correction |
+| Table recognition | 202 MB | ~400 MB | Table detection |
+| Text detection | 74 MB | ~150 MB | Text region detection |
+| **Total** | **3.3 GB** | **~6.7 GB** | |
+
+All 5 models are loaded at startup, before any page is processed. `--page_range` only controls which pages get OCR'd — it does NOT reduce model loading. With processing overhead, peak RSS is ~8 GB regardless of page count.
+
+**marker-pdf options that DON'T reduce memory:**
+- `--page_range "0-49"` — limits pages processed but models still load fully
+- `--disable_multiprocessing` — prevents forked workers but main process still holds models
+
+**Real OOM case (2026-06-14):** 626-page scanned PDF (Fomenko, 86 MB).
+- 100 pages (no mp disable): 10.5 GB RSS → OOM
+- 50 pages: 8 GB RSS → OOM (multiprocessing forks)
+- 20 pages + `--disable_multiprocessing`: 8.6 GB RSS, manually killed (safe margin)
+- 10 pages: 9.7 GB RSS, 20+ min without completing → extreme slowdown (layout/recognition doesn't scale linearly beyond single digits)
+- **1 page: 7.9 GB RSS, 73s, exit 0 ✅ — the only viable batch size on 11 GB**
+- Server: 11 GB RAM / 9 GB swap. Two OOM kills within 7 minutes before root cause was identified.
+- Estimated 1-page-at-a-time cost: ~12h for 626 pages.
+
 ## Language rule
 
 **Everything in English.** Template labels, section headers, analysis — all English. Book quotes stay in their original language but all surrounding text is English. Never mix French and English in the same note.
@@ -202,3 +339,4 @@ See `references/kanban-ticket-template.md` for the full book ticket body templat
 - **Same-topic books can be misidentified.** When processing a batch of books on the same subject (e.g., 3 books about psilocybin or urine therapy), workers may load the right file but misidentify its content as a different book in the batch. **Always verify the EPUB metadata (title + author) matches the book you're supposed to process BEFORE writing the note.** If a worker reports "metadata discrepancy — file X contains book Y," re-verify by extracting the EPUB yourself — the worker may be wrong. Real cases: (2026-06-09) Scazzero file was correctly labeled but worker claimed it contained Bhurani's content because both discuss urine therapy. (2026-06-11) Fadiman epub was correctly labeled but worker claimed it contained Khamsehzadeh because both are about psilocybin.
 - **Parallel workers + shared /tmp/book.epub = MinIO corruption.** Multiple book tickets run in parallel (no --parent), all with /tmp/book.epub as temp. Worker A downloads book X → Worker B downloads book Y overwriting the file → Worker A uploads book Y as book X. **Fix:** always use unique paths per slug (/tmp/book_<slug>.epub). Enforced in Step 0 and minio-upload.md.
 - **Verify MinIO upload integrity immediately.** After mc cp, re-read the epub metadata and confirm it matches the book you just processed. A metadata mismatch means the file was overwritten — block and notify. See references/minio-upload.md for the verification snippet.
+- **Extract archives into a clean directory.** Never `unzip -o` into a pre-existing directory like `/tmp/books_extracted` — it may contain books from a prior session. You'll list stale files as new, the user will catch it, and you'll look incompetent. Always `rm -rf /tmp/books_extracted && mkdir -p /tmp/books_extracted` first.

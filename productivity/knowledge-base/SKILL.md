@@ -67,6 +67,8 @@ When the user's description disagrees with the URL path, confirm the type first.
 
 `references/books-extraction.md` — extract text, read chapter by chapter, synthesize. Template: `templates/book-note-template.md`. Upload source to MinIO (see `references/minio-upload.md`).
 
+**Scanned PDFs (0 chars pymupdf):** do NOT create kanban tickets. Upload to MinIO, append to `/root/.hermes/queues/ocr_books.txt`, skip. marker-pdf = 8 GB RAM → OOM on 11 GB server. Queue for later processing on better infra.
+
 ### Web search
 
 `references/web-providers.md`

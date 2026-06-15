@@ -162,6 +162,16 @@ If `.env` or `auth.json` appear, the backup leaked tokens.
 
 **Fix**: After `hermes backup -q`, unzip, delete `.env` and `auth.json`, rezip BEFORE pushing. Or use a post-backup script that strips them.
 
+### Notion: integration re-sharing required after token rotation
+
+When you regenerate a Notion integration secret (after a compromise), the NEW integration is effectively a different entity. It does NOT inherit the old integration's sharing permissions. Every database that the old integration had access to must be manually re-shared with the new integration:
+
+1. In Notion, open each database → `...` → `Connect to` → select the new integration name
+2. Verify: `curl -s -X POST "https://api.notion.com/v1/search" -H "Authorization: Bearer $TOKEN" -H "Notion-Version: 2022-06-28" -H "Content-Type: application/json" -d '{"filter":{"property":"object","value":"database"}}'` — should return your databases
+3. Without this step, ALL Notion API writes will fail with `"Could not find database"` or `object_not_found`
+
+**This is self-referencing**: the `hermes-journal` skill that documents Notion pitfalls relies on Notion itself. After rotation, journal entries cannot be written until the integration is re-shared — creating a bootstrapping problem. Fallback: write entries as markdown in `cron/output/` until sharing is restored.
+
 ### Telegram: bot ID doesn't change on rotation
 
 Telegram bot tokens are `BOT_ID:BOT_HASH`. When you revoke and regenerate via @BotFather, the bot ID stays the same. Don't be alarmed that the new token starts with the same numeric prefix — it's expected. Verify by checking the hash portion has changed.

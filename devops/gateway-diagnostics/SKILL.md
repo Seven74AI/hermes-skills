@@ -99,19 +99,43 @@ journalctl -u hermes-gateway --since "2 hours ago" --no-pager | \
 systemctl status hermes-gateway --no-pager | grep "hermes.*kanban.*chat" | wc -l
 ```
 
-**Common OOM root cause**: kanban dispatch spawns too many coder workers
-simultaneously (e.g., 15 coders after a large audit decomposition). Each coder
-runs vitest, playwright, chrome-headless, npm, esbuild — 200-800MB each.
-Quick fix: reduce `delegation.max_concurrent_children` on the coder profile.
+**Common OOM root causes:**
+
+1. **kanban coder workers**: dispatch spawns too many coder workers simultaneously (e.g., 15 coders after a large audit decomposition). Each runs vitest, playwright, chrome-headless, npm, esbuild — 200-800MB each. Quick fix: reduce `delegation.max_concurrent_children` on the coder profile.
+
+2. **marker-pdf OCR (marker_single)**: a single scanned PDF book processed by marker-pdf can consume 10+ GB RSS and OOM-kill the gateway. Diagnosis: `dmesg -T | grep oom-kill` shows `task=marker_single` with `anon-rss:10000000+ kB`. The gateway logs show `Failed with result 'oom-kill'` and `Memory peak: 10.6G`. Mitigation: ensure OCR book tickets are chained with `--parent` so they run solo — see `book-extraction` skill. Real case 2026-06-14: 626-page scanned Fomenko PDF → marker_single 10.5 GB RSS → OOM killed gateway at 14h uptime, then again 7 min after restart on same task.
 
 See `references/oom-diagnosis-example.md` for a real-world case (2026-05-31).
 
-## Kanban Dispatcher Tick Failures
+## Kanban Crash-Loop (repeated_crashes + protocol violation)
 
-When a kanban board shows 0 active workers but tasks exist, check for silent dispatcher
-failures — the gateway ticks the board but the tick fails without crashing.
+When `hermes kanban diagnostics` shows `repeated_crashes` counts in the hundreds
+with "protocol violation: worker exited cleanly (rc=0) without calling
+kanban_complete or kanban_block", it's a **race condition** between the dispatcher
+and the worker:
 
-See `references/kanban-dispatcher-tick-failure.md` for diagnosis steps and a real-world case.
+1. Worker does the work, calls `kanban_complete`
+2. Concurrent dispatcher tick resets the task (`running → ready`), changing `current_run_id`
+3. `kanban_complete`'s `expected_run_id` guard rejects the completion — rowcount=0
+4. Tool returns error in 0.0s, worker exits cleanly without completing
+5. Dispatcher sees "protocol violation" → resets to `ready` → spawns new worker
+6. Cycle repeats indefinitely
+
+**Diagnosis:**
+```bash
+hermes kanban --board <board> diagnostics
+# Look for: repeated_crashes=N, "pid not alive", "protocol violation"
+```
+
+**Fix:**
+```bash
+# CLI completion bypasses expected_run_id guard
+hermes kanban --board <board> complete <task_id>
+```
+
+**Prevention:** when adding new books, scan PDFs with pymupdf before creating tickets.
+If < 500 chars → scanned → do NOT create a kanban ticket (marker-pdf will OOM-loop).
+Upload to MinIO and append to `/root/.hermes/queues/ocr_books.txt` instead.
 
 ## Pitfalls
 
@@ -125,3 +149,4 @@ See `references/kanban-dispatcher-tick-failure.md` for diagnosis steps and a rea
   but receiving no workers because the dispatcher tick keeps failing. Check
   `/root/.hermes/logs/errors.log` for `kanban dispatcher.*tick failed` when a board
   seems idle despite having todo tasks.
+- **Dashboard port conflict with systemd auto-restart**: systemd auto-restart cannot resolve port conflicts. If a manual process (e.g., old `hermes dashboard` invocation) holds the port, systemd cycles forever with `status=1/FAILURE` every 5 minutes — the old process never releases the port. Detection: `ss -tlnp | grep <port>` shows a PID different from the service's PID. Resolution: `kill <old_pid>` then `systemctl restart <service>`. Observed June 2026: dashboard in crash loop for 15 days (~5700 restarts) due to PID 100670 holding port 9119 from a manual run on May 30.

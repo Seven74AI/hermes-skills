@@ -45,17 +45,66 @@ Schedule shapes:
 - `{"kind": "cron", "expr": "0 6 * * *", "display": "0 6 * * *"}`
 - `{"kind": "interval", "minutes": 10, "display": "every 10m"}`
 
+## Kanban Data — Quick Schema Reference
+
+For detailed query patterns, **LOAD** `references/kanban-db-queries.md` (has safe python3 -c templates for every common query).
+
+**CRITICAL gotchas (these will waste 3-4 calls if you guess):**
+
+- **Timestamps are Unix integers**, NOT SQL datetime strings. `created_at`, `started_at`, `completed_at` are all `INTEGER` seconds since epoch. To compare with "24 hours ago", use `time.time() - 86400` in Python, not `datetime('now','-24 hours')` in SQL.
+- **No `updated_at` column** on the `tasks` table. Use `completed_at` for completion tracking, `started_at` for work-in-progress.
+- **Per-board DBs** live at `/root/.hermes/kanban/boards/<slug>/kanban.db`. The central `/root/.hermes/kanban.db` has a different schema (`workspace_kind` column).
+- **`tasks.status` values differ**: central DB has `done`/`blocked`/`archived`; per-board DBs add `running`/`ready`/`todo`.
+- Table is `tasks` (NOT `tickets`), events table is `task_events` with column `kind` (NOT `event_type`).
+- Always use `python3 -c "import sqlite3..."` — bare `sqlite3` binary may not be present in cron environments.
+
 ## Session Search Patterns
 
 Use `session_search()` — the FTS5-backed function, not raw file reads.
 
-**Morning Report queries:**
-1. **Browse recent** (no args): `session_search()` — returns last 10 sessions chronologically
-2. **Find interactive (non-cron)** sessions: `session_search(query="NOT cron", sort="newest", limit=5)`
-3. **Find error/incident sessions**: `session_search(query="error OR crash OR fail OR OOM OR gateway", sort="newest", limit=5)`
-4. **Check for user decisions**: `session_search(query="interactive OR décision OR décidé", sort="newest", limit=5)`
+**CRITICAL: FTS5 searches message *content*, not session metadata.** The `query` parameter matches words inside messages — it cannot filter by `source`, `model`, or other session-level fields. A query like `"NOT cron"` excludes sessions where the word "cron" appears in messages, which is *accidentally* useful (cron system prompts contain "cron") but not semantically correct. A query like `"interactive"` matches any session whose messages contain that word, regardless of `source`.
 
-**Key pitfall:** Most sessions in a 24h window will be cron-sourced. The `source` field distinguishes `"cron"` from interactive sources (CLI, Discord, etc.).
+**Morning Report queries (what actually works):**
+
+1. **Browse recent** (no args): `session_search()` — returns 3 most recent sessions chronologically (NOT 10)
+
+2. **Find non-cron sessions — SQL fallback (most reliable):**
+   ```bash
+   python3 -c "
+   import sqlite3, time
+   conn = sqlite3.connect('/root/.hermes/state.db')
+   cur = conn.cursor()
+   cutoff = time.time() - 86400
+   cur.execute('''SELECT id, source, title, started_at FROM sessions
+       WHERE started_at > ? AND source != \"cron\"
+       ORDER BY started_at DESC LIMIT 10''', (cutoff,))
+   for r in cur.fetchall():
+       print(f'{r[0][:20]} | {r[1]} | {str(r[2])[:60]} | {r[3]}')
+   conn.close()
+   "
+   ```
+   This is the **only reliable way** to filter by session source.
+
+3. **Find error/incident sessions** (FTS5): `session_search(query="error OR crash OR fail OR OOM OR gateway", sort="newest", limit=5)`
+   Works well — these keywords are rare in normal messages.
+
+4. **Find user conversations** (FTS5): `session_search(query="je OR tu OR merci OR bonne nuit", sort="newest", limit=5)`
+   French pronouns/courtesies are strong signals of interactive sessions.
+
+5. **Scroll into a specific session**: Use `session_search(session_id="...", around_message_id=N)`. If the ID from `state.db` doesn't work, try the full hex-suffixed form (e.g., `20260610_215606_7184f8b6` instead of `20260610_215606_7184`).
+
+**Key pitfall:** Most sessions in a 24h window will be cron-sourced. The `source` field distinguishes `"cron"` from interactive sources (CLI, Discord, Telegram, etc.), but `session_search()` cannot filter by it — use the SQL fallback above. For session content, read messages directly from `state.db`:
+```bash
+python3 -c "
+import sqlite3
+conn = sqlite3.connect('/root/.hermes/state.db')
+cur = conn.cursor()
+cur.execute('SELECT id, role, substr(content,1,200) FROM messages WHERE session_id=? ORDER BY id LIMIT 8', ('FULL_SESSION_ID',))
+for r in cur.fetchall():
+    print(f'[{r[0]}] {r[1]}: {r[2]}')
+conn.close()
+"
+```
 
 ## GitHub Activity
 
@@ -99,3 +148,74 @@ grep -c "pending_approval" /root/.hermes/logs/errors.log
 ```
 
 **Key pitfall:** The dashboard pinger generates a "Binding to 0.0.0.0 --insecure" warning every 5 minutes (288/day). These are noise, not alerts. Report them once, note the volume, don't flag each occurrence.
+
+## Systemd Service Health
+
+Check for crash loops and services stuck in restart cycles. A restart counter above 100 is a signal that something is broken and needs attention — not just a transient failure.
+
+```bash
+# List failed hermes-related services
+systemctl --failed --no-legend | grep -i hermes || echo "no failed units"
+
+# Check restart counters and uptime for hermes services
+systemctl list-units --all --no-legend 'hermes-*' 2>/dev/null | while read -r unit _; do
+  echo "--- $unit ---"
+  # Show active state, substate, and any status detail
+  systemctl status "$unit" --no-pager -l 2>/dev/null | head -8
+  echo
+done
+```
+
+**Red flags to escalate:**
+- Restart counter > 100 (found with `systemctl show <unit> -p NRestarts`)
+- Service in `failed` state with `active (exited)` parent but no running process
+- `ExecStartPre=` or `ExecStartPost=` failures logged in journal
+
+**Common root causes found in the wild:**
+- **Port conflict**: A manually-started process (e.g., `hermes dashboard --insecure`) holds a port that the systemd service also tries to bind. Detect with `ss -tlnp | grep <port>` and compare the PID to the systemd-managed PID.
+- **Stale PID file**: A previous instance left a PID file that makes the new instance think it's already running.
+
+```bash
+# Find what's holding a port (e.g., 9119 for dashboard)
+ss -tlnp | grep 9119
+# Cross-reference with systemd-managed PIDs
+systemctl show hermes-dashboard.service -p MainPID
+```
+
+## Zombie Process Check
+
+Defunct (zombie) processes consume PID slots but no RAM. They indicate a parent process that isn't calling `waitpid()` on terminated children. A few zombies are noise; accumulation over days signals a bug.
+
+```bash
+# Count hermes zombies
+ps aux | awk '$8 ~ /Z/ && /hermes/' | wc -l
+
+# Show zombie details (PID, parent, age)
+ps -eo pid,ppid,stat,start,comm | awk '$3 ~ /Z/ && /hermes/ {print}'
+```
+
+**Escalate when:** > 3 zombies OR any zombie older than 24h. The parent process (PPID column) should be investigated — it's failing to reap children.
+
+**Known pattern:** The Hermes gateway (PID of `hermes_cli.main gateway run`) may spawn short-lived worker processes. If it doesn't handle SIGCHLD with `waitpid()`, zombies accumulate.
+
+## Temporary File Cleanup
+
+Check `/tmp` for stale Hermes artifacts that weren't cleaned up after cron jobs or backups.
+
+```bash
+# Show Hermes-related /tmp usage
+du -sh /tmp/hermes-* 2>/dev/null | sort -rh
+```
+
+**Patterns to flag:**
+- `hermes-backup-tmp` directories over 500M — likely from interrupted backup rotations
+- `hermes-critical-*.tar.gz` files older than 48h — backup tarballs that should have been pruned
+- `hermes-results` growing unboundedly — persisted tool output that the cleaner didn't remove
+
+**Safe cleanup** (only remove artifacts older than 48h):
+```bash
+find /tmp -name 'hermes-critical-*.tar.gz' -mtime +2 -delete
+find /tmp -name 'hermes-backup-tmp' -type d -mtime +2 -exec rm -rf {} + 2>/dev/null
+```
+
+**Key pitfall:** Don't blindly `rm -rf /tmp/hermes-*` — active sessions may still be writing there. Use `-mtime +2` as a safety gate.
