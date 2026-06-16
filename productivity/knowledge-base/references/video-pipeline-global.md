@@ -51,8 +51,22 @@ Run diarization and transcription sequentially (RAM).
 ## pyannote
 
 `>=4.0` with torch ≥2.5. API: `diarization.speaker_diarization.itertracks()`.
+Model: `pyannote/speaker-diarization-3.1` (replaces 3.0 — separate HF repo, separate license).
 
-On diarization failure: block the task and report — proceed only with diarization output.
+### Diarization failure handling
+
+Do NOT escalate GatedRepoError / 401 to the user without first verifying the token.
+The most common false-positive: the token authenticates (whoami → 200) but the specific
+model repo requires its own license acceptance. 3.1 and 3.0 are DIFFERENT repos — a
+license accepted for 3.0 does not carry over to 3.1.
+
+Before blocking with "model access denied":
+1. Verify token identity: `curl -sH "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami-v2`
+2. Verify model file access: `curl -sIH "Authorization: Bearer $HF_TOKEN" https://huggingface.co/pyannote/speaker-diarization-3.1/resolve/main/config.yaml`
+3. If the token CAN download config.yaml (HTTP 200), the gating error was transient — retry the diarization
+4. Only escalate to user if the token genuinely lacks access (HTTP 401/403 on step 2 AND whoami passes)
+
+Full diagnostics: `references/pyannote-gating.md`
 
 ## Transcription persistence
 

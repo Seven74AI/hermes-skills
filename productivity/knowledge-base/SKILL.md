@@ -92,12 +92,20 @@ All pipelines that require cookies (YouTube, Instagram, Threads) must run a pre-
 
 ```bash
 echo "URL" >> /root/.hermes/queues/skipped_<platform>.txt
-# + send Telegram notification
 ```
 
 Queue files: `skipped_yt.txt`, `skipped_threads.txt`, `skipped_ig.txt`, `skipped_substack.txt` under `/root/.hermes/queues/`.
 
 When the user refreshes cookies and says "relance": validate cookies → load `knowledge-base` skill → process queue file from the top. Full procedure: `references/edge-cases.md` (Cookie validation section).
+
+**Protect cookie files from yt-dlp overwrites.** `yt-dlp --cookies FILE` reads AND writes back the cookie jar after every download. Session cookies (`sessionid`) with no expiry get saved with `expires=0`, then treated as expired on next load. This silently breaks all subsequent Instagram/YouTube downloads. After the user exports fresh cookies, make the file read-only:
+
+```bash
+chmod 444 /root/.hermes/cookies/ig_cookies.txt
+chmod 444 /root/.hermes/cookies/yt_cookies.txt
+```
+
+The worker will still be able to read cookies but yt-dlp cannot overwrite them.
 
 ## When to add a note
 

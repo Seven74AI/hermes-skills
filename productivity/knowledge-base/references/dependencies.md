@@ -23,11 +23,11 @@ All packages required for the full knowledge-base pipeline (YouTube, Instagram R
 ```bash
 python3 -c "
 from huggingface_hub import snapshot_download
-snapshot_download('Systran/faster-whisper-large-v3', cache_dir='/root/.cache/huggingface')
+snapshot_download('Systran/faster-whisper-large-v3')
 "
 ```
 
-~3 GB download. Only needed once. Cached to `/root/.cache/huggingface/`.
+~3 GB download. Only needed once. Cached to `$HF_HOME` (defaults to `/root/.hermes/models/huggingface/`).
 
 ## Post-install: restore hermes-agent dependencies
 

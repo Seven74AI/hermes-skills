@@ -22,6 +22,7 @@ Weekly journal that captures technical lessons, infrastructure fixes, and debugg
 - User asks to "document what we learned" or "start a journal"
 - **Dashboard or systemd service crash-loops** → see `references/dashboard-crashloop-playbook.md` for the diagnostic playbook (port conflicts, stale PIDs, zombie forensics)
 - **Verifying cron job health** → see `references/cron-health-check.md` — `last_status: ok` ≠ functionally working; always inspect outputs
+- **Kanban board disabled by dispatcher (DB corruption)** → see `references/kanban-board-recovery.md` — verify integrity, touch file to re-enable, prevention
 
 ## Notion Setup
 
@@ -77,6 +78,27 @@ For cron job inventory and other non-kanban data sources the Morning Report need
 | **Daily Journal** (`b259b8f52946`) | 06:05 | Local + Discord `#daily-recap` | Ops-specific durable knowledge → Notion |
 
 Both write to the **Hermes Ops Journal** Notion DB. Morning Report extracts blog-worthy entries (technical insights, novel workflows, interesting bugs) from general activity. Daily Journal captures ops-specific lessons (infrastructure, debugging, config).
+
+### Daily Journal workflow — avoiding duplicate entries
+
+The Morning Report runs at 06:00 and writes 1-3 journal entries. The Daily Journal runs at 06:05 to the **same database**. To avoid writing duplicate entries:
+
+1. **Query what the Morning Report already wrote today.** Before any other work, query the Notion DB filtered by `Date = today`:
+   ```bash
+   curl -s -X POST "https://api.notion.com/v1/databases/376511b0-706b-8106-8710-c693d9d28014/query" \
+     -H "Authorization: Bearer ${NOTION_API_KEY}" \
+     -H "Notion-Version: 2022-06-28" \
+     -H "Content-Type: application/json" \
+     -d '{"filter":{"property":"Date","date":{"equals":"2026-06-15"}}}' \
+     -o /tmp/notion_existing.json
+   ```
+   Then extract titles and skip any topic already covered. The Morning Report entry titles are the ground truth for what's already journaled.
+
+2. **Read the Morning Report's output file.** The Morning Report's full analysis is saved at `/root/.hermes/cron/output/82a083aaa98e/YYYY-MM-DD_*.md`. This contains pre-analyzed session data, system state, and alerts — use it as your primary intelligence source instead of re-searching sessions from scratch.
+
+3. **Find additional entries the Morning Report missed.** The Morning Report focuses on the biggest stories. The Daily Journal should capture secondary-but-durable lessons: tooling gaps (gh auth after token rotation), recovery patterns (kanban board re-enablement via touch), configuration drift, and debugging techniques the Morning Report touched on in prose but didn't formalize as entries.
+
+4. **Write only genuinely new entries.** If the Morning Report already wrote it, skip it even if your angle is slightly different. A single Notion entry per topic is the goal.
 
 ## Weekly Cron Job
 

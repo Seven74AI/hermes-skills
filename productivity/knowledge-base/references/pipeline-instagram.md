@@ -115,15 +115,18 @@ scp /tmp/ig_cookies.txt root@<tailscale-ip>:/root/.hermes/cookies/ig_cookies.txt
 #### Server-side — safe download with rate-limiting:
 
 ```bash
+# Copy cookies to /tmp so yt-dlp doesn't overwrite the canonical file
+cp /root/.hermes/cookies/ig_cookies.txt /tmp/ig_cookies.txt
+
 # Step 1: List formats and metadata (lightweight)
-yt-dlp --cookies /root/.hermes/cookies/ig_cookies.txt \
+yt-dlp --cookies /tmp/ig_cookies.txt \
   --sleep-requests 3 --sleep-interval 5 --max-sleep-interval 15 \
   --limit-rate 2M \
   --print "%(duration)ss | %(like_count)s likes" \
   "https://www.instagram.com/reel/REEL_ID/"
 
 # Step 2: Download (combined stream if available, otherwise best video + audio)
-yt-dlp --cookies /root/.hermes/cookies/ig_cookies.txt \
+yt-dlp --cookies /tmp/ig_cookies.txt \
   -f "bv*[height<=720]+ba/b[height<=720]" \
   --merge-output-format mp4 \
   -o "/tmp/ig_reel.mp4" \
@@ -231,7 +234,7 @@ rm /tmp/ig_audio.m4a /tmp/ig_video.mp4 /tmp/ig_reel.mp4 /tmp/ig_audio_16k.wav
 - `yt-dlp` — installed via pip
 - `faster-whisper` — installed via pip (SDK, no CLI needed). Model: `large-v3` (mandatory, downloaded from HF Hub)
 - `ffmpeg` — system package
-- Whisper model: download with `snapshot_download('Systran/faster-whisper-large-v3', cache_dir='/root/.cache/huggingface')` (no HF_TOKEN needed for public model)
+- Whisper model: download with `snapshot_download('Systran/faster-whisper-large-v3')` — cached to `$HF_HOME` (no HF_TOKEN needed for public model)
 
 **Diarization (mandatory for ALL video content):**
 - `pyannote.audio` — **Must use >=4.0** when torch >=2.5. Old API: `Pipeline().itertracks()`. New 4.x API: `Pipeline().speaker_diarization.itertracks()`. Pin: `pip install 'pyannote.audio>=4.0'`
@@ -435,4 +438,4 @@ Re-export from a browser with an active Instagram session if `sessionid` is miss
 - yt-dlp with cookies: `--sleep-requests 3 --sleep-interval 5 --max-sleep-interval 15 --limit-rate 2M`
 - 2–3 Reels per worker session
 - Chain batches with `--parent` (4–5 URLs per ticket)
-- Cookies persist at `/root/.hermes/cookies/ig_cookies.txt` — re-export from Chrome when session expires
+- Copy cookies to `/tmp/ig_cookies.txt` before using yt-dlp — never use the canonical file directly
