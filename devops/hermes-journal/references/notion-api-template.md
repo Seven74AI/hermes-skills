@@ -93,7 +93,11 @@ print('written OK')
 
 **Category:** Infrastructure, Tooling, Lesson Learned, Configuration, Debugging
 
-**Impact:** 🔴 Critical, 🟡 Important, 🟢 Nice to Know
+**Impact (emoji):** 🔴 Critical, 🟡 Important, 🟢 Nice to Know
+
+**Impact (plain text — scanner-safe fallback):** Critical, Important, Nice to Know, [CRITICAL], [IMPORTANT]
+
+The DB schema actually contains both emoji and non-emoji variants as valid select options (verified 2026-06-16 via `GET /databases/{id}`). When the security scanner blocks emoji inside `python3 -c` strings (`tirith:variation_selector`), use the plain text fallbacks: `Critical`, `Important`, or `Nice to Know`. These produce the same visual result since Notion renders select values from the stored option name.
 
 ## Notes
 

@@ -198,6 +198,42 @@ ps -eo pid,ppid,stat,start,comm | awk '$3 ~ /Z/ && /hermes/ {print}'
 
 **Known pattern:** The Hermes gateway (PID of `hermes_cli.main gateway run`) may spawn short-lived worker processes. If it doesn't handle SIGCHLD with `waitpid()`, zombies accumulate.
 
+## Cron Output Analysis — Silent Failure Detection
+
+**Path:** `/root/.hermes/cron/output/<job_id>/`
+
+Each cron job has its own output directory. Output files follow the pattern `YYYY-MM-DD_HH-MM-SS.md`.
+
+**Key pitfall:** Exit-code monitoring is insufficient. A cron job can produce 0-byte output files while returning exit code 0 — the status dashboard shows "ok / silent (empty output)" which is indistinguishable from healthy watchdogs that are genuinely silent. Agent-based cron jobs that hit security scanner blocks (e.g., `pending_approval` on pipe-to-interpreter) will produce empty output while exiting cleanly.
+
+**Silent failure detection (run during Morning Report):**
+
+```bash
+# Find jobs with recent consecutive zero-byte outputs (>10 in a row signals trouble)
+python3 -c "
+import os, glob
+base = '/root/.hermes/cron/output'
+for job_dir in sorted(glob.glob(f'{base}/*/')):
+    jid = os.path.basename(job_dir.rstrip('/'))
+    files = sorted(glob.glob(f'{job_dir}/2026-06-1[56]_*.md'))
+    # Check last 20 files: how many are zero-byte?
+    recent = files[-20:]
+    if recent:
+        zeros = sum(1 for f in recent if os.path.getsize(f) == 0)
+        if zeros >= 15:
+            # Read one to see if it's truly empty or just has no useful content
+            sample = open(recent[-1]).read(200) if os.path.getsize(recent[-1]) > 0 else '(empty)'
+            print(f'{jid:16s} | {zeros}/{len(recent)} zero-byte | sample: {sample[:100]}')
+"
+```
+
+**Red flags:**
+- >10 consecutive 0-byte outputs from an agent-based job (not a script watchdog)
+- Last non-zero output is >6 hours old
+- Agent jobs that normally produce reports suddenly going silent
+
+**Benchmark:** Script-based watchdogs (CI, Memory, CPU, Gateway, Pre-Spawn Health) are *expected* to produce empty output when healthy — silence = nothing to report. Agent-based jobs (Block Watchdog, Morning Report, Digest) should NEVER produce empty output — silence = failure.
+
 ## Temporary File Cleanup
 
 Check `/tmp` for stale Hermes artifacts that weren't cleaned up after cron jobs or backups.

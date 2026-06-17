@@ -67,6 +67,8 @@ When the user's description disagrees with the URL path, confirm the type first.
 
 `references/books-extraction.md` — extract text, read chapter by chapter, synthesize. Template: `templates/book-note-template.md`. Upload source to MinIO (see `references/minio-upload.md`).
 
+**PDF pre-flight: 3-tier quality check mandatory.** The binary `< 500 chars` scan check is NOT sufficient for pre-19th-century PDFs. Many old scans have an OCR layer with millions of chars but the text is degraded (long-s → f, garbled headers). Always run the full quality scoring from `book-extraction` skill → `references/ocr-scanned-pdfs.md` before creating tickets. Score < 80 → queue for fresh OCR, do NOT ticket.
+
 **Scanned PDFs (0 chars pymupdf):** do NOT create kanban tickets. Upload to MinIO, append to `/root/.hermes/queues/ocr_books.txt`, skip. marker-pdf = 8 GB RAM → OOM on 11 GB server. Queue for later processing on better infra.
 
 ### Web search

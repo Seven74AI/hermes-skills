@@ -83,7 +83,7 @@ fi
 For **text** (no video attachment):
 
 ```bash
-hermes kanban --board default create \
+hermes kanban --board knowledge-base create \
   --assignee researcher \
   --skill knowledge-base \
   --max-runtime 600 \
@@ -98,7 +98,7 @@ Langue: contenu en langue source, labels en anglais. Save to Knowledge base/. Pu
 For **video** (has video player):
 
 ```bash
-hermes kanban --board default create \
+hermes kanban --board knowledge-base create \
   --assignee researcher-videos \
   --skill knowledge-base \
   --max-runtime 3600 \
@@ -115,7 +115,7 @@ Diarization MANDATORY for every video. Langue: contenu en langue source, labels 
 For **text+image** (has image attachment):
 
 ```bash
-hermes kanban --board default create \
+hermes kanban --board knowledge-base create \
   --assignee researcher \
   --skill knowledge-base \
   --max-runtime 600 \

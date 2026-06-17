@@ -142,7 +142,35 @@ When `.env` is exposed, **assume ALL tokens in it are compromised.** The attacke
 | `FIRECRAWL_API_KEY` | Firecrawl | Use your quota |
 | etc. | etc. | etc. |
 
-## Common pitfalls
+## Routine key rotation (non-compromise)
+
+When you rotate keys proactively (not because of a compromise), the procedure is simpler but has one critical pitfall: **profile `.env` files are independent copies.**
+
+After updating `~/.hermes/.env`, you MUST sync to ALL profile `.env` files. Profiles do NOT source the main `.env` — each has its own copy. If you forget, workers under stale profiles crash-loop silently with HTTP 401.
+
+**Automated safety net:** The pre-spawn watchdog (`/root/.hermes/scripts/pre-spawn-watchdog.py`, cron every 5 min) auto-syncs ALL keys from main `.env` to every profile `.env`, and deduplicates stale copies. If you rotate a key and forget to sync profiles, it catches the drift within minutes. Still, run the sync script below as part of rotation to prevent even one failed spawn.
+
+**Sync procedure:**
+```bash
+# Sync a specific key to all profiles
+bash /root/.hermes/skills/devops/token-compromise-response/scripts/sync-profile-keys.sh DEEPSEEK_API_KEY
+
+# Or sync ALL tokens
+bash /root/.hermes/skills/devops/token-compromise-response/scripts/sync-profile-keys.sh ALL
+```
+
+**Verification** — all profiles should show the same key suffix (use `head -1`, not `tail -1` — duplicate lines mean `tail` shows the stale copy):
+```bash
+for p in /root/.hermes/profiles/*/; do
+    name=$(basename "$p")
+    key=$(grep DEEPSEEK_API_KEY "$p.env" 2>/dev/null | head -1 | awk -F= '{print substr($2, length($2)-7)}')
+    echo "  $name: ...${key:-MISSING}"
+done
+```
+
+See `references/profile-key-sync.md` for the full procedure and the list of profiles that need syncing.
+
+**Real case (2026-06-16):** DeepSeek key rotated. Main `.env` + `researcher` updated. Six other profiles retained the old key. A `coder` task crash-looped 185 times with HTTP 401 before the watchdog caught it. Investigation revealed 50+ stale keys across 7 profiles — every key rotation since profile creation had left frozen copies. The watchdog was extended to sync ALL keys dynamically (not a hardcoded list) and to deduplicate stale duplicate lines.
 
 ### Discord: Client Secret ≠ Bot Token
 
