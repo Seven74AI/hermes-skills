@@ -19,13 +19,13 @@ hermes kanban --board knowledge-base create \
   --body "..." \
   "KB: <description> (lot X/N)"
 
-# For text/image content (carousels, threads, posts) — no transcription needed
+# For text/image content (carousels, threads, posts, articles, Substack) — no transcription needed
 hermes kanban --board knowledge-base create \
   --assignee researcher \
   --skill knowledge-base \
   --max-runtime 3600 \
   --parent <previous_ticket_id> \
-  --body "..." \
+  --body "... Deep treatment required: Firecrawl → read ENTIRE source → Key Claims ≥4 with quotes → Section-by-section analysis (dominant) → MinIO archive (knowledge-base/articles/). Target 15K-25K chars. ..." \
   "KB: <description> (lot X/N)"
 ```
 

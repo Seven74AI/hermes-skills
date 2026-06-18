@@ -19,6 +19,8 @@ Wait via `process(wait)` — one blocking call per job.
 - Language: `language=None` (auto-detect); note content follows detected language
 - Threads: `cpu_threads=6` on this server — included in `scripts/transcribe.py`
 
+**⚠️ HARD RULE — NEVER DOWNGRADE THE MODEL.** `large-v3` is mandatory for ALL transcriptions. Never switch to `small`, `medium`, `tiny`, or `base` for any reason — not for speed, not for timeouts, not for OOM. If max_runtime is too short, increase max_runtime. If RAM is low, free RAM. The quality gap is documented in `whisper-model-comparison.md` and the user will REJECT any note produced with a smaller model. Violated once by an automated watchdog (2026-06-17) — the rule now carries the user's own words: "Never change the fuckin model !!!!!!!"
+
 ## Scripts
 
 Invoke `scripts/diarize.py` and `scripts/transcribe.py` from this skill directory.

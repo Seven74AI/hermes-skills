@@ -86,8 +86,10 @@ For **text** (no video attachment):
 hermes kanban --board knowledge-base create \
   --assignee researcher \
   --skill knowledge-base \
-  --max-runtime 600 \
-  --body "Substack article — <publication>, <date>. Firecrawl extraction → markdown cleanup → Obsidian note.
+  --max-runtime 3600 \
+  --body "Substack article — <publication>, <date>. Deep treatment required.
+
+Firecrawl extraction → read ENTIRE source → Key Claims (≥4, with direct quotes) → Section-by-section analysis (dominant section) → Context → Critical Analysis → Nuances. Target 15K-25K chars. Upload raw markdown to MinIO (knowledge-base/articles/). Add minio: field with Tailscale FQDN.
 
 1. <URL>
 
@@ -118,14 +120,16 @@ For **text+image** (has image attachment):
 hermes kanban --board knowledge-base create \
   --assignee researcher \
   --skill knowledge-base \
-  --max-runtime 600 \
-  --body "Substack Note — text + image. <publication> (<author>), <date>.
+  --max-runtime 3600 \
+  --body "Substack Note — text + image. <publication> (<author>), <date>. Deep treatment required.
 
 Content: <1-line summary>. Image: <image_url> (<W>x<H>). Download image, analyze with vision/OCR, describe in note section '## Image'.
 
+Firecrawl extraction → read ENTIRE source → Key Claims (≥4, with direct quotes) → Section-by-section analysis (dominant section) → Context → Critical Analysis → Nuances. Upload raw markdown to MinIO (knowledge-base/articles/). Add minio: field with Tailscale FQDN.
+
 1. <URL>
 
-Extraction: web_extract works for Notes text. Image URL from preloads JSON. Langue: contenu en langue source, labels en anglais. Save to Knowledge base/. Push après la note." \
+Langue: contenu en langue source, labels en anglais. Save to Knowledge base/. Push après la note." \
   "KB: <publication> — <title>"
 ```
 
@@ -219,53 +223,36 @@ md = re.sub(r'#### Discussion à propos de ce post.*', '', md, flags=re.DOTALL)
 
 ## Phase 3 — Obsidian note
 
-### Template
+Follow the deep treatment standard from `knowledge-base` SKILL.md (Template section). No light template. Required depth:
 
-```markdown
----
-topic: [<topics>]
-date: YYYY-MM-DD
-source: <publication>, <date>
-source_url: <canonical_url>
-confidence: plausible
-tags: [<tags>]
----
+- **Key Claims** — ≥4 specific claims with direct quotes and analysis
+- **Section-by-section analysis** — dominant section, longer than Key Claims + Critical Analysis
+- **Context** — who wrote this, why now, conflicts of interest
+- **Critical Analysis** — what's new vs restating, omissions, self-interest
+- **Nuances** — limitations, exaggerations, blind spots
+- **See Also** — only existing vault notes (grep before linking)
+- **Coverage verification before pushing** — check that every section/part of the source is referenced in the note. For sources >100K chars (>1000 lines), you need 8-15+ read_file passes before writing.
 
-# <title>
+The `book-note-template.md` is the model. Articles get section-level depth; notes get claim-level depth. The standard is the same — only the scale differs.
 
-## Summary
-2-3 sentences. The essentials.
-
-## Key Points
-- Point 1
-- Point 2
-
-## Analysis
-Context, trends, implications.
-
-## Reliability
-⚠️ plausible — newsletter source.
-
-## Source
-- [<original title>](<canonical_url>) — <publication>, <date>
-```
-
-### Slug
-
-`<publication-slug>_<title-slug>`. Lowercase.
-
-### Tags
-
-- `substack` always
-- `<publication-slug>` always
-- `ai`, `regulation`, `ai-act`, `fine-tuning`, `open-source` based on content
-
-## Phase 4 — Git push
+## Phase 4 — MinIO archive + Git push
 
 ```bash
+SLUG="<publication>_<title>"
+
+# Upload raw markdown to knowledge-base/articles/
+mc cp /tmp/substack_raw.md "minio/knowledge-base/articles/${SLUG}.md"
+
+# Verify
+mc ls "minio/knowledge-base/articles/${SLUG}.md"
+
+# Note frontmatter must use Tailscale FQDN:
+# minio: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/articles/<slug>.md
+
+# Git push
 cd "$OBSIDIAN_VAULT_PATH"
-git add "Knowledge base/<slug>.md"
-git commit -m "add: <slug>"
+git add "Knowledge base/${SLUG}.md"
+git commit -m "add: ${SLUG}"
 git push
 ```
 
