@@ -313,6 +313,7 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 - **Pipeline debugging: diagnose first, then confirm, then fix.** When identifying pipeline problems, present the evidence and root cause to the user BEFORE applying fixes. The user will verify on their end and may correct the diagnosis. Do not rush to patch — wait for confirmation, then apply the fix.
 - **Keep skill docs minimal.** Reference files delegate to the main skill or umbrella reference — don't duplicate pipeline steps across files. If a procedure is already covered by loading `knowledge-base`, just say so.
 - **Happy path only.** Pipeline references must contain only the workflow: what to do, in what order, with what commands. No edge cases, failure modes, deprecated methods, known pitfalls, "✅ FIXED" markers, or bad-path pollution. Those belong in the operator's journal, not in worker-facing skill files.
+- **Verify against primary sources — main directory only.** When investigating the pipeline or answering questions about how the system works, read from the **main skill directory** (`/root/.hermes/skills/productivity/knowledge-base/`), NOT from profile copies. Profile copies under `profiles/researcher*/skills/` are synced every 5 minutes by the Pre-Spawn Health Watchdog but may be stale. The main directory is the single source of truth. Every assumption not grounded in the docs will be caught. When asked to audit the detection model, cross-reference every claim against its source file before asserting. If a reference listed in SKILL.md doesn't exist as a file, say so — don't fill the gap from memory.
 - **Sync profiles after editing skill files.** Worker profiles (`researcher`, `researcher-videos`, `planner`, `reviewer`, `coder`, etc.) have their own copies of the skill directory. After creating a new skill, editing any `SKILL.md`, reference, template, or script, run `scripts/sync-to-profiles.sh`. It syncs **all** productivity skills to **all** profiles that have a `skills/productivity/` directory — not just `knowledge-base` to `researcher`. Workers crash-loop with `Error: Unknown skill(s)` when a ticket references a skill via `--skill` that hasn't been synced to their profile.
   - **Verify sync succeeded.** After running, check that a profile has the full skill: `ls <profile>/skills/productivity/knowledge-base/` must show `SKILL.md` + `references/` + `templates/` + `scripts/`. If only `SKILL.md` appears, the sync flattened the skills — check `scripts/sync-to-profiles.sh` line has `$dest/$skill_name/`, not just `$dest/` (bug fixed 2026-06-11).
 
@@ -339,7 +340,11 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 | Fact-checking | `references/fact-check-workflow.md` |
 | Web search | `references/web-providers.md` |
 | **KB board plan** | `references/kb-board-plan.md` |
+| **Custom agent architecture** | `references/custom-agent-architecture.md` |
 | **Backfill** | `references/backfill.md` |
+| **Pipeline architecture (rebuild reference)** | `references/pipeline-architecture.md` |
+| **Detection & pre-flight model** | `references/detection-model.md` |
+| **OCR / scanned PDFs** | `references/ocr-scanned-pdfs.md` |
 
 Vault path: `OBSIDIAN_VAULT_PATH` (from `~/.hermes/.env`). Git sync: obsidian skill `references/git-sync.md`.
 Persist transcripts and source files to MinIO

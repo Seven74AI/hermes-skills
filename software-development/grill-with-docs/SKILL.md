@@ -14,7 +14,20 @@ Interview me relentlessly about every aspect of this plan until we reach a share
 
 Ask the questions one at a time, waiting for feedback on each question before continuing.
 
+**Pitfall — bundling questions:** It is tempting to group related questions together
+("four things to decide: A, B, C, D") to move faster. Don't. The user will say
+"one by one pls" and you'll lose time backtracking. Even when sub-questions seem
+tightly coupled, present them individually. Exception: yes/no confirmations on a
+single recommendation can be paired.
+
 If a question can be answered by exploring the codebase, explore the codebase instead.
+
+**Pitfall — technical jargon:** When the user says "I don't understand" or "explain
+it better," do NOT respond with more technical detail or alternative library names.
+The user is telling you the abstraction level is wrong. Switch to analogies and
+concrete examples — restaurant waiters, signs on doors, people standing in aisles.
+Once understanding clicks, return to precise terminology. More jargon = more
+confusion, not more clarity.
 
 </what-to-do>
 
@@ -74,11 +87,56 @@ When domain relationships are being discussed, stress-test them with specific sc
 
 When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible — which is right?"
 
+### Verify technical claims against documentation
+
+When making claims about what a library, language, or tool can do, verify against the
+actual documentation — not memory or assumption. Use Context7 MCP, web_search for
+official docs, or read the source code. Never assert "Python does X" or "Flask supports Y"
+without checking. The user catches invented claims ("Did you invent any of this?").
+
+**Pitfall — asserting without evidence:** The most damaging pattern is presenting a
+technical claim as fact when you haven't checked. Every claim about library behavior
+must have a source. When you present findings, separate what you found from what you
+propose:
+
+```
+Found (in docs/code):   "asyncio.Process.wait() has no timeout parameter"
+Proposed (my idea):     "We could use readline() streaming to replace timeouts"
+```
+
+This lets the user evaluate the evidence independently from your recommendation.
+
+### Challenge decisions with alternatives
+
+After a decision seems settled, actively search the docs for better alternatives.
+Ask: "Is there a different API, pattern, or library that does this better?" The user
+will ask this anyway ("challenge what we choose with python docs to see if we had
+better alternative"). Be the one to raise it first. Present 2-3 alternatives with
+tradeoffs, even if none are better — the act of searching proves the decision is
+sound, not lazy.
+
 ### Update CONTEXT.md inline
 
-When a term is resolved, update `CONTEXT.md` right there. Don't batch these up — capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
+When a term is resolved, update `CONTEXT.md` right there — within the same questioning turn, not
+batched for later. Don't wait for the user to ask "are you updating the context as we speak?"
+If you answer 4+ questions without a write, you're behind. The document must stay in sync
+with the conversation so both parties share a single source of truth.
 
-`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
+**Pitfall — deferred updates:** The most common failure mode is answering several questions
+in a row, accumulating decisions, then batch-writing CONTEXT.md at the end. This creates a gap
+where the user and agent have diverging mental models. The user catches it because they
+remember every decision; the agent doesn't notice the drift. Writes should happen every
+2-3 resolved questions minimum.
+
+`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md`
+as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary
+and nothing else.
+
+**Greenfield projects:** When no domain model exists yet, `CONTEXT.md` starts as an
+architecture decisions document — each resolved question becomes a section. As terminology
+crystallizes, a Glossary section is added. Once the glossary exists, begin challenging
+the user's terms against it. The document evolves from decisions → glossary, not the
+other way around. See `references/kb-agent-context-example.md` for a worked example.
 
 ### Offer ADRs sparingly
 
@@ -95,3 +153,7 @@ If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](
 ## Relationship to `grill-me`
 
 This skill supersedes `grill-me`. The core interviewing loop is identical, but `grill-with-docs` adds domain-model integration: it reads `CONTEXT.md` for the project's glossary, challenges terminology against it, updates it inline as decisions crystallize, and offers ADRs for load-bearing reversals. Prefer `grill-with-docs` for any project that has (or should have) a domain glossary.
+
+## References
+
+- `references/kb-agent-context-example.md` — worked example of a greenfield grilling session producing a full architecture CONTEXT.md

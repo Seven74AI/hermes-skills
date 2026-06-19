@@ -64,6 +64,8 @@ Use `session_search()` — the FTS5-backed function, not raw file reads.
 
 **CRITICAL: FTS5 searches message *content*, not session metadata.** The `query` parameter matches words inside messages — it cannot filter by `source`, `model`, or other session-level fields. A query like `"NOT cron"` excludes sessions where the word "cron" appears in messages, which is *accidentally* useful (cron system prompts contain "cron") but not semantically correct. A query like `"interactive"` matches any session whose messages contain that word, regardless of `source`.
 
+**CRITICAL: Broad FTS5 queries return massive results (>500KB).** OR-heavy queries like `"error OR fix OR crash OR decision OR deploy OR create OR merge"` routinely match hundreds of messages across dozens of sessions, producing 500KB–1.2MB responses. These get **persisted to `/tmp/hermes-results/call_XX_<random>.txt`** with a preview (first 1500 chars) in the tool output. The agent gets a file path, not inline content. **Do NOT try to process these inline** — use `terminal` with `python3 -c` to grep or slice the persisted file (e.g., `python3 -c "print(open('/tmp/hermes-results/call_00_XXX.txt').read()[5000:8000])"`). Better yet, use **narrower queries** — targeted keywords like `"kanban block watchdog completed ticket"` produce manageable results (5-20 messages) while still finding relevant sessions. The broad queries are only useful for discovery when you don't know what you're looking for; once you have context, switch to targeted queries or scroll with `session_search(session_id=..., around_message_id=...)`.
+
 **Morning Report queries (what actually works):**
 
 1. **Browse recent** (no args): `session_search()` — returns 3 most recent sessions chronologically (NOT 10)

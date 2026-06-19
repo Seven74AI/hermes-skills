@@ -46,9 +46,9 @@ mkdir -p /tmp/books_extracted
 unzip /tmp/books_archive_<batch>.zip -d /tmp/books_extracted
 ```
 
-### Step C: Identify books
+### Step C: Identify and create tickets
 
-List only the book files (ePub, PDF, MOBI, AZW3) and present them to the user for confirmation before creating tickets:
+List the book files and auto-create one ticket per book — no user confirmation needed:
 
 ```bash
 find /tmp/books_extracted -type f \( -iname "*.epub" -o -iname "*.pdf" -o -iname "*.mobi" -o -iname "*.azw3" \) | sort

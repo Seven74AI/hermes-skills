@@ -136,6 +136,8 @@ yt-dlp --cookies /tmp/ig_cookies.txt \
 
 **Rate-limiting is mandatory** — without it, Instagram flags the account. The settings above mimic human scrolling (~8s between requests, 15s between downloads, 2MB/s cap).
 
+**Codec pitfall — VP9 in MP4 IS mobile-compatible.** Instagram serves both H.264 (`avc1`) and VP9 (`vp09`) streams. The format `bv*[height<=720]+ba` lets yt-dlp pick the best available — often VP9, which is 30-50% smaller than H.264 at equivalent quality. VP9 in MP4 container is supported by Safari since iOS 14 (2020) and Chrome Android since 4.4 KitKat (2013). Do NOT add `[vcodec^=avc1]` to restrict to H.264 — it's unnecessary and may block the only available stream. If a video doesn't play on mobile, suspect moov atom position, HTTP vs HTTPS delivery, or network issues — not the codec.
+
 #### Then diarize + transcribe (canonical scripts, same as YouTube)
 
 **Follow `references/video-pipeline-global.md`:** `background=true, notify_on_complete=true`

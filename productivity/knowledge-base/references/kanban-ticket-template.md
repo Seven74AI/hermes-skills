@@ -41,7 +41,7 @@ Lot X/N — N reels Instagram. Rate-limit strictly: sleep 8-15s between Reels, m
 3. URL
 ...
 
-For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides (HARD CAP 2). Diarization MANDATORY for ALL video — use canonical scripts/diarize.py + scripts/transcribe.py (never skip, even for apparent monologues). large-v3 whisper, cpu_threads=6. **Language: content in source language, labels in English.** Save to Knowledge base/. Push after each note.
+For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides (HARD CAP 2). Diarization MANDATORY for ALL video. **ALWAYS run diarization and transcription with `terminal(background=true, notify_on_complete=true)` + `process(action="wait")` — NEVER inline/foreground.** See `video-pipeline-global.md` and `pipeline-instagram.md` for the exact commands. large-v3 whisper, cpu_threads=6. **Language: content in source language, labels in English.** Save to Knowledge base/. Push after each note.
 ```
 
 For mixed batches (Instagram + Threads):
@@ -52,7 +52,7 @@ Batch X — N URLs. Rate-limit strictly: sleep 8-15s between Reels, max 2MB/s.
 N. URL — Auteur/Topic (optional annotation)
 ...
 
-For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. Diarization MANDATORY for ALL video — use canonical scripts/diarize.py + scripts/transcribe.py (never skip, even for apparent monologues). For carousel posts: extract all slides. For Threads: try web_extract or browser. **Language: content in source language, labels in English.** Save to Knowledge base/. Push after each note. 2 transcriptions max per worker.
+For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. Diarization MANDATORY for ALL video — use canonical scripts/diarize.py + scripts/transcribe.py (never skip, even for apparent monologues). **⛔ ALWAYS run diarization and transcription with `terminal(background=true, notify_on_complete=true)` + `process(action="wait")` — NEVER inline/foreground.** For carousel posts: extract all slides. For Threads: try web_extract or browser. **Language: content in source language, labels in English.** Save to Knowledge base/. Push after each note. 2 transcriptions max per worker.
 ```
 
 ## Assignee selection

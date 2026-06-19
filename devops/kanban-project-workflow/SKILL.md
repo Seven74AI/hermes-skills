@@ -952,6 +952,29 @@ bulk-archived at the exact same second (14:34 UTC May 24) with no completion eve
 The kanban block watchdog has **no bridge to GitHub**. If you manually merge a
 PR, the kanban task stays `blocked` and the watchdog keeps escalating (every 5 min).
 
+### Pitfall: PR URL Comments Block Respawn After Review
+
+When tasks produce PRs, the coder's handoff comment contains the PR URL. Even after
+the reviewer approves and unblocks, the `active_pr` respawn guard sees the PR URL
+in the comment and blocks re-spawn for 24h. Symptom: `respawn_guarded` events with
+reason `active_pr`, task stuck at `ready`.
+
+**This hits EVERY phase in a chained series.** Each phase's coder opens a PR →
+comments the URL → blocks for review. After review approval, the task is unblocked
+but the guard immediately blocks it again because the PR URL is still in the comment.
+
+**Fix — delete the PR URL comment after merge:**
+```python
+import sqlite3
+conn = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+conn.execute("DELETE FROM task_comments WHERE task_id = '<id>' AND body LIKE '%github.com%pull%'")
+conn.commit()
+conn.close()
+```
+
+**Prevention:** The CI watchdog (`kanban-ci-watchdog`) auto-deletes these. If not
+running, clean up manually after each phase review completes.
+
 **ALWAYS complete the kanban task after a manual merge:**
 ```bash
 hermes kanban --board <board> unblock <task_id>

@@ -344,3 +344,32 @@ done
 - **Review-gate with review task still pending** → let the review process work
 - **Token needed that we genuinely don't have** → block with clear request to user
 - **Task that has failed 10+ times with same error** → something is fundamentally wrong, ask user
+- **False positive: worker alive but blocked on `process wait`** → see section 10 below
+
+### 10. False positive: watchdog auto-block despite worker alive (process wait starvation)
+
+**What it means**: The watchdog's Phase 2b rule (`running >1h, no heartbeat >30min`) flagged the task as stuck, but the worker was alive the whole time — it was blocked inside `process(action="wait")` waiting for a long-running background task (transcription, build, video encode). The worker couldn't send heartbeats because the agent loop was blocked.
+
+**Why it happens**: `process(action="wait")` blocks the agent loop completely — no tool calls, no heartbeats. The claim IS extended every ~15 min via `pid_alive` (the dispatcher checks the PID), but the watchdog only looked at `last_heartbeat_at`, not claim extensions. The dispatcher writes `claim_extended` events to `task_events` with `reason: "pid_alive"` — these are proof the worker PID is alive.
+
+**Diagnosis — check if worker was actually alive**:
+```bash
+python3 -c "
+import sqlite3, json, time
+db = sqlite3.connect('/root/.hermes/kanban/boards/<board>/kanban.db')
+rows = db.execute('''SELECT payload, created_at FROM task_events
+    WHERE task_id='<task_id>' AND kind='claim_extended'
+    ORDER BY created_at DESC LIMIT 5''').fetchall()
+NOW = time.time()
+for p, ts in rows:
+    d = json.loads(p)
+    ago = int(NOW - ts)
+    print(f'{ago}s ago | pid={d.get(\"worker_pid\")} | reason={d.get(\"reason\")}')
+"
+```
+
+If `claim_extended` events occurred with `reason=pid_alive` right up to the block time → the worker was alive, just blocked on `process wait`. The block was a false positive.
+
+**Action**: Unblock immediately. The worker was making progress.
+
+**Prevention**: The `check-crash-loops.py` watchdog now checks `claim_extended` events before auto-blocking. The rule: if ANY `claim_extended` event happened AFTER the last heartbeat (`last_claim > last_hb`), the worker is considered alive and skipped. This catch-all logic is independent of timing — claim extension intervals vary (typically 15 min but can spike to 20+ min under load). Fix applied 2026-06-18 after two false-positive blocks in 24 hours (t_b1551ac8, t_1b568a88 — both researcher-videos workers mid-transcription).

@@ -48,6 +48,14 @@ read_file("test-results.json")
 `process wait` is a single call that passively blocks — no polling, no
 sleep-loop. **One `process wait` replaces 50-100 polling iterations.**
 
+**⛔ Watchdog awareness:** `process wait` blocks the agent loop, so the worker
+can't heartbeat. The Block Watchdog's timeout-loop detection may flag this as
+"stuck." The fix (`check-crash-loops.py`, 2026-06-18) checks claim extensions
+(`pid_alive` events from the dispatcher) before auto-blocking — if a claim was
+extended after the last heartbeat, the worker is alive and should be skipped.
+Full diagnosis and the claim system explanation:
+`references/watchdog-claim-interaction.md`.
+
 ### Anti-patterns that kill your budget
 
 | ❌ Death pattern | ✅ Life pattern |
@@ -310,6 +318,7 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
 - Complete a task you didn't actually finish. Block it instead.
 - Process a URL that was delegated to a child ticket. When a batch parent delegates individual items to children, the next worker on the parent must check comments for delegation markers (e.g., "Reel X delegated to child t_XXXX") and skip those items. Parallel parent+child processing of the same URL wastes CPU/RAM and produces duplicate work. Observed 2026-06-05: two researcher-videos workers simultaneously transcribed the same 148s Reel.
+- **Use heredocs, pipe-to-interpreter, emojis, or `shell=True` in automated recovery/watchdog scripts.** The Tirith security scanner blocks these patterns with `pending_approval` — in a cron job with no interactive user, this is a silent failure. The command never executes but no error is raised. A DB repair that should have taken 1 attempt took 3 across multiple watchdog sessions (2026-06-17/18). Safe patterns: `subprocess.run()` with list args, write standalone `.py` files instead of inline scripts, plain ASCII only. Full reference: `references/tirith-safe-cron-scripts.md`.
 
 - **Create continuation children for batch overflow.** When a worker can't finish its batch and creates an overflow child via `kanban_create`, AND the planner already created the next batch as a child of the same parent, both become `ready` simultaneously when the parent completes → parallel dispatch of CPU-heavy workers → resource saturation. Use the Memento Pattern instead: `kanban_block` with a `handoff.md` in the workspace. One task = one worker at a time. Observed 2026-06-05: t_6d953883 completed → continuation child t_d00baacc AND planner chain child t_0f11f419 both dispatched → 4 whisper processes, load 15, 420MB free RAM, 5GB swap, 7 failed transcription attempts.
 
@@ -361,6 +370,8 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 **No `cancel` command — use `archive` to remove dead tasks.** The CLI has `archive` but no `cancel`. When you need to clean up duplicate/spurious/obsolete tasks (e.g. multiple identical review tasks created for the same parent), use `hermes kanban --board <board> archive <task_id>`. Archived tasks still appear in counts but are excluded from `list` by default.
 
 **`respawn_guarded` / `active_pr` — 24h comment window blocks respawn.** The dispatcher blocks respawn when a task comment from the last 24 hours contains a GitHub PR URL (`_RESPAWN_GUARD_PR_WINDOW = 86400` in `hermes_cli/kanban_db.py`). This means: once a worker comments a PR URL (e.g. `https://github.com/Seven74AI/shop/pull/88`), the task is blocked from respawning for a full day — even after the PR is merged or closed. The guard checks task_comments, not the GitHub API.
+
+**Claim system & liveness:** When a worker does `process wait` for heavy tasks, heartbeats stop but the claim is extended via `pid_alive` every ~15 min. The watchdog must check `last_claim_ext > last_heartbeat` before auto-blocking for "no heartbeat." Full details: `references/claim-system-and-liveness.md`. See also: `references/diagnosing-blocked-tasks.md`.
 
 **Automated cleanup (2026-05-23):** The CI watchdog (`~/.hermes/scripts/ci-watchdog-light.py`) now deletes PR URL comments automatically when it merges a labeled PR (`kanban:TASK_ID`). Tasks going through the label-based CI pipeline are covered — no manual SQL needed. For tasks without `kanban:` labels or with review-only PR URLs (e.g. `pull/181#pullrequestreview-xxx`), manual cleanup is still required.
 
@@ -445,6 +456,10 @@ Full diagnostic data from the 2026-06-05 incident and the OOM confirmation: `ref
 
 **False-positive budget blocks from background waits.** A worker that uses `background=true` + heartbeats while waiting for a long CPU task (transcription, large build, video encode) can hit the 60-turn checkpoint despite having minimal token context (< 5K tokens). The turn counter doesn't distinguish "working turns" from "waiting turns." This is NOT the smart/dumb zone problem Matt Pocock warned about — it's a false positive of the turn-based checkpoint system. When the transcription/build finishes right after the block, just re-dispatch. See `references/smart-zone-vs-turn-budget.md`.
 
+**Watchdog false-positives during process wait.** The crash-loop watchdog auto-blocks tasks with "no heartbeat >30min" — but `process(action="wait")` blocks the agent loop, so heartbeats CAN'T be sent. The claim system (15-min TTL, extended by the gateway via `pid_alive`) provides an independent liveness signal. The watchdog fix: check if `claim_extended > last_heartbeat` before flagging. See `references/kanban-claim-system.md` for the full mechanism.
+
+**⛔ `process wait` blocks heartbeats but does NOT mean the worker is stuck.** When you use `process(action="wait")`, the agent loop is blocked — you physically cannot call `kanban_heartbeat()`. This is NORMAL and EXPECTED. The kernel extends your claim every ~90s via `pid_alive` — that's your real liveness signal. The watchdog checks claim extensions before auto-blocking. Do NOT avoid `process wait` out of fear of looking stuck; you will get falsely flagged if you use inline polling instead. `process wait` is the correct pattern and the system handles it.
+
 **Project .env tokens are NOT git tokens.** Many project `.env` files contain `GITHUB_TOKEN="MOCK_GITHUB_TOKEN"` (or similar mock values) for the application's GitHub OAuth feature (`api.github.com` API calls). These are NOT the token needed for `git push`. When a task requires pushing to GitHub:
 - Use the git remote URL — it should already be configured with a real token (`https://oauth2:TOKEN@github.com/...`). Run `git remote -v` to verify.
 - If the remote is broken, get the real token from the main Hermes environment (not the project `.env`).
@@ -503,6 +518,8 @@ This is the #2 cause of budget exhaustion: the worker launches correctly in back
 **Dispatcher TERMINAL_TIMEOUT override:** When spawning workers, `_default_spawn` calls `_worker_terminal_timeout_env(task.max_runtime_seconds, ...)` (kanban_db.py:5516). If `max_runtime_seconds` is set, TERMINAL_TIMEOUT is overridden to `max(1, runtime - 30)`. If not set, the gateway's env TERMINAL_TIMEOUT is inherited (or the code default of 180s). This means `process(action="wait")` can time out at 180s even when the worker passes `timeout=3600` — the env var caps all process waits.
 
 **OOM is the #1 killer of CPU/RAM-heavy background processes, not SIGTERM from the agent loop.** Thorough investigation 2026-06-05 (traced every kill path in the codebase: claim expiry, max_runtime, crashed detection, TERMINAL_LIFETIME, process_registry.wait, agent.close, interrupt mechanism, step_callback, gateway agent cache eviction, kanban_heartbeat side effects, cgroup limits) found NO code path that kills background processes during normal kanban worker operation. Background processes tested successfully: 8-min sleep loop, 2GB+CPU stress test, and actual large-v3 transcription (19 min). All completed cleanly. The earlier "SIGTERM" reports were actually foreground timeouts (exit 124) and OOM SIGKILLs (exit -9) from parallel whisper processes. With a single worker, background mode works perfectly. Always check `free -h` and `ps aux | grep transcribe` before assuming a kill is internal — it's almost always resource exhaustion.
+
+**⛔ `process wait` blocks heartbeats — this is NORMAL, not a bug.** When you call `process(action="wait")`, the agent loop is blocked — you physically cannot call `kanban_heartbeat()` during the wait. This does NOT mean you're stuck. The kernel extends your claim every ~15 min via `claim_extended` events with `reason=pid_alive` — that's your real liveness signal. The watchdog checks for recent claim extensions before auto-blocking. Do NOT avoid `process wait` out of fear of looking stuck; use inline polling instead and you'll burn your turn budget. `process wait` is the correct pattern. Full claim system details: `references/claim-system.md`.
 
 **Disk saturation from scratch workspaces.** Each `scratch` workspace clones the full project repo (including node_modules). At 1.5–2.7 GB per workspace, 25 completed tasks can consume 40+ GB.
 - An automated GC cron job (`eb1ab33f9bf4`, every 15m) uses `~/.hermes/scripts/kanban-gc-workspaces.py` to delete workspaces of done/archived tasks older than 5 minutes.
