@@ -1,6 +1,8 @@
 ---
 date: YYYY-MM-DD
-source: <chaîne YouTube>, <date publication>
+created: YYYY-MM-DD HH:MM:SS
+modified: YYYY-MM-DD HH:MM:SS
+source: "<chaîne YouTube>, <date publication>"  # MUST be quoted — may contain `:`
 source_url: https://youtube.com/watch?v=VIDEO_ID
 source_files:
   video: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/videos/<slug>.webm

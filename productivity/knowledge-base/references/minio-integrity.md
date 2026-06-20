@@ -7,8 +7,8 @@ happen when workers upload wrong formats (`.srt` instead of `.json`) or skip upl
 
 ```bash
 # Extract minio:// references from frontmatter, verify each
-grep -oP 'minio://\S+' "Knowledge base/<slug>.md" | while read ref; do
-  path=$(echo "$ref" | sed 's|minio://|minio/|')
+grep -oP 'source_files:.*$' "Knowledge base/<slug>.md" | while read ref; do
+  path=$(echo "$ref" | sed 's|http://vmi3304846.tail5c02a1.ts.net:9000/|minio/|')
   if mc ls "$path" >/dev/null 2>&1; then
     echo "OK: $ref"
   else
@@ -27,7 +27,7 @@ git log --oneline --since="24 hours ago" -- "Knowledge base/" |
     git diff-tree --no-commit-id --name-only -r "$hash" -- "Knowledge base/"
   done | sort -u | while read note; do
     echo "=== $note ==="
-    grep -oP '(source_file|transcript_file):\s*minio://\S+' "$note" |
+    grep -oP 'source_files:\s*$' "$note" |
       while read line; do
         path=$(echo "$line" | sed 's|.*minio://|minio/|')
         mc ls "$path" >/dev/null 2>&1 && echo "  OK: $path" || echo "  MISSING: $path"

@@ -92,7 +92,7 @@ Save full transcriptions retrievably:
 mc cp /tmp/ig_transcript_XXXXX.json minio/knowledge-base/transcripts/<slug>.json
 ```
 
-Frontmatter: `transcript_file: minio://knowledge-base/transcripts/<slug>.json`
+Frontmatter: `source_files.transcript: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/transcripts/<slug>.json`
 
 ### IG transcription JSON formats
 

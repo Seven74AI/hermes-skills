@@ -315,23 +315,15 @@ actions (click, scroll) are unavailable. Even with long `waitFor` values,
 it only captures the initially visible slides plus some related posts.
 The results are inconsistent across runs.
 
-### Method: Playwright + cookies (2 slides guaranteed, $0 cost)
+### Method: Playwright + cookies (⚠️ unreliable in headless, try cookies first)
 
-Instagram loads only the first 1-2 carousel slides on initial page load. The remaining
-slides are fetched via API calls triggered by carousel navigation — which is
-**blocked by Instagram's anti-bot detection in headless browsers** (even with
-`--headless=new`, touch events, mobile UA, and anti-webdriver scripts). The hard cap
-is 2 slides.
+Instagram detects headless Chromium **even with valid session cookies** —
+tested 2026-06-19 with Netscape-format cookies containing valid `sessionid`,
+the server redirects to `/accounts/login/` consistently. If cookies fail in
+headless, the carousel is non-extractable via automation — mark as SKIP, do
+not retry.
 
-The full pipeline for Instagram image carousels:
-
-1. **yt-dlp → metadata**: caption, likes, author, slide count (`playlist_count`)
-2. **Playwright script → first 2 slide images + alt text**: see `scripts/ig-carousel-extract.py`
-3. **No vision_analyze needed**: Instagram puts the full slide text in each image's `alt` attribute
-
-Total cost: **$0** (no LLM calls, no vision API).  
-⚠️ Slides 3+ are NOT extractable. If critical content is in later slides,
-the user must screenshot them manually.
+If cookies DO work (rare, may depend on account/region):
 
 Install Playwright once:
 ```bash

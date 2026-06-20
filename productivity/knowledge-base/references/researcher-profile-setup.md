@@ -83,7 +83,7 @@ hermes profile create researcher-videos --clone-from researcher
 # Copy updated skills (with YouTube pipeline)
 cp /root/.hermes/skills/productivity/knowledge-base/references/pipeline-youtube.md \
   /root/.hermes/profiles/researcher-videos/skills/productivity/knowledge-base/references/
-cp /root/.hermes/skills/productivity/knowledge-base/references/youtube-note-template.md \
+cp /root/.hermes/skills/productivity/knowledge-base/templates/youtube-note-template.md \
   /root/.hermes/profiles/researcher-videos/skills/productivity/knowledge-base/references/
 cp /root/.hermes/skills/productivity/knowledge-base/SKILL.md \
   /root/.hermes/profiles/researcher-videos/skills/productivity/knowledge-base/SKILL.md

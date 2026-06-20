@@ -18,10 +18,10 @@ Full CONTEXT.md at `/root/kb-agent/CONTEXT.md` on the VPS.
 | 6 | LLM is stateless (prompt → response). Tools: `read_file`, `write_file`, `search_files` always; `web_search` conditional per content type. |
 | 7 | Template injected into system prompt by Python orchestrator. Varies by content type. |
 | 8 | Chunking at ~50K token boundary with overlap at natural boundaries for large content. |
-| 9 | Quality gates run by orchestrator AFTER LLM writes note: line count, quote count, coverage, multi-pass. "Never push v1" enforced programmatically. |
+| 9 | Quality gates run by orchestrator AFTER LLM writes note: line count, quote count, coverage, multi-pass. **MUST raise StepError(FAIL) when gate fails** — returning JSON with `passed: false` is silently ignored by the consumer, which continues to minio_upload + git_push. "Never push v1" enforced programmatically via exception, not return value. |
 | 10 | See Also as separate post-synthesis LLM call using vault search results. Eliminates ghost wikilinks. |
 | 11 | Single async process. Semaphore(1) for video (sequential, RAM safety). Text parallel. |
-| 12 | Error model: RETRY (5s→15s→60s→3min→PAUSE) / PAUSE (operator resumes via web button) / FAIL (unrecoverable). |
+| 12 | Error model: RETRY (5s→15s→PAUSE after 2 retries) / PAUSE (operator resumes via web button) / FAIL (unrecoverable). Max retries=2 per user preference — short backoff, fast human review. |
 | 13 | Level D logs — every step output, every LLM prompt archived. FTS5 searchable. |
 | 14 | No push notifications. Website is the dashboard. |
 | 15 | Fully separate infrastructure from Hermes for A/B comparison. |

@@ -11,7 +11,7 @@ Obsidian Vault (Git-synced)          MinIO (local, Tailscale-accessible)
 │   ├── sante/note.md                       ├── books/
 │   └── books/note.md                      │   └── parasites-humbert.epub
 │       └── frontmatter:                    ├── reels/
-│           source_file: https://...        │   └── DR-rVE1ggZH.mp4
+│        source_files.video: https://...    │   └── DR-rVE1ggZH.mp4
 │                                           └── articles/
 │                                               └── threads-adhd-2026.txt
 ```
@@ -30,7 +30,9 @@ echo "https://<minio-host>:9000/knowledge-base/books/parasites-humbert.txt"
 ## Frontmatter convention
 
 ```yaml
-source_file: https://vmi3304846:9000/knowledge-base/books/parasites-humbert.epub
+source_files:
+  source: https://vmi3304846:9000/knowledge-base/books/parasites-humbert.epub
+  text: https://vmi3304846:9000/knowledge-base/books/parasites-humbert.txt
 ```
 
 The `source_file` field is a permanent link, unlike `/tmp/` paths which may be cleaned up.

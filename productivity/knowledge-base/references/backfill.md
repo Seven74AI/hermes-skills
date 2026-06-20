@@ -16,13 +16,13 @@ for root, dirs, files in os.walk('Knowledge base/'):
         
         has_url = bool(re.search(r'^source_url:', content, re.MULTILINE))
         has_minio = bool(re.search(r'^minio:', content, re.MULTILINE))
-        has_sourcefile = bool(re.search(r'^source_file:.*vmi3304846.*knowledge-base', content, re.MULTILINE))
+        has_sourcefiles = bool(re.search(r'^source_files:', content, re.MULTILINE))
         
         if has_url and not has_minio and not has_sourcefile:
             # TRUE gap — needs backfill
             pass
         elif has_sourcefile and not has_minio:
-            # Already archived via source_file — just rename field to minio:
+            # Already archived — just standardize to source_files:
             pass
 ```
 
@@ -35,18 +35,18 @@ for root, dirs, files in os.walk('Knowledge base/'):
 | `threads.com` / `threads.net` | Text ± video | `knowledge-base/threads/` | Firecrawl JS |
 | `substack.com` | Text | `knowledge-base/articles/` | Firecrawl |
 | `youtube.com` / `youtu.be` | Video | `knowledge-base/videos/` | yt-dlp |
-| Books (`source_file:`) | Already archived | — | Rename `source_file:` → `minio:` |
+| Books (old `source_file:`/`minio:`) | Already archived | — | Standardize to `source_files:` |
 | Other web | Text | `knowledge-base/articles/` | Firecrawl |
 
 ## Phase 2 — Process by type
 
 ### Books (easiest — content already on MinIO)
 
-These notes have `source_file: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/...` but no `minio:` field. Content is already uploaded. Just rename the field:
+These notes have old `source_file:` or `minio:` fields with MinIO URLs. Content is already uploaded. Just standardize the field:
 
 ```python
-# Replace source_file: with minio: (same URL)
-old = 'source_file: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/foo.epub'
+# Replace source_file: or minio: with source_files:
+old = 'minio: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/foo.epub'
 new = 'minio: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/foo.epub'
 ```
 

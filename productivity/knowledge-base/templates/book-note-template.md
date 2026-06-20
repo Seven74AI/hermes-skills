@@ -1,8 +1,12 @@
 ---
 date: YYYY
-source: Author Name — Book Title (YYYY, Publisher, XXXp.)
+created: YYYY-MM-DD HH:MM:SS
+modified: YYYY-MM-DD HH:MM:SS
+source: "Author Name — Book Title (YYYY, Publisher, XXXp.)"  # MUST be quoted — titles often contain `:`
 source_url: <optional URL>
-source_file: <MinIO URL — http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub>
+source_files:
+  source: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+  text: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.txt
 confidence: verified | plausible | emerging | debunked | untested
 tags: [tag1, tag2, tag3]
 ---

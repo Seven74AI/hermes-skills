@@ -1,7 +1,7 @@
 ---
 name: knowledge-base
 description: "Manage a personal knowledge base in the Obsidian vault: capture and structure information"
-version: 1.12.0
+version: 1.13.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -22,7 +22,7 @@ Uses the `obsidian` skill for file operations. Git push after each note.
 Pipeline: download → diarize → transcribe → summarize → archive with faster-whisper `large-v3`.
 
 - Phase A: `references/pipeline-youtube.md`
-- Phase B: `references/resume-prompt.md` + `references/youtube-note-template.md`
+- Phase B: `references/resume-prompt.md` + `templates/youtube-note-template.md`
 - Kanban pattern: same two-phase flow as Mega (`references/pipeline-mega.md`)
 
 ### Threads
@@ -45,7 +45,7 @@ Route by URL path:
 | Path | Pipeline |
 |------|----------|
 | `/reel/` | `references/pipeline-instagram.md` |
-| `/p/` | `scripts/ig-carousel-extract.py` (first 2 slides; manual screenshots for slides 3+) |
+| `/p/` | `scripts/ig-carousel-extract.py` — best-effort, headless often fails even with cookies. Manual screenshots for all slides when automation fails. |
 
 When the user's description disagrees with the URL path, confirm the type first.
 
@@ -69,7 +69,7 @@ When the user's description disagrees with the URL path, confirm the type first.
 
 `references/pipeline-web.md` — Firecrawl extraction → deep analysis → MinIO archive → Obsidian note. Any website without a dedicated pipeline. Includes Substack, blogs (darioamodei.com), medical references (VIDAL), and other long-form web content.
 
-- **MinIO mandatory.** All web content is ephemeral — pages disappear, sites shut down. Raw markdown from Firecrawl must be uploaded to the `knowledge-base` bucket and referenced via `minio:` in the note frontmatter. See MinIO Architecture below for bucket structure and URL conventions.
+- **MinIO mandatory.** All web content is ephemeral — pages disappear, sites shut down. Raw markdown from Firecrawl must be uploaded to the `knowledge-base` bucket and referenced via `source_files:` in the note frontmatter. See MinIO Architecture below for bucket structure and URL conventions.
 - **Deep treatment always.** No light/surface template. Every note gets section-level analysis, critical context, and nuance assessment — regardless of source or length. The KB is a thinking tool, not an aggregator.
 - Dedup: check vault for existing `source_url` before processing
 - Firecrawl: `http://localhost:3002/v2/scrape` with `formats: ["markdown"]`
@@ -104,14 +104,15 @@ knowledge-base/
 Always use the full Tailscale FQDN so files are reachable from MacBook, iPhone, or any device on the Tailnet:
 
 ```yaml
-minio: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/articles/<slug>.md
+source_files:
+  text: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/articles/<slug>.md
 ```
 
 Never use the `minio://` shorthand — it's not resolvable by other devices on the Tailnet.
 
-### Legacy `source_file:` field
+### Legacy fields
 
-Some older notes use `source_file:` instead of `minio:`. The content IS already archived on MinIO — the field just needs standardizing to `minio:` with the proper Tailscale URL. See Backfill below.
+Some older notes use `source_file:`, `minio:`, or `transcript_file:` — all deprecated. Standardize to `source_files:` with content-appropriate subkeys. The content IS already archived on MinIO. See Backfill below.
 
 ### MinIO CLI
 
@@ -127,10 +128,10 @@ mc cp <file> minio/knowledge-base/articles/<slug>.md
 
 When archiving was not done at note creation time, notes lack the `minio:` field. Backfill procedure:
 
-1. **Identify gaps:** search vault for notes with `source_url` but no `minio:` field (and no `source_file:` pointing to MinIO)
+1. **Identify gaps:** search vault for notes with `source_url` but no `source_files:` field
 2. **Categorize by content type:** Reels need video download, posts need image extraction, text needs Firecrawl markdown. Archive the actual content, not the page wrapper.
 3. **Process by type, easiest first:**
-   - **Books with `source_file:`** → just rename field to `minio:`, content already archived
+   - **Books with old fields** → standardize to `source_files:`, content already archived
    - **Text (Substack, web)** → Firecrawl → `knowledge-base/articles/`
    - **Threads** → needs cookies, Firecrawl JS rendering → `knowledge-base/threads/`
    - **Instagram Posts** → needs cookies, download images + OCR → `knowledge-base/articles/`
@@ -143,7 +144,7 @@ When archiving was not done at note creation time, notes lack the `minio:` field
 
 When the user drops URLs, create tickets on the **`knowledge-base`** board.
 The `default` board is a sandbox only — never create KB tickets there.
-See `references/kanban-ticket-template.md` and `references/kb-board-plan.md`.
+See `templates/kanban-ticket-template.md` and `references/kb-board-plan.md`.
 
 - 5 URLs per ticket; chain with `--parent`
 - 2 video transcriptions per worker session (`video-pipeline-global.md`)
@@ -187,12 +188,12 @@ If `web_extract` is unavailable: `curl` + Googlebot UA (`references/instagram-ex
 4. **Verify** when possible — search, cross-reference
 5. **Tag** via frontmatter (`tags`)
 6. **Create** `Knowledge base/<slug>.md` via `OBSIDIAN_VAULT_PATH`
-7. **Upload raw source to MinIO** — mandatory for all content. See MinIO Architecture below for bucket structure. Text sources → `knowledge-base/articles/<slug>.md`. Reels → `knowledge-base/reels/<slug>.mp4`. Videos → `knowledge-base/videos/<slug>.mp4`. Threads → `knowledge-base/threads/<slug>.<ext>`. Books/PDFs → `knowledge-base/books/<slug>.<ext>`. Transcripts → `knowledge-base/transcripts/<slug>.txt`. Add `minio: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/<folder>/<slug>.<ext>` to note frontmatter.
+7. **Upload raw source to MinIO** — mandatory for all content. See MinIO Architecture below for bucket structure. Text sources → `knowledge-base/articles/<slug>.md`. Reels → `knowledge-base/reels/<slug>.mp4`. Videos → `knowledge-base/videos/<slug>.mp4`. Threads → `knowledge-base/threads/<slug>.<ext>`. Books/PDFs → `knowledge-base/books/<slug>.<ext>`. Transcripts → `knowledge-base/transcripts/<slug>.txt`. Add `source_files:` with appropriate subkeys to note frontmatter.
    - **Verify each upload** immediately — `mc ls minio/knowledge-base/<folder>/<file>` for every file referenced in the note frontmatter. If a file is missing, re-upload before pushing.
 8. **Push:** `cd "$OBSIDIAN_VAULT_PATH" && git add -A && git commit -m "add: <slug>" && git push`
 9. **Find related notes** — BEFORE writing See Also, search the vault for notes related to your topic. Use `search_files(target='content', pattern='<keyword1|keyword2>', path='$OBSIDIAN_VAULT_PATH/Knowledge base/')` with keywords from your note's core topics. Then for each candidate, verify the slug exists with `grep -rl`. Only link to notes that actually exist and are genuinely related. If no existing note is relevant, omit the See Also section entirely.
 10. **Verify wikilinks** — BEFORE pushing, grep every `[[link]]` to confirm it resolves. Ghost wikilinks are the #1 quality failure.
-11. **Confirm** what was saved — re-read the note, verify all `minio://` references resolve (`references/minio-integrity.md`), check diarization was applied (transcripts should have speaker labels, not just `?`)
+11. **Confirm** what was saved — re-read the note, verify all `source_files:` references resolve (`references/minio-integrity.md`), check diarization was applied (transcripts should have speaker labels, not just `?`)
 
 Edge cases (cookies, music-only Reels, delegation): `references/edge-cases.md`
 
@@ -200,69 +201,7 @@ Edge cases (cookies, music-only Reels, delegation): `references/edge-cases.md`
 
 All notes follow the same depth standard as `templates/book-note-template.md`. The lightweight "Claim / Context / Nuances" template is **deprecated** — it produces surface-level journalism, not KB-worthy analysis.
 
-Required depth for every note, regardless of source or length:
-
-```markdown
----
-date: YYYY-MM-DD
-source: <platform/author, date>
-source_url: <optional URL>
-minio: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/<folder>/<slug>.<ext>
-confidence: verified | plausible | emerging | debunked | untested
-tags: [tag1, tag2, tag3]
----
-
-# Title
-
-## Summary
-3-5 sentences. The essential up top. Why this matters, what's the core argument.
-
-## Key Claims / Points
-≥4 specific claims with direct quotes (format `>`) from the source. Each claim gets:
-- The claim itself (what is being asserted)
-- A direct quote as evidence
-- Analysis and context (why it matters, what it implies)
-
-### 1. Claim title
-> « direct quote from the source »
-
-Analysis.
-
-### 2. Claim title
-...
-
-## Section-by-Section / Thematic Analysis
-If the content is structured (essay, article with sections, book chapters), break it down section by section. This is the DOMINANT section — longer than Key Claims + Critical Analysis combined. The reader should understand the full arc of the source.
-
-### Section/Chapter 1: <Title>
-What it argues, key evidence, notable quotes.
-
-### Section/Chapter 2: <Title>
-...
-
-## Context
-Who wrote this, why now, what's their position in the debate. Conflicts of interest, institutional biases, funding sources. 1-2 paragraphs.
-
-## Critical Analysis
-What's genuinely new vs restating? What's omitted? What's the self-interest angle? Methodological or factual issues. Keep shorter than the thematic analysis — the reader needs to understand the content before your critique.
-
-## Nuances
-What the source omits, exaggerates, or distorts. Limitations. Tone (polemical, academic, popularizer).
-
-## Reliability
-✅ verified | ⚠️ plausible | 🔬 emerging | ❌ debunked | ❓ untested
-
-Detailed justification — why this confidence level.
-
-## Sources
-- Original source (full citation)
-- Consulted sources (verification, cross-reference)
-- Raw source archived: `minio:` URL (see frontmatter)
-
-## See Also
-- [[existing-note-slug]] — verified with `grep -rl` before linking
-- Only link to notes that actually exist. No invented wikilinks.
-```
+Required depth for every note, regardless of source or length — see `templates/note-template.md` for the complete common template. Book-specific: `templates/book-note-template.md`. Video-specific: `templates/youtube-note-template.md`.
 
 **Red flag: if the note is shorter than the book-note-template, it's too shallow.** Books get chapter-level depth. Articles get section-level depth. The standard is the same — only the scale differs.
 
@@ -276,9 +215,40 @@ Detailed justification — why this confidence level.
 | 50K-150K chars (300-1000 lines) | 5-8 passes | Read in 200-line chunks, parallel reads where possible |
 | >150K chars (>1000 lines) | 8-15+ passes | Read systematically in 200-line chunks, section by section. Do NOT start writing until you've read EVERY section. Count the source sections/parts BEFORE writing and verify your note covers every one — no exceptions. |
 
-**Pitfall — writing a note before finishing the read.** The most common failure mode: you read 3-4 sections, think you have enough, write the note, and miss 70% of the content. The user WILL notice — they'll say "ya une tonne d'info manquante" or "j'ai toujours pas l'impression que ça parle de tout." This happened with a 234K-char (2335-line) source where 3-4 passes covered only ~800 lines. The fix: after writing the note, run a coverage check — `grep -c "^##" /tmp/source_raw.md` vs `grep -c "^##" note.md` — to catch missing sections before pushing. For unstructured sources, skim every 50th line of the raw file to spot sections you didn't cover.
+- **Pitfall — synthesis from multiple KB notes: read every source first.** When the user asks to synthesize solutions/recommendations from multiple KB notes (e.g. 'all hair growth solutions' or 'everything on oral health'), do NOT start writing after reading 2-3 notes. Read EVERY matching note completely, then synthesize. The user will say 'lit tout pour être sûr de rien rater' — and they are right. A synthesis that misses a source note is incomplete and the user will find the gap. For broad topics matching 20+ notes, read at minimum the 8-10 most directly relevant ones in full before writing.
 
-## Confidence levels
+## Frontmatter standard
+
+All notes MUST use these fields consistently:
+
+| Field | Format | Semantics |
+|-------|--------|-----------|
+| `date` | `YYYY-MM-DD` or `YYYY` | Source content date (publication, posting). Use most complete format available. Books = `YYYY`, content = `YYYY-MM-DD`. |
+| `created` | `YYYY-MM-DD HH:MM:SS` | Timestamp of note creation |
+| `modified` | `YYYY-MM-DD HH:MM:SS` | Timestamp of last modification |
+| `source` | text | Full citation: Author — Title (YYYY, Publisher) |
+| `source_url` | URL or empty | Original URL if applicable |
+| `source_files` | map | Archive files, content-dependent subkeys: |
+
+**`source_files` subkeys by content type:**
+
+| Content type | Subkeys |
+|-------------|---------|
+| Books (ePub/PDF) | `source:` (raw file), `text:` (extracted .txt) |
+| Web / Substack / Threads text | `text:` (Firecrawl .md) |
+| YouTube | `video:` (.webm), `audio:` (.mp3), `transcript:` (.json) |
+| Instagram Reels | `video:` (.mp4), `transcript:` (.json) |
+| Carousels | `slides:` (list of image URLs) |
+
+**Never use bare `minio:`, `source_file:`, or `transcript_file:`** — all unified under `source_files:`.
+| `confidence` | enum | One of: verified, plausible, emerging, debunked, untested |
+| `tags` | YAML list | `[tag1, tag2]` — lowercase, kebab-case |
+
+**Always use `source_files:`** — a map with content-specific subkeys. Never bare `minio:` or `source_file:`.
+
+**YAML quoting — every value containing `:` must be quoted.** A `source:` value like `Author — Title: Subtitle (Year)` breaks YAML parsing because `Title:` is interpreted as a new mapping key. Obsidian falls back to raw YAML display (no Properties). Use `source: "Author — Title: Subtitle (Year)"`. Same for any frontmatter value containing `: ` (colon-space). Run `yaml.safe_load()` on new notes before pushing to catch this.
+
+**`date` is the content's date, not the processing date.** A book published in 2024 gets `date: 2024`, not the date the note was written.
 
 | Level | Meaning |
 |-------|---------|
@@ -296,12 +266,12 @@ When the user asks "qu'est-ce qu'on a sur X ?":
 3. Present findings grouped by confidence
 4. Offer to research and add if nothing matches
 
-Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
+Batch inventory ("titre des done"): `templates/kanban-ticket-template.md`
 
 ## Working principles
 
 - **Deep treatment always.** Every note gets section-level analysis, critical context, and nuance assessment. No surface summaries — the KB is a thinking tool, not an aggregator. Treat every article, post, or page with the same depth as a book chapter. If the content is too thin for deep analysis, it's not KB-worthy.
-- **Archive raw sources on MinIO.** The web is ephemeral — articles disappear, sites shut down, URLs 404. Every source must have its raw content uploaded to the `knowledge-base` MinIO bucket and referenced in the note frontmatter. Text sources go to `knowledge-base/articles/`, videos to `knowledge-base/reels/` or `knowledge-base/videos/`, Threads to `knowledge-base/threads/`, books to `knowledge-base/books/`. The `minio:` field uses the full Tailscale URL: `http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/<folder>/<slug>.<ext>`. The raw archive is never read by the LLM unless explicitly requested — it's insurance against link rot. Tokens are not consumed by storage: content is piped from Firecrawl/curl to disk to MinIO via `mc cp`, bypassing the model entirely.
+- **Archive raw sources on MinIO.** The web is ephemeral — articles disappear, sites shut down, URLs 404. Every source must have its raw content uploaded to the `knowledge-base` MinIO bucket and referenced in the note frontmatter. Text sources go to `knowledge-base/articles/`, videos to `knowledge-base/reels/` or `knowledge-base/videos/`, Threads to `knowledge-base/threads/`, books to `knowledge-base/books/`. The `source_files:` field uses the full Tailscale URL: `http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/<folder>/<slug>.<ext>`. The raw archive is never read by the LLM unless explicitly requested — it's insurance against link rot. Tokens are not consumed by storage: content is piped from Firecrawl/curl to disk to MinIO via `mc cp`, bypassing the model entirely.
 - **Never launch without confirming the plan.** Present what you're about to do, wait for the user's go. They hate when you start executing unilaterally ("T'es fatiguant à partir tout seul"). This applies to backfill, batch operations, and any multi-step pipeline work.
 - Complete every pipeline step — the user will wait for quality
 - **Diarization is mandatory for ALL video content** (YouTube, Instagram Reels, Mega). Use canonical `scripts/diarize.py` + `scripts/transcribe.py`. Never skip diarization — even for apparent monologues (guest intros, Q&A segments, off-camera remarks are common in "solo" videos).
@@ -312,6 +282,7 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 - **Grill when asked.** When the user says "grill me," they want adversarial questioning — not politeness, not "makes sense." Challenge assumptions, find holes, push back hard. This is a deliberate decision-quality check, not aggression.
 - **Pipeline debugging: diagnose first, then confirm, then fix.** When identifying pipeline problems, present the evidence and root cause to the user BEFORE applying fixes. The user will verify on their end and may correct the diagnosis. Do not rush to patch — wait for confirmation, then apply the fix.
 - **Keep skill docs minimal.** Reference files delegate to the main skill or umbrella reference — don't duplicate pipeline steps across files. If a procedure is already covered by loading `knowledge-base`, just say so.
+- **Templates go in `templates/`, not `references/`.** Templates are starting-point documents meant to be copied and filled in (note structures, ticket body templates, prompt templates). References are procedural instructions (pipelines, workflows, how-to guides). If a file shows a skeleton with placeholders like `<slug>`, `YYYY-MM-DD`, or `→`, it belongs in `templates/`. Fixed 2026-06-19: `youtube-note-template.md` and `kanban-ticket-template.md` moved from `references/` to `templates/`.
 - **Happy path only.** Pipeline references must contain only the workflow: what to do, in what order, with what commands. No edge cases, failure modes, deprecated methods, known pitfalls, "✅ FIXED" markers, or bad-path pollution. Those belong in the operator's journal, not in worker-facing skill files.
 - **Verify against primary sources — main directory only.** When investigating the pipeline or answering questions about how the system works, read from the **main skill directory** (`/root/.hermes/skills/productivity/knowledge-base/`), NOT from profile copies. Profile copies under `profiles/researcher*/skills/` are synced every 5 minutes by the Pre-Spawn Health Watchdog but may be stale. The main directory is the single source of truth. Every assumption not grounded in the docs will be caught. When asked to audit the detection model, cross-reference every claim against its source file before asserting. If a reference listed in SKILL.md doesn't exist as a file, say so — don't fill the gap from memory.
 - **Sync profiles after editing skill files.** Worker profiles (`researcher`, `researcher-videos`, `planner`, `reviewer`, `coder`, etc.) have their own copies of the skill directory. After creating a new skill, editing any `SKILL.md`, reference, template, or script, run `scripts/sync-to-profiles.sh`. It syncs **all** productivity skills to **all** profiles that have a `skills/productivity/` directory — not just `knowledge-base` to `researcher`. Workers crash-loop with `Error: Unknown skill(s)` when a ticket references a skill via `--skill` that hasn't been synced to their profile.
@@ -331,16 +302,20 @@ Batch inventory ("titre des done"): `references/kanban-ticket-template.md`
 | Instagram pipeline | `references/pipeline-instagram.md` |
 | Mega / external video | `references/pipeline-mega.md` |
 | Video summarization | `references/resume-prompt.md` |
-| YouTube note template | `references/youtube-note-template.md` |
 | Books | `references/books-extraction.md` |
-| Kanban tickets | `references/kanban-ticket-template.md` |
+| **Note template (common)** | `templates/note-template.md` |
+| **Book note template** | `templates/book-note-template.md` |
+| **YouTube note template** | `templates/youtube-note-template.md` |
+| Kanban tickets | `templates/kanban-ticket-template.md` |
 | Worker profiles | `references/researcher-profile-setup.md` |
 | MinIO | `references/minio-storage.md`, `references/minio-upload.md`, `references/minio-integrity.md` |
 | Dependencies / fresh install | `references/dependencies.md`, `references/fresh-install-checklist.md` |
 | Fact-checking | `references/fact-check-workflow.md` |
 | Web search | `references/web-providers.md` |
+| **Notion synthesis** | `references/notion-synthesis.md` |
 | **KB board plan** | `references/kb-board-plan.md` |
 | **Custom agent architecture** | `references/custom-agent-architecture.md` |
+| **KB Agent (kba)** | `/root/kb-agent/CONTEXT.md` — replacement agent: ingestion, orchestration, synthesis. Dashboard `http://vmi3304846.tail5c02a1.ts.net:5000/`. Board `kb-agent`. Service `systemctl restart kb-agent`. See `grill-with-docs` → `audit-context-vs-code.md` for audit methodology. |
 | **Backfill** | `references/backfill.md` |
 | **Pipeline architecture (rebuild reference)** | `references/pipeline-architecture.md` |
 | **Detection & pre-flight model** | `references/detection-model.md` |

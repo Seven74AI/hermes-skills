@@ -56,7 +56,8 @@ mc cp /tmp/web_raw.md "minio/knowledge-base/articles/${SLUG}.md"
 
 Template per SKILL.md with `minio:` field:
 ```yaml
-minio: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/articles/<slug>.md
+source_files:
+  text: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/articles/<slug>.md
 ```
 
 ## Phase 5 — Git push

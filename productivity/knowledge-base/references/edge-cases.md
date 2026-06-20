@@ -153,7 +153,7 @@ When a URL moves to a child ticket:
 3. Parent comment + handoff.md track `DONE` / `DELEGATED` / `TO-DO`
 4. Resuming parent: read comments and handoff before the next URL
 
-Full template: `kanban-ticket-template.md` (Parent/child delegation).
+Full template: `templates/kanban-ticket-template.md` (Parent/child delegation).
 
 ## Section labels
 

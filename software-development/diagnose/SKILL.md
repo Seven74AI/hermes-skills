@@ -139,6 +139,14 @@ See `references/token-redaction.md` for detailed examples and the real-world inc
 
 Do NOT invent explanations like "known bug" or "probably a version issue" without evidence. When unsure, say "I don't know — let me check." If the user asks "how do you know," point to the source or admit uncertainty.
 
+### Codebase auditing: verify before asserting
+
+When asked to "review the codebase" or "audit for issues," **read the files FIRST, present findings AFTER.** Never state a claim about a file you haven't read. Every finding must include file + line number as evidence. Presenting a list of "bugs" then being challenged and retracting half of them destroys credibility irreversibly.
+
+Pattern: read → verify each claim → rank severity → present. Not: guess → present → get challenged → read → retract.
+
+This applies to: code reviews, drift audits, PR reviews, architecture assessments, security scans — any task where you're making claims about code that exists on disk.
+
 ## Relationship to `systematic-debugging`
 
 This skill supersedes `systematic-debugging`. Key improvements: (1) feedback-loop construction as the central discipline, (2) falsifiable multi-hypothesis ranking before testing, (3) regression test at the correct seam only. The `systematic-debugging` skill is retained for its reference files on credential debugging, parent-config masking, and e2e mock debugging.

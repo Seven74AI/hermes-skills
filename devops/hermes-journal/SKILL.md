@@ -98,6 +98,13 @@ The Morning Report runs at 06:00 and writes 1-3 journal entries. The Daily Journ
 
 3. **Find additional entries the Morning Report missed.** The Morning Report focuses on the biggest stories. The Daily Journal should capture secondary-but-durable lessons: tooling gaps (gh auth after token rotation), recovery patterns (kanban board re-enablement via touch), configuration drift, and debugging techniques the Morning Report touched on in prose but didn't formalize as entries.
 
+   **Session search efficiency — avoid broad board-name queries.** Queries like `session_search(query="kanban-orchestrator")` return massive results (500K+ chars) because cron job prompts embed the full skill content, and FTS5 matches on it. These results are dominated by skill text, not actual technical lessons. Similarly, broad queries like `"error OR crash OR fail"` return every cron job that ran normally. Instead, use targeted queries that match specific durable-lesson signals:
+   - `"skill_manage OR skill_create OR patch"` — finds skill edits/creations during interactive sessions
+   - `"error OR crash OR corruption OR WAL"` — finds genuine incidents (skip sessions that only mention errors in Morning Report prose)
+   - `"config set OR config change OR hermes config"` — finds configuration changes
+   - `"source:telegram OR source:cli"` — interactive sessions (if session_search backend supports source filtering)
+   - **Skip sessions** that are purely cron job executions (disk cleanup returning ".", watchdog runs with no trigger, routine kanban dispatches) — these almost never contain new durable lessons.
+
 4. **Write only genuinely new entries.** If the Morning Report already wrote it, skip it even if your angle is slightly different. A single Notion entry per topic is the goal.
 
 ## Weekly Cron Job

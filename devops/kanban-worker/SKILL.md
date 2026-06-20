@@ -162,7 +162,18 @@ is documented in `kanban-project-workflow`. Quick reference:
 3. CI-watchdog merges if green, unblocks you
 4. Respawn → verify merge → `kanban_complete`
 
-NEVER post GitHub PR URLs in comments — triggers `respawn_guarded: active_pr` for 24h.
+## PR URLs in comments = 24h deadlock
+
+Never post a GitHub PR URL (https://github.com/.../pull/...) in a kanban comment or handoff. Even after the PR is merged or closed, the dispatcher blocks respawn for 24 hours. The guard checks task_comments, not the GitHub API.
+
+The only way to reference a PR:
+1. Label-based CI workflow: `gh pr create --label "kanban:$HERMES_KANBAN_TASK"` — CI watchdog auto-cleans on merge
+2. If you must mention a PR number in text, write `PR #<number>` as plain text (no URL)
+
+If you already posted a PR URL by mistake, delete it from the DB:
+```sql
+DELETE FROM task_comments WHERE task_id='<id>' AND body LIKE '%github.com%pull%';
+```
 
 **Coding task that needs review — DO NOT JUST BLOCK. Create the reviewer task THEN block.**
 

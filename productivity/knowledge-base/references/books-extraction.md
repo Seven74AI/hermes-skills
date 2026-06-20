@@ -170,16 +170,18 @@ mc ls "minio/knowledge-base/books/<slug>"
 
 For PDFs, same pattern: `mc cp /tmp/book.pdf "minio/knowledge-base/books/<slug>.pdf"`
 
-**File naming:** Use the same slug as the note filename (matching what goes in `source_file` frontmatter).
+**File naming:** Use the same slug as the note filename (matching what goes in `source_files` frontmatter).
 
 ### Step 6: Create structured note
 
 **Load the template first:** `skill_view(name='knowledge-base', file_path='templates/book-note-template.md')`
 
-Save to `Knowledge base/<slug>.md`. The template defines the required structure. **Fill in `source_file` frontmatter** with the MinIO URL of the original ebook:
+Save to `Knowledge base/<slug>.md`. The template defines the required structure. **Fill in `source_files` frontmatter** with the MinIO URLs of the original ebook and extracted text:
 
 ```yaml
-source_file: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+source_files:
+  source: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+  text: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.txt
 ```
 
 Also mention the archived files in the **Sources** section of the note:
@@ -223,7 +225,9 @@ for pdf in sorted(glob.glob("/tmp/books_batch/*.pdf")):
     print(f"{'⚠️ OCR' if needs_ocr else '✓ text'} | {pages}p | {int(chars):,} chars | {name}")
 ```
 
-PDFs with < 500 chars total across all pages are fully scanned (images only) — they need OCR. PDFs with substantial text can be processed directly with pymupdf.
+PDFs with < 500 chars total across all pages are fully scanned (images only) — they need OCR.
+
+**PDFs with ≥500 chars still need quality scoring (Tier 2).** The binary check is NOT sufficient — many pre-19th-century scans have an OCR layer with millions of garbled chars (long-s → f, garbled chapter headers). Always run the canonical quality scoring from `references/ocr-scanned-pdfs.md` before concluding a PDF is clean. Score ≥ 80 → ticketable. Score < 80 → queue for fresh OCR. Never write ad-hoc scoring scripts — use the exact algorithm from the reference.
 
 ### Scanned PDF / OCR pipeline
 
@@ -324,7 +328,7 @@ hermes kanban --board knowledge-base create \
   "KB: <Book Title> — <Author> (YYYY)"
 ```
 
-See `references/kanban-ticket-template.md` for the full book ticket body template.
+See `templates/kanban-ticket-template.md` for the full book ticket body template.
 
 ## Pitfalls
 

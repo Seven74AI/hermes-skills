@@ -1,0 +1,22 @@
+[Unit]
+Description=KB Agent — Custom Python knowledge base agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/kb-agent
+# MUST use the Hermes venv Python — system Python lacks flask, httpx, dotenv
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python3 /root/kb-agent/run.py
+Restart=on-failure
+RestartSteps=10
+RestartMaxDelaySec=60
+# API keys injected from Hermes .env
+EnvironmentFile=/root/.hermes/.env
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kb-agent
+
+[Install]
+WantedBy=multi-user.target

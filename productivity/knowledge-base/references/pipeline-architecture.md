@@ -84,7 +84,7 @@ Python code, not as LLM prompts.
 ```
 tasks
 ├── id (TEXT PK)
-├── source_url (TEXT)
+├── source_url (TEXT URL)
 ├── content_type (TEXT) — youtube|threads|instagram_reel|instagram_post|substack|web|book
 ├── status (TEXT) — pending|validating|downloading|transcribing|synthesizing|archiving|done|failed|skipped
 ├── slug (TEXT)

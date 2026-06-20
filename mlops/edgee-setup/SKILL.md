@@ -27,6 +27,36 @@ Content-Type: application/json
 
 OpenAI-compatible format. Standard `messages`, `tools`, `tool_choice`, `stream` fields all supported. Both streaming and non-streaming work.
 
+## Model Naming Convention (Critical)
+
+Edgee routes by provider prefix. Model names MUST use the format **`provider/model`**:
+
+```
+✓ deepseek/deepseek-v4-pro
+✓ openai/gpt-4o
+✓ anthropic/claude-sonnet-4
+
+✗ deepseek-v4-pro          → shows as <unknown> in Edgee dashboard
+✗ gpt-4o                   → rejected or misrouted
+```
+
+If you're building an agent that toggles between Edgee and a direct provider, normalize the model name when switching: prepend `deepseek/` (or the appropriate provider) when routing through Edgee, strip it for direct calls.
+
+## Provider API Keys (Edgee Dashboard)
+
+`EDGEE_API_KEY` authenticates your agent **to the Edgee gateway** — it does NOT grant access to upstream providers. Edgee uses **its own API keys** for each provider, configured in the Edgee dashboard:
+
+1. Go to your Edgee dashboard → Provider Settings
+2. Add/update API keys for each upstream provider (DeepSeek, OpenAI, etc.)
+3. The key must be valid and have credits — Edgee passes it through to the provider
+
+**Symptom if misconfigured:** Edgee returns `400` with an embedded `401` from the upstream provider:
+```json
+{"error":{"message":"DeepSeek API error (401 Unauthorized): ...",
+ "code":"unauthorized"}}
+```
+→ Fix the provider API key in the Edgee dashboard, not the `EDGEE_API_KEY`.
+
 ## Edgee-Specific Request Fields
 
 | Field | Type | Effect |
@@ -56,18 +86,25 @@ OpenAI-compatible format. Standard `messages`, `tools`, `tool_choice`, `stream` 
 
 ## Toggle Pattern (Edgee ↔ DeepSeek)
 
-Both providers use identical OpenAI-compatible format. Toggle is a one-line `base_url` change:
+Both providers use identical OpenAI-compatible format. Toggle requires a `base_url` change AND model name normalization:
 
 ```python
-# DeepSeek direct
+# DeepSeek direct — bare model name
 base_url = "https://api.deepseek.com/v1"
+model = "deepseek-v4-pro"
 
-# Edgee (add compression_model for compression)
+# Edgee — provider/model format
 base_url = "https://api.edgee.ai/v1"
+model = "deepseek/deepseek-v4-pro"
 extra_fields = {"compression_model": "claude"}
 ```
 
-No code changes needed beyond `base_url` + optional `compression_model` injection.
+Normalize at toggle time:
+
+```python
+if provider == "edgee" and "/" not in model:
+    model = f"deepseek/{model}"
+```
 
 ## Python SDK
 

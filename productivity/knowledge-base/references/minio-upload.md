@@ -47,18 +47,20 @@ http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.txt
 
 Include this in the note frontmatter:
 ```yaml
-source_file: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+source_files:
+  source: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.epub
+  text: http://vmi3304846.tail5c02a1.ts.net:9000/knowledge-base/books/<slug>.txt
 ```
 
 ## Folder mapping
 
 | File type | MinIO path | Frontmatter field |
 |-----------|-----------|-------------------|
-| Books (ePub/PDF) | `books/<slug>.<ext>` | `source_file` |
-| Videos (YouTube) | `videos/<slug>.webm` | `source_file` |
-| Videos (Reels) | `reels/<slug>.mp4` | `source_file` |
-| Transcripts | `videos/<slug>.json` | `source_file` |
-| Articles/Threads | `articles/<slug>.txt` | `source_file` |
+| Books (ePub/PDF) | `books/<slug>.<ext>` | `source_files.source` |
+| Videos (YouTube) | `videos/<slug>.webm` | `source_files.video` |
+| Videos (Reels) | `reels/<slug>.mp4` | `source_files.video` |
+| Transcripts | `videos/<slug>.json` | `source_files.transcript` |
+| Articles/Threads | `articles/<slug>.txt` | `source_files.text` |
 
 All book files (original ePub/PDF + extracted full text) go under `books/` with the same slug.
 

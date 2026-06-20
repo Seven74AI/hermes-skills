@@ -290,7 +290,7 @@ Ces commandes sont utilisées par le worker dans le ticket RESUME+NOTE+ARCHIVE.
 
 Le worker charge la skill `knowledge-base` et suit le prompt dans
 `references/resume-prompt.md` (deux passes). Template de note :
-`references/youtube-note-template.md`. Note → `Knowledge base/<slug>.md`.
+`templates/youtube-note-template.md`. Note → `Knowledge base/<slug>.md`.
 
 ### 8. Uploader vers MinIO
 
@@ -306,7 +306,7 @@ mc cp /tmp/yt_SLUG_transcript.json minio/knowledge-base/videos/<slug>.json
 
 ### 9. Créer la note dans le vault
 
-Template (voir `references/youtube-note-template.md`). Sauvegarder dans
+Template (voir `templates/youtube-note-template.md`). Sauvegarder dans
 `Knowledge base/<slug>.md`, puis push Git :
 
 ```bash

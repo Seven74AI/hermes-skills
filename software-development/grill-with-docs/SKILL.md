@@ -150,6 +150,19 @@ If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](
 
 </supporting-info>
 
+## Systematic CONTEXT.md vs Code Audit
+
+When the user asks to "review the codebase" or "check implementation against CONTEXT.md", do NOT use conversational grilling. Use the audit methodology:
+
+1. **Extract every verifiable claim** from CONTEXT.md — list them precisely, with line numbers. Do not paraphrase or group.
+2. **Verify each claim against actual code** by reading the relevant files — not grepping, not assuming. For each claim, open the file and find the function/line that implements or contradicts it. Mark ✅ or ❌ with the exact line number.
+3. **Only report verified findings.** Never claim a drift based on grep alone or on a docstring that may be stale. If you didn't open the file and read the code, don't assert.
+4. **Correct yourself when wrong.** If you later find a file that disproves your earlier claim (e.g., `see_also.py` exists but your grep missed it), acknowledge the error explicitly and remove it from the list.
+
+**Pitfall — inventing drift:** The most common failure is reporting a drift based on incomplete evidence (grep didn't find something, a docstring looks wrong). The user catches every unverified claim. Read the file first, then report.
+
+**Pitfall — stale docstrings:** Docstrings can say "Returns: Status string" while the actual code raises `StepError`. Always read the function body, not just the docstring.
+
 ## Relationship to `grill-me`
 
 This skill supersedes `grill-me`. The core interviewing loop is identical, but `grill-with-docs` adds domain-model integration: it reads `CONTEXT.md` for the project's glossary, challenges terminology against it, updates it inline as decisions crystallize, and offers ADRs for load-bearing reversals. Prefer `grill-with-docs` for any project that has (or should have) a domain glossary.
@@ -157,3 +170,4 @@ This skill supersedes `grill-me`. The core interviewing loop is identical, but `
 ## References
 
 - `references/kb-agent-context-example.md` — worked example of a greenfield grilling session producing a full architecture CONTEXT.md
+- `references/audit-context-vs-code.md` — systematic codebase audit methodology: claim extraction, file-by-file verification, drift reporting
