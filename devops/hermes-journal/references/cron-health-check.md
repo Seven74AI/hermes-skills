@@ -22,6 +22,7 @@
    - `[SILENT]` — job produced nothing (suppressed delivery)
 4. For jobs that deliver to external platforms (Discord, Notion, Telegram), verify the delivery actually happened — check the target (Notion DB, Discord channel) for the expected entry
 5. **Special attention after token rotation**: Notion integrations lose DB connections when tokens are regenerated. Manually re-share the integration with ALL databases it needs to write to.
+6. **Database liveness checks**: For any cron job that depends on a database file (kanban, session DB), verify the file is non-empty. A 0-byte `kanban.db` will pass all exit-code checks but silently prevent all ticket processing. Example: `[ -s /path/to/kanban.db ] || echo "CRITICAL: kanban.db is empty"`
 
 ## Watchdog alerts
 

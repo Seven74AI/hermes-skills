@@ -133,6 +133,40 @@ cd /root/.hermes/backups && git log --since="24 hours ago" --oneline
 
 **Key pitfall:** The backup repo will always have commits (backup + prune every 2h). Filter these mentally — they're infrastructure, not code changes.
 
+## Cron Output Directory Growth
+
+**Path:** `/root/.hermes/cron/output/`
+
+Cron job output files accumulate unbounded. High-frequency jobs produce the most volume:
+- A job running every 2 minutes produces 720 files/day × 365 = 262,800 files/year
+- Even 160-byte files consume ~4 KB each on ext4 (inode + directory entry), so 720 files/day ≈ 2.9 MB/day in filesystem overhead alone
+- At observed rates (89 MB across 20 job directories over 8 days), this grows ~10 MB/day
+
+**Check current usage:**
+```bash
+du -sh /root/.hermes/cron/output/
+du -sh /root/.hermes/cron/output/*/ | sort -rh | head -10
+```
+
+**Retention policy (recommended):**
+Keep last 3 days per job, purge older:
+```bash
+python3 -c "
+import os, glob, time
+base = '/root/.hermes/cron/output'
+cutoff = time.time() - 3 * 86400  # 3 days
+removed = 0
+for job_dir in glob.glob(f'{base}/*/'):
+    for f in glob.glob(f'{job_dir}/*.md'):
+        if os.path.getmtime(f) < cutoff:
+            os.unlink(f)
+            removed += 1
+print(f'Removed {removed} files older than 3 days')
+"
+```
+
+**Key pitfall:** Don't apply retention to all jobs equally. Daily reports (Morning Report, Daily Reflection) produce one 6 KB file/day — negligible. The 2-min kanban dispatchers produce 720 files/day at 160 bytes each — the directory entry overhead dwarfs the content. Prioritize cleaning dispatcher output directories first.
+
 ## Error Log Triage
 
 **Path:** `/root/.hermes/logs/errors.log`

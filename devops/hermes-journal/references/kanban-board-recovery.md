@@ -137,3 +137,53 @@ done
 ```
 
 The performance impact of DELETE + FULL synchronous on kanban DBs (typically < 5MB, single-digit writes per minute) is negligible, while the durability gain eliminates an entire class of silent corruption.
+
+## Scenario C: 0-Byte Ghost DB File (Wrong Path)
+
+**Distinct from** both transient corruption and WAL index corruption. The DB file exists at the expected path but is 0 bytes — it was never initialized, was cleared by a filesystem operation, or is a stale artifact from a previous config migration.
+
+### Symptoms
+
+- `file /path/to/kanban.db` reports `empty`
+- `sqlite3` reports `file is not a database` or just opens a blank DB with no tables
+- Kanban dispatchers produce silent/empty output — no ticket processing occurs
+- The real DB may exist at a different path (e.g., `cron/kanban.db` is 0 bytes but `~/.hermes/kanban.db` is the active one, or vice versa)
+
+### Recovery Procedure
+
+**Step 1: Locate the real DB**
+
+```bash
+# Find all kanban.db files on the system
+find /root/.hermes -name "kanban.db" -exec ls -lh {} \;
+```
+
+Check which one has actual data:
+
+```bash
+for db in $(find /root/.hermes -name "kanban.db"); do
+  size=$(stat -c %s "$db")
+  tables=$(sqlite3 "$db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table';" 2>/dev/null || echo "BROKEN")
+  echo "$db: $size bytes, $tables tables"
+done
+```
+
+**Step 2: Determine which path the dispatcher/plugin uses**
+
+Check the kanban plugin config or cron job definition to find the configured DB path. Common locations:
+- `~/.hermes/kanban.db` — legacy singleton DB
+- `~/.hermes/kanban/boards/<board>/kanban.db` — per-board DBs (newer plugin)
+- `~/.hermes/cron/kanban.db` — cron-scoped (may be empty if misconfigured)
+
+**Step 3: Fix the path**
+
+If the plugin/worker is pointing at the 0-byte file, update the config to point at the real DB. If the real DB is per-board, ensure the plugin is configured for per-board mode (not legacy singleton mode).
+
+**Step 4: Re-sync if needed**
+
+If the dispatcher has been writing to the 0-byte file for days, any tickets "created" during that period were never persisted. Restore from the real DB and manually re-create any critical tickets that were lost.
+
+### Prevention
+
+- **Cron health check should verify kanban.db is not 0 bytes** — this is a one-line check (`[ -s /path/to/kanban.db ]`) that catches both never-initialized and accidentally-truncated files.
+- **Monitor DB size over time** — a DB that was 196 KB yesterday and 0 bytes today is a clear signal, even if all other health checks pass.

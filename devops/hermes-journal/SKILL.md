@@ -22,7 +22,7 @@ Weekly journal that captures technical lessons, infrastructure fixes, and debugg
 - User asks to "document what we learned" or "start a journal"
 - **Dashboard or systemd service crash-loops** → see `references/dashboard-crashloop-playbook.md` for the diagnostic playbook (port conflicts, stale PIDs, zombie forensics)
 - **Verifying cron job health** → see `references/cron-health-check.md` — `last_status: ok` ≠ functionally working; always inspect outputs
-- **Kanban board disabled by dispatcher (DB corruption)** → see `references/kanban-board-recovery.md` — verify integrity, touch file to re-enable, prevention. Also covers WAL mode index corruption: dump→restore→DELETE journal mode fix.
+- **Kanban board disabled by dispatcher (DB corruption)** → see `references/kanban-board-recovery.md` — verify integrity, touch file to re-enable, prevention. Also covers WAL mode index corruption: dump→restore→DELETE journal mode fix. Also covers 0-byte ghost DB files (wrong path / never-initialized).
 
 ## Notion Setup
 
