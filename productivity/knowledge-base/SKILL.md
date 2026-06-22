@@ -76,9 +76,16 @@ When the user's description disagrees with the URL path, confirm the type first.
 
 ### Substack
 
-`references/pipeline-substack.md` — extraction Firecrawl, nettoyage markdown, note Obsidian. Pas besoin de cookies pour les articles publics. **Also serves as the generic web article pipeline** for non-Substack sites (blogs, essays, technical references, news articles).
+`references/pipeline-substack.md` — extraction Firecrawl, nettoyage markdown, note Obsidian. Pas besoin de cookies pour les articles publics.
 
 - Dedup: check vault for existing `source_url` **before creating kanban ticket** (Phase -2).
+
+### Wikispooks
+
+`references/pipeline-wikispooks.md` — wiki-style deep-research pages. DDOS bypass obligatoire via `welcome_back.php?goto=`. Firecrawl → deep analysis → MinIO → Obsidian.
+
+- Bypass URL: transformer `/wiki/X/Y` en `/w/welcome_back.php?goto=%2Fwiki%2FX%2FY`
+- `source_url` dans la note = URL directe (pas le bypass)
 
 ### Web search
 
@@ -298,6 +305,7 @@ Batch inventory ("titre des done"): `templates/kanban-ticket-template.md`
 | Video global rules | `references/video-pipeline-global.md` |
 | YouTube pipeline | `references/pipeline-youtube.md` |
 | Threads pipeline | `references/pipeline-threads.md` |
+| Wikispooks pipeline | `references/pipeline-wikispooks.md` |
 | Threads media types | `references/threads-media-types.md` |
 | Instagram pipeline | `references/pipeline-instagram.md` |
 | Mega / external video | `references/pipeline-mega.md` |
