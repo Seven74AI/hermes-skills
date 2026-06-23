@@ -190,8 +190,11 @@ Then `cd /opt/firecrawl && docker compose up -d api`.
 - **Firecrawl v4 SDK returns Pydantic models, not dicts**: use `.model_dump()` to inspect, or access fields directly (`result.markdown`).
 - **Firecrawl `video` format is cloud-only**: the self-hosted Docker SDK rejects `"video"` as an invalid format (Pydantic validation: not in the literal enum). Instagram video extraction requires yt-dlp — see `references/instagram-video-extraction.md` for the CDN URL + curl + ffmpeg recipe.
 - **Instagram Reels: Firecrawl gets text/metadata, not video**: `web_extract` can summarize the caption, comments, and creator profile via LLM summarization, but the video itself is JS-loaded and unreachable. Use yt-dlp (reference above).
+- **Delivering downloaded media files**: `send_message` with `MEDIA:<path>` only works for files under `/root/.hermes/media_cache/`. Files in `/tmp/` or `/root/Videos/` will NOT attach — the user receives text-only. Copy to media_cache first: `cp <file> /root/.hermes/media_cache/<clean-name>.<ext>`.
 
 ## Reference Files
 
 - `references/threads-scraping-recipe.md` — cURL + Python SDK recipe for Threads.com, expected output sizes, content markers for verification.
 - `references/instagram-video-extraction.md` — yt-dlp recipe for Instagram Reel video extraction when Firecrawl's cloud-only `video` format isn't available. CDN URL extraction + curl + ffmpeg merge.
+- `references/rumble-video-extraction.md` — Rumble video download via oembed API → yt-dlp. Bypasses Cloudflare anti-bot (403). Public page slug ≠ real video ID — always resolve through oembed first.
+- `references/rumble-video-extraction.md` — Rumble video extraction via oembed API to find the real embed ID, then yt-dlp on the embed URL. Bypasses 403 anti-bot blocking.
