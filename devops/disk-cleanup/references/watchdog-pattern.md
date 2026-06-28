@@ -1,66 +1,68 @@
-# Disk Watchdog + Cleanup Agent Pattern
+# Disk Watchdog + On-Demand Cleanup Agent Pattern
 
-Two-cron pattern for resource monitoring with zero-cost normal operation and full agent cleanup on threshold breach.
+Two-component pattern for resource monitoring with zero-LLM-cost normal operation and full agent cleanup triggered only on threshold breach.
 
 ## Architecture
 
 ```
-┌─────────────────────┐     context_from     ┌──────────────────────┐
-│  disk-watchdog.py   │ ──────────────────→  │  Disk Cleanup Agent  │
-│  no_agent, every 15m│                      │  agent, every 15m    │
-│                      │                      │  loads disk-cleanup  │
-│  <50% → silent       │                      │  skill               │
-│  50-70% → alert      │                      │                       │
-│  ≥80% → CLEANUP_     │                      │  no trigger → "."    │
-│         TRIGGER=true │                      │  trigger → full run  │
-└─────────────────────┘                      └──────────────────────┘
+┌─────────────────────┐  hermes cron run   ┌──────────────────────┐
+│  disk-watchdog.py   │ ────────────────→  │  Disk Cleanup Agent  │
+│  no_agent, every 10m│  (only at ≥75%)    │  PAUSED by default   │
+│                      │                    │  loads disk-cleanup  │
+│  <75% → silent/alert │                    │  skill               │
+│  ≥75% → CLEANUP_     │                    │                       │
+│         TRIGGER=true │                    │  one-shot, then done │
+│         + cron run   │                    │                       │
+└─────────────────────┘                    └──────────────────────┘
 ```
+
+**Key difference from old polling pattern:** The cleanup agent no longer runs on a schedule. It is **paused** in the cron system. The watchdog script calls `hermes cron run <cleanup_job_id>` as a subprocess only when disk reaches the threshold. This eliminates all wasted LLM tokens during normal operation.
 
 ## Setup
 
-### 1. Watchdog script (no_agent)
+### 1. Watchdog script (no_agent) — with trigger logic
+
+The watchdog runs on a schedule (every 10 min) and emits alerts at each severity level. At the critical threshold (≥75%), it additionally triggers the paused cleanup agent via subprocess:
 
 ```python
-#!/usr/bin/env python3
-"""Outputs alerts at thresholds. Exit 0 always."""
-import subprocess, sys
-
-df_line = subprocess.run("df -h / | tail -1", shell=True, capture_output=True, text=True).stdout.strip()
-parts = df_line.split()
-pct = int(parts[4].rstrip('%'))
-avail, size = parts[3], parts[1]
-
-if pct >= 80:
-    print(f"🚨 CRITICAL: disk {pct}% full ({avail} free / {size} total)")
-    print("CLEANUP_TRIGGER=true")
+if pct >= 75:
+    emit_report(severity="CRITICAL", action="CLEANUP_TRIGGER=true ...")
+    # Trigger the LLM cleanup agent (paused by default, run on-demand only)
+    subprocess.run(
+        ["hermes", "cron", "run", "<cleanup_job_id>"],
+        timeout=120, capture_output=True
+    )
 elif pct >= 70:
-    print(f"⚠️ WARNING: disk {pct}% full ({avail} free / {size} total)")
-elif pct >= 60:
-    print(f"⚠️ WARNING: disk {pct}% full ({avail} free / {size} total)")
-elif pct >= 50:
-    print(f"ℹ️ HEADS-UP: disk {pct}% full ({avail} free / {size} total)")
-# <50%: silent
+    emit_report(severity="WARN", ...)
+# Lower thresholds: silent or alert as desired
 ```
 
-### 2. Watchdog cron
+The `subprocess.run` is synchronous — the watchdog blocks until cleanup completes (or 120s timeout). This is acceptable because cleanup only runs at ≥75% (rare), and the watchdog's stdout (the alert) is delivered to Discord concurrently via the cron delivery mechanism.
+
+### 2. Watchdog cron (no_agent)
 
 ```bash
-hermes cron create "every 15m" \
+hermes cron create "every 10m" \
   --name "Disk Space Watchdog" \
   --script disk-watchdog.py \
   --no-agent \
-  --deliver origin
+  --deliver discord:#alerts
 ```
 
-### 3. Cleanup agent cron
+### 3. Cleanup agent cron — PAUSED
+
+Create the cleanup agent, then immediately pause it. The watchdog triggers it on demand:
 
 ```bash
-hermes cron create "every 15m" \
+hermes cron create "every 10m" \
   --name "Disk Cleanup Agent" \
   --prompt "Tu es le disk cleanup agent..." \
   --context-from <watchdog_job_id> \
   --toolsets terminal,skills \
   --deliver origin
+
+# Then pause it — watchdog triggers via hermes cron run
+hermes cron pause <cleanup_job_id>
 ```
 
 ### 4. Agent prompt
@@ -75,32 +77,32 @@ RÈGLES :
 
 ## Token Cost Analysis
 
-The cleanup agent runs an LLM call every tick even when silent — the system prompt, tool schema, and watchdog context are passed to the model regardless of whether it responds with `.` or a full report. This is by design (the agent must evaluate the context to decide silence), but it comes with a real cost.
+**Old polling pattern (DEPRECATED):**
+- Cleanup agent ran every 10 min regardless of disk state
+- ~15k input tokens per silent run (system prompt + tools + watchdog context)
+- 144 runs/day → ~2.2M input tokens/day, >95% of responses were "."
+- Cost: ~$0.20-0.50/day for zero value when disk is stable
 
-**Observed costs (DeepSeek v4-pro, 2026-05-21):**
-- ~15k input tokens per silent run (system prompt + tools + watchdog output)
-- At every 10min: 144 runs/day → ~2.2M input tokens/day
-- At every 15min: 96 runs/day → ~1.4M input tokens/day
-- Cost: ~$0.20-0.50/day at DeepSeek pricing depending on frequency
-
-**When to run the agent (vs script-only watchdog):**
-- Disk below 70% and stable → the agent adds zero value; every response will be `.`
-- Disk trending up but <80% → marginal value; mostly reporting trends the watchdog already covers
-- Disk ≥80% → the agent IS the cleanup executor; essential
-
-**Frequency recommendation:**
-- `every 30m` is sufficient when disk is stable — 48 runs/day, ~$0.10/day
-- `every 1h` is reasonable for long-term monitoring — 24 runs/day, ~$0.05/day
-- `every 10m` is overkill and wastes tokens with no benefit
-- Consider pausing the agent cron entirely when disk has been <70% for >24h; re-enable if the watchdog triggers a WARN
-
-**Detecting silent-waste patterns:**
-Check session files for the agent cron — if 95%+ of recent runs contain only `.` as the assistant response, the agent is not providing value. Audit methodology: see `references/cron-audit-methodology.md`.
+**New on-demand pattern:**
+- Cleanup agent runs 0 times/day when disk <75%
+- Only invokes LLM when disk actually needs cleanup (rare — a few times per month)
+- Token cost during normal operation: **zero**
+- Watchdog is no_agent (script-only), also zero token cost
 
 ## Key Design Decisions
 
-- **no_agent for watchdog**: zero token cost in normal operation. Only costs tokens when threshold breached AND cleanup agent activates.
-- **context_from chaining**: cleanup agent reads watchdog's most recent completed output. No polling, no duplicate df calls.
-- **Stagger schedules**: both at "every 15m" but the cleanup agent naturally runs ~1min after watchdog since it was created second. The context_from injects the latest completed watchdog output.
-- **Silent on <50%**: no notification spam. Only alerts when thresholds are hit.
-- **Guardrails in the skill, not the script**: the cleanup agent loads the skill which enforces rules (never delete blocked/running workspaces, stop on script failure, etc.). The watchdog script just reports facts.
+- **no_agent for watchdog**: zero token cost in normal operation
+- **Paused cleanup agent + subprocess trigger**: LLM only runs when work is actually needed. The `hermes cron run` call is synchronous (watchdog blocks until cleanup finishes), which is fine because ≥75% is a rare event.
+- **`context_from` chaining**: cleanup agent reads watchdog's most recent completed output. No polling, no duplicate df calls. Works correctly because the watchdog just wrote its output before triggering the cleanup agent.
+- **Thresholds emit to Discord**: the watchdog still delivers WARN/CRITICAL alerts to Discord, so the user sees disk warnings without any LLM involvement.
+- **Guardrails in the skill, not the script**: the cleanup agent loads the skill which enforces rules (never delete blocked/running workspaces, stop on script failure, etc.).
+
+## Reverting to polling (if needed)
+
+If the subprocess trigger pattern causes issues (e.g., hermes CLI not available in cron context), fall back to the polling pattern by unpausing the cleanup agent:
+
+```bash
+hermes cron resume <cleanup_job_id>
+```
+
+And removing the `subprocess.run` call from the watchdog script. The cleanup agent will poll every 10 min as before, responding "." when no trigger is present.

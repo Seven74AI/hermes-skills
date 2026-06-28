@@ -137,6 +137,14 @@ hermes kanban --board <board> complete <task_id>
 If < 500 chars → scanned → do NOT create a kanban ticket (marker-pdf will OOM-loop).
 Upload to MinIO and append to `/root/.hermes/queues/ocr_books.txt` instead.
 
+## Dashboard Crash-Loop
+
+When `hermes-dashboard.service` is in `activating (auto-restart)` with a climbing restart counter, it's typically a port conflict from a stale manual process. See `references/dashboard-crashloop-playbook.md` for the full diagnosis and fix (kill stale PID → restart).
+
+## Kanban Board Recovery
+
+When the dispatcher auto-disables a board due to DB corruption, or when WAL mode causes recurring index corruption, see `references/kanban-board-recovery.md` for recovery procedures (touch-to-re-enable, dump→restore, WAL→DELETE mode migration, 0-byte ghost DB detection).
+
 ## Pitfalls
 
 - **Flood control ≠ disconnected**: Telegram rate-limiting is transient.

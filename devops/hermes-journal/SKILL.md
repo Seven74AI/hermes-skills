@@ -20,9 +20,9 @@ Weekly journal that captures technical lessons, infrastructure fixes, and debugg
 - Daily or weekly retrospective of Hermes operations sessions
 - After fixing a non-trivial infrastructure issue (OOM, swap, disk, config)
 - User asks to "document what we learned" or "start a journal"
-- **Dashboard or systemd service crash-loops** → see `references/dashboard-crashloop-playbook.md` for the diagnostic playbook (port conflicts, stale PIDs, zombie forensics)
-- **Verifying cron job health** → see `references/cron-health-check.md` — `last_status: ok` ≠ functionally working; always inspect outputs
-- **Kanban board disabled by dispatcher (DB corruption)** → see `references/kanban-board-recovery.md` — verify integrity, touch file to re-enable, prevention. Also covers WAL mode index corruption: dump→restore→DELETE journal mode fix. Also covers 0-byte ghost DB files (wrong path / never-initialized).
+- **User asks to review journal entries and list what needs attention** → see `references/presenting-findings.md` for the presentation format and rules
+- **Dashboard or systemd service crash-loops** → see `gateway-diagnostics` → `references/dashboard-crashloop-playbook.md` for the diagnostic playbook (port conflicts, stale PIDs, zombie forensics)
+- **Kanban board disabled by dispatcher (DB corruption)** → see `gateway-diagnostics` → `references/kanban-board-recovery.md` — verify integrity, touch file to re-enable, WAL→DELETE journal mode fix, 0-byte ghost DB files
 
 ## Notion Setup
 
@@ -144,6 +144,21 @@ hermes cron create "0 9 * * 0"  # Sunday 9h
 | Discord send_message has 2000-char limit — build messages programmatically | Tooling | 🟡 Important |
 | X list tweets endpoint needs expansions for author data | Tooling | 🟡 Important |
 | Adding 4 GiB swap prevents OOM on 8 GiB server | Infrastructure | 🔴 Critical |
+
+## User-Facing Reports — Presenting Journal Findings
+
+When the user asks you to review journal entries and list what needs attention (e.g., "check the last week and list what may need my attention"), follow this format. See `references/presenting-findings.md` for the template and rationale.
+
+**Rules:**
+
+1. **No introductory prose.** Start with the list. The user wants findings, not a preamble.
+2. **Number every item.** The user will respond with numbered follow-ups. Make each item self-contained so they can reference "item 3" and you know exactly what they mean.
+3. **One line per finding — verdict first.** "Backup cron is GONE — 15 days without backup" not "I noticed that the backup cron job appears to have been removed, which means..."
+4. **Group by urgency.** 🔴 Critical → 🟡 Important → 🟢 Resolved/stabilizing. The user skims the top section first.
+5. **Explain jargon.** The user does not live in the cron job list. "Cron output accumulation" means nothing without context. Say "The output files from every cron job are stored in /root/.hermes/cron/output/ and they've grown to 151 MB with no cleanup."
+6. **Anchor every claim.** Each item should reference which journal entries support it, so the user can verify. But don't re-explain the journal entry — just cite it.
+7. **Be definitive.** "Skills are backed up — yes" not "It appears skills may be backed up but I need to verify." If you're not sure, verify first, then answer.
+8. **Expect numbered follow-ups.** After you present the list, the user will likely fire back 3-7 numbered questions. Answer each one directly, in order, with the same terseness they used in asking.
 
 ## ADRs (Architecture Decision Records)
 

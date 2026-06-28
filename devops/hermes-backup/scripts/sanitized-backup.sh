@@ -8,7 +8,6 @@ TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
 BACKUP_NAME="hermes-critical-${TIMESTAMP}.tar.gz"
 BACKUP_DIR="/root/.hermes/backups"
 TMP_DIR=$(mktemp -d)
-REPO_URL="https://github.com/Seven74AI/hermes-backup.git"
 KEEP=2  # Keep last N backups
 
 cleanup() {
@@ -18,14 +17,25 @@ trap cleanup EXIT
 
 echo "[$(date -Iseconds)] Starting sanitized backup..." >&2
 
-# 1. Create quick backup (includes .env and auth.json)
-hermes backup -q -o "$TMP_DIR/$BACKUP_NAME" 2>&1
-echo "[$(date -Iseconds)] Backup created: $BACKUP_NAME" >&2
+# 1. Create quick backup (hermes backup ALWAYS produces .zip, regardless of -o filename)
+#    Use -o with directory only, then glob for the result
+hermes backup -q -o "$TMP_DIR" 2>&1
+RAW_ZIP=$(ls -t "$TMP_DIR"/hermes-backup-*.zip 2>/dev/null | head -1)
+if [ -z "$RAW_ZIP" ] || [ ! -f "$RAW_ZIP" ]; then
+    echo "[$(date -Iseconds)] FATAL: hermes backup produced no output file in $TMP_DIR" >&2
+    exit 1
+hermes backup -q -o "$TMP_DIR" 2>&1
+RAW_ZIP=$(ls -t "$TMP_DIR"/hermes-backup-*.zip 2>/dev/null | head -1)
+if [ -z "$RAW_ZIP" ] || [ ! -f "$RAW_ZIP" ]; then
+    echo "[$(date -Iseconds)] FATAL: backup produced no output file" >&2
+    exit 1
+fi
+echo "[$(date -Iseconds)] Backup created: $(basename "$RAW_ZIP") ($(du -h "$RAW_ZIP" | cut -f1))" >&2
 
 # 2. Strip .env and auth.json from the archive
 cd "$TMP_DIR"
 mkdir stripped
-tar xzf "$BACKUP_NAME" -C stripped/
+unzip -q "$RAW_ZIP" -d stripped/
 
 if [ -f stripped/.env ]; then
     rm -f stripped/.env

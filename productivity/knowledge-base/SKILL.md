@@ -249,6 +249,8 @@ All notes MUST use these fields consistently:
 
 **Never use bare `minio:`, `source_file:`, or `transcript_file:`** — all unified under `source_files:`.
 | `confidence` | enum | One of: verified, plausible, emerging, debunked, untested |
+
+**⚠️ Pitfall — do NOT "fix" valid confidence values.** The 5 values above are the canonical set defined by this skill. `emerging` (preliminary, promising but limited) and `untested` (no source found) are intentional and common — especially for Substack/blog content which is rarely `verified`. Do not replace them with `speculative`, `unverified`, or any other ad-hoc value. If you're unsure, re-read this table before touching frontmatter.
 | `tags` | YAML list | `[tag1, tag2]` — lowercase, kebab-case |
 
 **Always use `source_files:`** — a map with content-specific subkeys. Never bare `minio:` or `source_file:`.

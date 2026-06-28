@@ -44,6 +44,20 @@ Lot X/N — N reels Instagram. Rate-limit strictly: sleep 8-15s between Reels, m
 For Instagram: use cookies at /root/.hermes/cookies/ig_cookies.txt. For carousel posts: extract all slides (HARD CAP 2). Diarization MANDATORY for ALL video. **ALWAYS run diarization and transcription with `terminal(background=true, notify_on_complete=true)` + `process(action="wait")` — NEVER inline/foreground.** See `video-pipeline-global.md` and `pipeline-instagram.md` for the exact commands. large-v3 whisper, cpu_threads=6. **Language: content in source language, labels in English.** Save to Knowledge base/. Push after each note.
 ```
 
+For Substack-only batches (articles, no media detection needed):
+
+```
+Lot X/N — N articles Substack. Deep treatment required.
+
+Firecrawl extraction → read ENTIRE source → Key Claims (≥4, with direct quotes) → Section-by-section analysis (dominant section) → Context → Critical Analysis → Nuances. Target 15K-25K chars. Upload raw markdown to MinIO (knowledge-base/articles/). Add source_files: with Tailscale FQDN.
+
+1. URL — Publication: Title
+2. URL — Publication: Title
+...
+
+Pipeline: pipeline-substack.md. Langue: contenu en langue source, labels en anglais. Save to Knowledge base/. Push après chaque note.
+```
+
 For mixed batches (Instagram + Threads):
 
 ```

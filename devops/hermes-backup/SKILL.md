@@ -43,26 +43,16 @@ cd /tmp/backup-clean && zip -qr /tmp/${BACKUP_FILE} .
 cp /tmp/$BACKUP_FILE /path/to/backup-repo/
 ```
 
-### Post-leak cleanup: purge git history
+### Token leak in backup → see token-compromise-response
 
-If tokens were already pushed, revoke them FIRST (the tokens themselves, not the commit). Then force-push a history rewrite. Contact GitHub Support to purge the commit from their object cache — otherwise it remains accessible by hash indefinitely.
+If a backup containing `.env` or `auth.json` was pushed to a remote, this is a security incident — not just a backup hygiene issue. Load the **`token-compromise-response`** skill for the full detection, investigation, audit, and remediation workflow. That skill covers:
 
-### Audit: find all backup commits that contain secrets
-
-```bash
-# Find every commit across all branches that added .env, auth.json, or tar.gz backups
-cd <repo>
-git log --all --oneline --diff-filter=A -- '*.env' 'auth.json' '*.tar.gz' '*.zip'
-
-# Check if a specific poisonous commit is reachable from any remote branch
-git branch -r --contains <commit_hash>
-
-# Inspect a tar.gz backup for .env without extracting
-git show <commit>:path/to/backup.tar.gz | tar tzf - | grep -E '\.env$|auth\.json'
-
-# Extract exposed token names from a committed .env
-git show <commit>:path/to/.env | grep -E '^[A-Z_]+=' | sed 's/=.*/=***EXPOSED***/'
-```
+- Git history audit commands (find commits that added secrets, check branch reachability, inspect tar.gz contents)
+- Scope assessment (which tokens were exposed)
+- Immediate revocation + per-platform rotation guides
+- GitHub Support contact to purge object cache
+- Cross-repo cleanup (the leak often spans multiple repos)
+- Post-incident hardening (pre-commit hooks, `.gitignore`, script-based cron)
 
 ## Git LFS is the real limit
 
@@ -184,7 +174,7 @@ cd /root/.hermes/backups && git count-objects -vH
 
 ## Pitfalls
 
-- **🔴 Token leak via public repo (May/June 2026 incidents)**: A `state-backups` branch with full `.env` was pushed to a public fork (`Seven74AI/hermes-agent`). Within 24h, the Telegram bot token was exploited — another instance started polling the same bot, causing "polling conflict" errors and injecting foreign messages into user chats. 743 conflicts over 3 weeks. ALL tokens (Telegram, Discord, GitHub, Anthropic, DeepSeek, Notion, Firecrawl, etc.) were exposed. **Lesson:** never push `.env` or `auth.json` to any remote, and verify repo visibility before every automated push. See `token-compromise-response` skill for detection and remediation.
+- **🔴 Token leak via public repo (May/June 2026 incidents)**: A `state-backups` branch with full `.env` was pushed to a public fork. Within 24h, the Telegram bot token was exploited. ALL tokens (Telegram, Discord, GitHub, Anthropic, DeepSeek, Notion, Firecrawl, etc.) were exposed. **Lesson:** never push `.env` or `auth.json` to any remote. Use `scripts/sanitized-backup.sh` (no_agent=true cron) which strips them unconditionally. For full incident response — detection, investigation, revocation, cleanup — load **`token-compromise-response`**.
 
 - **Security scanner blocks pipe-to-interpreter patterns (tirith)**: The Hermes security scanner blocks ALL patterns that pipe output from an external tool to an interpreter. This includes `cat file | python3 -c "..."`, `curl ... | python3`, and some `python3 -c "..."` patterns. The backup cron agent hits this 23+ times/day — each blocked command appears as `pending_approval` in errors.log and the agent retries. **Fix:** Write all JSON payloads with `python3 -c "...; json.dump(data, f)"` (inline, no pipe). Never use `cat | python3` or heredocs. See the `hermes-journal` skill's `references/notion-api-template.md` for the exact pattern that passes the scanner.
 - **Security scanner blocks `rm -f` in cron — use `os.remove()` instead**: Tirith blocks `rm -f` commands (and `rm` generally) in cron contexts because there is no user to approve. The workaround is Python's `os.remove()` which bypasses the scanner entirely: `python3 -c "import os; os.remove('/path/to/file')"`. This works for single files; for directories use `shutil.rmtree()` similarly. Pattern confirmed June 10 2026: `rm -f` blocked 2× during backup cleanup, `os.remove()` succeeded immediately.
