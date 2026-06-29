@@ -72,16 +72,20 @@ For kanban DB query patterns (safe from security scanner blocks), see `reference
 
 For cron job inventory and other non-kanban data sources the Morning Report needs, see `references/morning-report-data-sources.md` — covers `jobs.json` structure, session search tips, and GitHub activity patterns.
 
-| Job | Time | Deliver | Scope |
-|---|---|---|---|
-| **Morning Report** (`82a083aaa98e`) | 06:00 | Discord `#daily-recap` | General activity, sessions, decisions, alerts, wins |
-| **Daily Journal** (`b259b8f52946`) | 06:05 | Local + Discord `#daily-recap` | Ops-specific durable knowledge → Notion |
+| Job | Schedule | Time | Deliver | Scope |
+|---|---|---|---|---|
+| **Morning Report** (`82a083aaa98e`) | `*/3` days | 06:00 | Discord `#daily-recap` | General activity, sessions, decisions, alerts, wins |
+| **Daily Journal** (`b259b8f52946`) | `*/3` days | 06:05 | Local + Discord `#daily-recap` | Ops-specific durable knowledge → Notion |
+| **Daily Reflection** (`0f04492645c5`) | `*/3` days | 06:10 | Local | Patterns + action tracking |
+| **Weekly Curator** (`2e1f5c35f5aa`) | Sundays | 03:00 | Local | Skill deduplication, tracking, consolidation |
 
-Both write to the **Hermes Ops Journal** Notion DB. Morning Report extracts blog-worthy entries (technical insights, novel workflows, interesting bugs) from general activity. Daily Journal captures ops-specific lessons (infrastructure, debugging, config).
+All three `*/3` jobs run on the same cycle (days 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31). Use `hermes cron list` for the live schedule — it is authoritative when this table drifts.
+
+Morning Report, Daily Journal, and Daily Reflection all write to the **Hermes Ops Journal** Notion DB. Morning Report extracts blog-worthy entries (technical insights, novel workflows, interesting bugs) from general activity. Daily Journal captures ops-specific lessons (infrastructure, debugging, config). Daily Reflection tracks patterns and action items across runs.
 
 ### Daily Journal workflow — avoiding duplicate entries
 
-The Morning Report runs at 06:00 and writes 1-3 journal entries. The Daily Journal runs at 06:05 to the **same database**. To avoid writing duplicate entries:
+When the Morning Report and Daily Journal run on the same day (same `*/3` cycle), the Morning Report runs first at 06:00 and writes 1-3 journal entries. The Daily Journal runs at 06:05 to the **same database**. To avoid writing duplicate entries:
 
 1. **Query what the Morning Report already wrote today.** Before any other work, query the Notion DB filtered by `Date = today`:
    ```bash
