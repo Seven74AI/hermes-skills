@@ -20,7 +20,7 @@ project-specific SOUL.md. The same coder works on any board.
 
 | Role | Profile | Needs git push? | max_turns | Notes |
 |------|---------|----------------|-----------|-------|
-| Coder | `coder` | Yes | 90 | Implements code + tests. Background+wait = ~15-20 turns. |
+| Coder | `coder` | Yes | 180 | Implements code + tests. Needs 2× default for complex multi-file changes. |
 | Reviewer | `reviewer` | No (GitHub App) | 90 | Reviews PRs/diffs. Approves via GitHub App. |
 | Researcher | `researcher` | Maybe | 90 | Investigates, writes docs. |
 | Planner | `planner` | No | 90 | Decomposes into tasks. Never implements. |
@@ -52,6 +52,7 @@ diagnosis and fixes.
 | Coder merges upstream but never fork main | Fork main gap | Merge to fork main first. See `references/fork-main-merge-gap.md`. |
 | Worker exhausts budget on test output | Inline tests burn iterations | `test:all` script + background+wait. See `references/test-all-script-pattern.md`. |
 | Worker polls with heartbeats during CPU task | SOUL.md missing `process(wait)` mandate | Add explicit background+wait section to profile SOUL. See `references/background-wait-enforcement.md`. |
+| Config has root-level `max_turns` or `max_iterations` | Dead legacy key, silently ignored | Remove from config. Only `agent.max_turns` controls budget. See `references/max-turns-key-semantics.md`. |
 
 ## Key references
 
@@ -63,6 +64,7 @@ diagnosis and fixes.
 - `references/project-bootstrap.md` — New project setup
 - `references/test-all-script-pattern.md` — `test:all` for token economy
 - `references/background-wait-enforcement.md` — Mandating `process(wait)` in profile SOUL.md for CPU-bound tasks
+- `references/max-turns-key-semantics.md` — Full trace of `max_turns`/`max_iterations` key semantics: what's dead, what's active, and how the config→runtime bridge works
 - `references/operational-infrastructure.md` — Cron jobs, watchdogs, GC
 - `references/skill-sync-crash-diagnosis.md` — "Unknown skill" crashes
 

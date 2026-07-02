@@ -21,18 +21,63 @@ for p in coder reviewer researcher planner; do
 done
 ```
 
-Expected: config=90, soul_mentions_90>0 for all profiles.
+Expected:
+- coder: config=180 (intentional 2× override), SOUL may say 90 or 180
+- All other standard profiles (reviewer, researcher, planner): config=90, soul_mentions_90>0
+- Specialty profiles (edgee-planner, hermes-devops, twitter-coder): config=90+
+- researcher-videos: config=240
 
-### 2. max_iterations set on all profiles
+### 2. agent.max_turns set correctly on all profiles
+
+The ONLY key that controls iteration budget is `agent.max_turns` (default 90).
+`agent.max_iterations` is a DEAD KEY — never consumed by any code path.
+Root-level `max_turns` and `max_iterations` are also dead (legacy leftovers ignored
+when `agent.max_turns` is present).
 
 ```bash
-for p in coder reviewer researcher planner; do
-  val=$(python3 -c "import yaml;c=yaml.safe_load(open('/root/.hermes/profiles/$p/config.yaml'));print(c.get('agent',{}).get('max_iterations','MISSING'))")
-  echo "$p: max_iterations=$val"
+for p in coder reviewer researcher planner edgee-planner hermes-devops twitter-coder; do
+  val=$(python3 -c "
+import yaml, sys
+with open('/root/.hermes/profiles/$p/config.yaml') as f:
+    c = yaml.safe_load(f)
+    agent = c.get('agent', {})
+    # The key that matters
+    print(agent.get('max_turns', 'MISSING'))
+" 2>/dev/null)
+  echo "$p: agent.max_turns=$val"
 done
 ```
 
-Expected: 120 on all (matches orchestrator skill recommendation).
+Expected:
+- `coder`: 180 (2× default for complex multi-file changes)
+- All others: 90 or higher
+- If 90 and workers exhaust budget → bump to 120–180 using `hermes config set --profile <name> agent.max_turns <value>`.
+
+Also check for dead root-level keys that should be removed:
+
+```bash
+for p in coder reviewer researcher planner edgee-planner hermes-devops twitter-coder; do
+  has_root_max_turns=$(python3 -c "
+import yaml
+with open('/root/.hermes/profiles/$p/config.yaml') as f:
+    c = yaml.safe_load(f)
+print('YES' if 'max_turns' in c and not isinstance(c.get('agent', {}), dict) else
+      'YES' if 'max_turns' in c and 'max_turns' not in c.get('agent', {}) else 'NO')
+" 2>/dev/null)
+  has_root_max_iter=$(python3 -c "
+import yaml
+with open('/root/.hermes/profiles/$p/config.yaml') as f:
+    c = yaml.safe_load(f)
+print('YES' if 'max_iterations' in c and 'max_iterations' not in c.get('agent', {}) else 'NO')
+" 2>/dev/null)
+  [ "$has_root_max_turns" = "YES" ] && echo "  DEAD KEY: $p has root-level max_turns (ignored — remove it)"
+  [ "$has_root_max_iter" = "YES" ] && echo "  DEAD KEY: $p has root-level max_iterations (ignored — remove it)"
+done
+```
+
+Root-level `max_turns` is only used as a legacy fallback when `agent.max_turns` is missing
+(see normalization in `hermes_cli/config.py:_normalize_max_turns_config()`).
+Root-level `max_iterations` is never consumed at all.
 
 ### 3. Per-ticket max_runtime vs skill recommendation
 

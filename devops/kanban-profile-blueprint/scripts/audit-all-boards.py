@@ -69,7 +69,11 @@ def main():
     for d in sorted(os.listdir(BOARDS_DIR)):
         db_path = os.path.join(BOARDS_DIR, d, 'kanban.db')
         if not os.path.exists(db_path): continue
-        all_issues.extend(audit_board(db_path, d, fix=fix))
+        try:
+            all_issues.extend(audit_board(db_path, d, fix=fix))
+        except sqlite3.Error as e:
+            all_issues.append({'board': d, 'type': 'CORRUPT-DB', 'id': 'N/A', 'detail': f'sqlite3.Error: {e}'})
+            print(f"  [{d:16s}] CORRUPT-DB — {e}", file=sys.stderr)
     
     if json_out:
         print(json.dumps(all_issues, indent=2))
