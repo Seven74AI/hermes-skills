@@ -235,3 +235,11 @@ jobs:
 ## GitHub Actions: npm → pnpm workflow
 
 When a project has already been migrated to pnpm but the CI workflow still uses `bahmutov/npm-install@v1` and `npm run`, see `references/github-actions-pnpm-workflow.md` for the complete conversion recipe (action replacement, `--if-present` pitfall, `pnpm-workspace.yaml` trap).
+
+## Long-Running Test Execution
+
+For running full test suites without burning agent iteration budget, use the `background + notify + wait` pattern. See `references/long-running-tests.md` for the complete pattern, examples, and pitfalls.
+
+## Bulk Dependency Updates
+
+For bulk-merging dozens of dependency PRs or running `npm-check-updates` pipelines, see `references/dependency-bulk-updates.md` and `references/breaking-changes-catalog.md` for migration recipes for Express 5, Prisma 7, Stripe 22, React Router 7, and other breaking upgrades.

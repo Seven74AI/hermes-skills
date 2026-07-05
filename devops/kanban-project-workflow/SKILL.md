@@ -2113,3 +2113,18 @@ cleanup to fix stale tasks that were created before the updates. See
 
 Fixes: NULL skills → set to board-appropriate skills list, NULL mrt → 3600,
 PR URLs in bodies → replaced with text references.
+
+## CI Watchdog (Unblock After Merge)
+
+The CI watchdog detects merged PRs with kanban labels and unblocks the coder task. 
+GitHub auto-merge handles the merge; this watchdog only unblocks. 
+
+See `references/ci-watchdog.md` for the full watchdog script, respawn guard diagnosis, 
+and pitfall patterns. The script template lives at `scripts/ci-watchdog-template.py`.
+
+## Velocity & Analytics
+
+Track kanban velocity, ticket lifetime, and system health across boards. 
+
+See `references/velocity-tracking.md` for the full metrics suite, cron setup, and scripts. 
+Velocity scripts live in `scripts/kanban-velocity/`.
