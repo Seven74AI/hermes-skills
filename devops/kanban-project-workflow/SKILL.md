@@ -1497,6 +1497,7 @@ consolidate into one PR:
 5. Push to fork, create a single consolidated PR
 6. Close superseded PRs with comment
 7. Close upstream issues corresponding to the consolidated work (see § Closing Upstream Issues)
+8. **After merge:** hard-reset the fork to eliminate cosmetic "ahead" divergence from squash-merge. Verify tree hashes match first: `git rev-parse origin/main^{tree}` must equal `git rev-parse upstream/main^{tree}`. Then `git reset --hard upstream/main && git push --force origin main`. See project-specific skill for branch protection restore steps.
 
 **⛔ Pitfall: Creating a consolidation PR that was already merged.** Always check ALL PR states on upstream before creating. The repo owner (mnlamart) can merge consolidation PRs directly with their token — the PR may be merged and you won't know unless you check. Creating a duplicate wastes time and creates noise.
 
@@ -1556,8 +1557,18 @@ Fixed by upgrading to `contents: write`.
 ## Pitfall: CI Status Check Names vs Branch Protection Required Contexts
 
 GitHub requires **exact match** between CI job context names and branch protection
-required contexts. Two common mismatches:
 
+## Pitfall: `hermes kanban boards switch` doesn't persist across terminal calls
+
+`hermes kanban boards switch <slug>` only affects the current shell invocation. Each `terminal()` or `execute_code()` call creates a fresh shell, so the board resets to the default. To target a specific board, always pass `--board <slug>` explicitly:
+
+```bash
+hermes kanban --board music-library create --assignee coder ...
+```
+
+Without `--board`, tasks land on whatever board was current, requiring archive + recreate on the correct board. Cost this session: 18 tasks archived and recreated.
+
+## Pitfall: CI Status Check
 ### Emoji `name:` fields
 ```yaml
 # WRONG — reports context "⬣ ESLint", branch protection expects "lint"

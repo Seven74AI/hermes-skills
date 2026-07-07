@@ -576,10 +576,68 @@ Every tool has a CLI equivalent for human operators and scripts:
 - `kanban_show` ↔ `hermes kanban show <id> --json`
 - `kanban_complete` ↔ `hermes kanban complete <id> --summary "..." --metadata '{...}'`
 - `kanban_block` ↔ `hermes kanban block <id> "reason"`
-- `kanban_create` ↔ `hermes kanban create "title" --assignee <profile> [--parent <id>]`
+- `kanban_create` ↔ `hermes kanban --board <board> create "title" --assignee <profile> --skill <name> --body "..." [--priority N]`
 - etc.
 
 Use the tools from inside an agent; the CLI exists for the human at the terminal.
+
+### CLI syntax gotchas
+
+**`kanban create`: `title` is positional, `--skill` is singular (not `--skills`).**
+The CLI uses `--skill` (repeatable), not `--skills` (plural). And `title` is a positional
+argument — passing `--title "Review: ..."` fails with `unrecognized arguments`.
+
+```bash
+# ❌ WRONG — both fail
+hermes kanban create --title "Review: foo" --skills music-library ...
+hermes kanban create "Review: foo" --skills music-library ...
+
+# ✅ CORRECT
+hermes kanban --board music-library create \
+  "Review: foo" \
+  --assignee reviewer \
+  --skill music-library --skill kanban-project-workflow \
+  --priority 3 \
+  --body "Review PR #37..."
+```
+
+**`notify-subscribe` requires `--board` before the subcommand.**
+The `--board` flag must precede the subcommand or the task lookup scopes to the wrong
+board and returns `no such task`.
+
+```bash
+# ❌ WRONG — "no such task: t_xxx"
+hermes kanban notify-subscribe t_179dcf6b --platform telegram --chat-id 1811944606
+
+# ✅ CORRECT
+hermes kanban --board music-library notify-subscribe t_179dcf6b --platform telegram --chat-id 1811944606
+```
+
+### Manual reviewer ticket creation (from terminal, not a worker)
+
+When the user asks you directly (not inside a kanban worker) to create a review
+ticket, use the CLI create + notify-subscribe pattern:
+
+```bash
+# 1. Create the reviewer task
+hermes kanban --board <board> create \
+  "Review: PR #N — <summary>" \
+  --assignee reviewer \
+  --skill <project-skill> --skill kanban-project-workflow \
+  --priority 3 \
+  --body '## Context
+PR #N at <repo> changes:
+- <bullet list of changes>
+
+## CI status
+All checks green: lint ✓ typecheck ✓ vitest ✓
+
+## What to verify
+- <checklist>'
+
+# 2. Subscribe Telegram notifications (user preference)
+hermes kanban --board <board> notify-subscribe <task_id> --platform telegram --chat-id 1811944606
+```
 
 **`kanban edit` only supports `--result`/`--summary`/`--metadata` — no `--body`.** The original body (from `kanban_create --body`) is immutable via the CLI.
 

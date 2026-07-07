@@ -115,6 +115,44 @@ grep -rn 'parent=task_id\|parent=coder_task' /root/.hermes/profiles/*/SOUL.md | 
 grep -rnP '[\\x{1F300}-\\x{1F9FF}]' /root/.hermes/profiles/*/SOUL.md && echo "EMOJI: found in SOUL.md"
 ```
 
+### 6. SOUL.md review handoff has promote step
+
+The kanban dispatcher only picks up `ready` tasks, but `kanban_create()` creates tasks in `todo`. Any SOUL.md that has a "Review Handoff" section MUST include explicit promotion of the reviewer task. Without it, the reviewer rots in `todo` forever — deadlock.
+
+```bash
+# Profiles with review handoff sections that are MISSING the promote step
+for p in coder hermes-devops twitter-coder; do
+  has_review=$(grep -c "Review Handoff" "/root/.hermes/profiles/$p/SOUL.md" 2>/dev/null || echo 0)
+  has_promote=$(grep -c "promote.*review" "/root/.hermes/profiles/$p/SOUL.md" 2>/dev/null || echo 0)
+  if [ "$has_review" -gt 0 ] && [ "$has_promote" -eq 0 ]; then
+    echo "MISSING PROMOTE: $p has Review Handoff but NO promote step → deadlock risk"
+  fi
+done
+```
+
+Expected: every profile with a Review Handoff section must return `has_promote > 0`.
+
+### 7. SOUL.md block-vs-complete contradiction
+
+A SOUL.md that has BOTH a "Review Handoff" section (which instructs the worker to `kanban_block(reason="review-required")`) AND a "Completion" / "TERMINATE" section (which instructs the worker to `kanban_complete()`) contains contradictory termination instructions. The worker can't both block AND complete — it must pick one, and the ambiguity causes protocol violations.
+
+```bash
+# Profiles with both review handoff AND completion/terminate sections
+for p in coder hermes-devops twitter-coder reviewer; do
+  has_block=$(grep -c "review-required" "/root/.hermes/profiles/$p/SOUL.md" 2>/dev/null || echo 0)
+  has_complete=$(grep -c "kanban_complete" "/root/.hermes/profiles/$p/SOUL.md" 2>/dev/null || echo 0)
+  if [ "$has_block" -gt 0 ] && [ "$has_complete" -gt 0 ]; then
+    echo "CONTRADICTION: $p — both review-required block ($has_block refs) AND kanban_complete ($has_complete refs)"
+  fi
+done
+```
+
+Expected: profiles with review handoff should either (a) have NO `kanban_complete` in their termination path, or (b) clearly disambiguate in the Completion section between review-requiring tasks (→ block) and non-review tasks (→ complete). A profile that says both with no disambiguation is ambiguous.
+
+Fix pattern: for profiles where ALL tasks require review (e.g., twitter-coder), replace the Completion section with a note that the worker should NEVER call `kanban_complete`. For profiles where some tasks require review and some don't (e.g., hermes-devops), add conditional language to the Completion section.
+
+**Real case (2026-07-06):** Audit of 8 active profiles found hermes-devops and twitter-coder both had block-vs-complete contradictions. Both were patched. The root cause was the `templates/devops-soul.md` template — also patched.
+
 ### 6. Ghost profile check (tickets assigned to deleted profiles)
 
 ```bash

@@ -1,7 +1,7 @@
 ---
 name: kanban-profile-blueprint
 description: Blueprint for creating and maintaining Hermes kanban worker profiles — config templates, role definitions, bootstrap script, and all lessons learned from production firefighting.
-version: 1.11.0
+version: 1.12.0
 platforms: [linux]
 metadata:
   hermes:
@@ -53,6 +53,9 @@ diagnosis and fixes.
 | Worker exhausts budget on test output | Inline tests burn iterations | `test:all` script + background+wait. See `references/test-all-script-pattern.md`. |
 | Worker polls with heartbeats during CPU task | SOUL.md missing `process(wait)` mandate | Add explicit background+wait section to profile SOUL. See `references/background-wait-enforcement.md`. |
 | Config has root-level `max_turns` or `max_iterations` | Dead legacy key, silently ignored | Remove from config. Only `agent.max_turns` controls budget. See `references/max-turns-key-semantics.md`. |
+| Reviewer task stuck in `todo` forever | SOUL.md Review Handoff missing `promote` step | Add `terminal("hermes kanban --board <board> promote <review_id>")` after `kanban_create`. `kanban_create()` creates in `todo`, dispatcher only picks up `ready`. |
+| Worker calls `kanban_complete()` instead of `kanban_block()` | SOUL.md has both Review Handoff (→block) AND Completion (→complete) sections | Disambiguate: review-requiring tasks → block; non-review tasks → complete. If ALL tasks require review, remove `kanban_complete` from termination path entirely. See `references/contradiction-check.md` check #7. |
+| SOUL.md budget ≠ config `agent.max_turns` | Budget number drifted during edits | Align SOUL.md to match config. Run `references/contradiction-check.md` check #1 after every SOUL edit. Coder is 180; all other standard profiles are 90 (or higher if project-specific). |
 
 ## Key references
 

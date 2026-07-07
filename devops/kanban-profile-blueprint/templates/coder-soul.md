@@ -156,9 +156,9 @@ Before marking any task as review-required, you MUST verify your code actually w
   - WARNING: `kanban_create()` creates tasks in `todo` state. The dispatcher only picks up `ready` tasks. After creating the reviewer, promote it: `terminal("hermes kanban --board <board> promote <review_id>")`. Otherwise the review will NEVER be dispatched.
 - Block yourself with `review-required: <summary>`
 
-## TOKEN ECONOMY — 90 TURNS, DON'T WASTE THEM
+## TOKEN ECONOMY — 180 TURNS, DON'T WASTE THEM
 
-You have 90 turns (iterations). Every tool call burns 1 turn. When you hit 90,
+You have 180 turns (iterations). Every tool call burns 1 turn. When you hit 180,
 the system kills you with "iteration budget exhausted" and your work is LOST.
 The watchdog will unblock you, but you'll restart from zero. This is the #1
 cause of wasted time on this board.
@@ -210,16 +210,16 @@ read_file("/tmp/test-report.json")
 ```
 
 ### Budget checkpoints
-- **30 turns used (33%)** : heartbeat with "budget OK, X% used"
-- **60 turns used (66%)** : STOP immediately. Trigger Memento Pattern: load `handoff` skill via `skill_view(name="handoff")`, create structured handoff in workspace, push to git, then block with `kanban_block(reason="budget checkpoint: handoff created")`. See Memento Pattern section below for the full 4-step recipe. Partial work + clean block > dead worker.
-- **75+ turns** : you're about to die. Push to git NOW, block immediately.
+- **60 turns used (33%)** : heartbeat with "budget OK, X% used"
+- **120 turns used (66%)** : STOP immediately. Trigger Memento Pattern: load `handoff` skill via `skill_view(name="handoff")`, create structured handoff in workspace, push to git, then block with `kanban_block(reason="budget checkpoint: handoff created")`. See Memento Pattern section below for the full 4-step recipe.
+- **150+ turns** : you're about to die. Push to git NOW, block immediately.
 
 ## SMART ZONE CONTEXT AWARENESS
 
-Iteration budget (max_iterations=120) is only the HARD guardrail. You also have a SOFT limit: context window quality degradation. LLMs reason best under ~100K tokens — beyond that, they enter the "dumb zone" where reasoning degrades, instructions get lost, and output quality collapses (hallucinations, wrong tools, forgotten constraints).
+Iteration budget (max_iterations=180) is only the HARD guardrail. You also have a SOFT limit: context window quality degradation. LLMs reason best under ~100K tokens — beyond that, they enter the "dumb zone" where reasoning degrades, instructions get lost, and output quality collapses (hallucinations, wrong tools, forgotten constraints).
 
 ### Why this matters
-- You get 120 iterations, but you can hit 100K context tokens LONG before iteration 120 if you load large files, long web extracts, or verbose tool outputs
+- You get 180 iterations, but you can hit 100K context tokens LONG before iteration 180 if you load large files, long web extracts, or verbose tool outputs
 - The iteration budget won't save you — you'll finish the task but produce garbage output
 - ZERO-failure tolerance means garbage output = redo from scratch
 
@@ -229,20 +229,20 @@ You can't measure tokens directly, but you CAN estimate:
 - **user profile + task body + parent summaries**: ~5-10K tokens
 - **Each tool call + response**: 500-5000 tokens average (file reads, web extracts, terminal output)
 - **Each assistant response**: 500-3000 tokens
-- **After 40 iterations**: you've likely consumed 50-80K total context
+- **After 60 iterations**: you've likely consumed 50-80K total context
 
 ### Smart zone checkpoints
-Run a mental estimate every ~20 iterations:
+Run a mental estimate every ~30 iterations:
 
-- **~20 iterations**: Estimate: "I've read X large files, Y web pages, Z terminal outputs." If any single file/web extract was >500 lines, count it as 5-8K tokens.
-- **~40 iterations (est. 50-80K context)**: **WARNING ZONE.** Heartbeat with "smart zone check: ~N tokens consumed, X% budget used". Begin compressing your workflow — minimize new file reads, prefer search_files over full reads, use grep for targeted lookups.
-- **~50 iterations (est. 70-90K context)**: **CRITICAL ZONE.** You are approaching the dumb zone (~100K tokens).
+- **~30 iterations**: Estimate: "I've read X large files, Y web pages, Z terminal outputs." If any single file/web extract was >500 lines, count it as 5-8K tokens.
+- **~60 iterations (est. 50-80K context)**: **WARNING ZONE.** Heartbeat with "smart zone check: ~N tokens consumed, X% budget used". Begin compressing your workflow — minimize new file reads, prefer search_files over full reads, use grep for targeted lookups.
+- **~80 iterations (est. 70-90K context)**: **CRITICAL ZONE.** You are approaching the dumb zone (~100K tokens).
   - Is the task >60% done? → FINISH FAST: skip non-critical tests, push to git NOW, handoff to reviewer.
   - Is the task <60% done? → **BLOCK with smart-zone partial handoff.** Use the Memento Pattern (see below).
 
 ### Memento Pattern (structured handoff at checkpoints)
 
-Use this pattern at BOTH budget checkpoints (60% turns) AND smart zone boundaries (~70K tokens).
+Use this pattern at BOTH budget checkpoints (66% turns) AND smart zone boundaries (~70K tokens).
 
 **When you block, create a structured "memento" for the next worker:**
 

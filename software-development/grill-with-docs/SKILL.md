@@ -20,6 +20,35 @@ Ask the questions one at a time, waiting for feedback on each question before co
 tightly coupled, present them individually. Exception: yes/no confirmations on a
 single recommendation can be paired.
 
+**Pitfall — missing option labels:** When a single question has multiple choices,
+label them with letters (A, B, C) so the user can answer with a single character
+instead of re-typing the full option. "For next question plz provide letters to
+each options so I don't need to rewrite the answer every time." This is especially
+important on mobile or chat platforms where typing is slow.
+
+If a question can be answered by exploring the codebase, explore the codebase instead.
+
+**Pitfall — CONTEXT.md appends with `patch`:** When adding a new decision to CONTEXT.md,
+the `patch` tool with `replace` mode REPLACES `old_string` with `new_string` — it does
+NOT append. If you set `old_string` to the last decision line and `new_string` to the
+new decision alone, you will erase the last decision. This happened 6+ times in one session.
+
+The correct pattern: set `old_string` to the LAST line of the file (the most recent
+decision), and set `new_string` to that same line PLUS the new decision below it,
+separated by a newline. Both decisions survive. Verify with `read_file` after every patch.
+
+**Pitfall — presenting choices:** When offering options (A/B/C), always prefix each
+with a letter label so the user can reply with a single letter instead of rewriting
+the answer. Example: "- **A)** Option one — description\\n- **B)** Option two — description"
+single letters — **A)**, **B)**, **C)**. Always include your recommendation with reasoning.
+The user can answer with a single letter instead of retyping the option.
+
+**Pitfall — appending to CONTEXT.md with patch:** When adding a new decision, set
+`old_string` to the text of the LAST existing decision, and `new_string` to that
+same text plus `\n` plus the new decision. Never set `old_string` to the new
+decision's text — that will replace (delete) the previous decision. Verify current
+state with `read_file` if unsure.
+
 If a question can be answered by exploring the codebase, explore the codebase instead.
 
 **Pitfall — technical jargon:** When the user says "I don't understand" or "explain
