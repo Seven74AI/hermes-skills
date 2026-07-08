@@ -1,7 +1,7 @@
 ---
 name: music-library
 description: "Music Library project configuration — tech stack, repo, tenant."
-version: 1.5.0
+version: 1.6.0
 metadata:
   hermes:
     tags: [music, project, reference]
@@ -101,11 +101,20 @@ hermes kanban --board music-library create --assignee coder \
 
 ## PR Workflow
 
-Same fork model as shop: workers push feature branches to fork → PR → auto-merge → reviewer (GitHub App) approves → squash merge.
+Two-tier PR model: **fork first, then upstream.**
+
+1. Push feature branch to `Seven74AI/music-library` fork
+2. Open PR on the **fork** (`Seven74AI/music-library`) — review and merge there first
+3. Only after fork merge, open PR from fork `main` → upstream (`mnlamart/music-library`)
+4. Upstream PR → reviewer (GitHub App) approves → squash merge
+
+Never open a PR directly against upstream from a feature branch. Always land on the fork first. This applies to all changes including CI workflow edits, docs, dependency bumps — not just feature code.
 
 ## CI
 
-Full CI: `lint` + `typecheck` + `vitest` + `playwright-gate` (consolidates 2 shards into one check)
+Full CI: `lint` + `typecheck` + `vitest` + `playwright-gate` (consolidates 2 shards into one check).
+
+**Deployment re-enabled (repo-gated):** container + deploy jobs restored in PR #34 (upstream). Guard: `github.repository == 'mnlamart/music-library'` — jobs only fire on upstream pushes, never the fork. Fork CI unchanged. Full YAML at `references/deployment-gating.md`.
 
 ### Pitfall: `|| true` / `--if-present` — silent CI bypass
 
@@ -136,7 +145,19 @@ Fixed in `Seven74AI/music-library#2`. Step-level emoji names are fine.
 - **Package manager divergence:** Fork = npm, upstream = pnpm
 - **Reviewer self-approval:** GitHub App may show `authorAssociation: NONE` → admin-merge workaround (see `kanban-project-workflow`)
 - **Empty git remote token:** The remote URL is `https://oauth2:TOKEN@github.com/...` but the token portion may be empty on a fresh clone. Pushing fails with "Authentication failed." Fix with `gh auth token | xargs -I{} git remote set-url origin "https://oauth2:{}@github.com/Seven74AI/music-library.git"`.
+- **Stale local `main` after fork sync:** After a consolidation PR merges upstream and the fork is force-pushed to match (`git reset --hard upstream/main && git push --force origin main`), the local `main` branch is stale. Creating a feature branch from it produces a PR with dozens of already-merged files. Always branch from `origin/main` instead of local `main`:
+  ```bash
+  git fetch origin main
+  git checkout origin/main -b feat/my-branch
+  ```
+  Or, if already on a bloated branch, cherry-pick the unique commit onto a fresh `origin/main` branch:
+  ```bash
+  git checkout origin/main -b feat/my-branch-clean
+  git cherry-pick <deploy-commit-sha>
+  git push --force origin feat/my-branch-clean:feat/my-branch
+  ```
 - **Circular dependency risk:** `service-playlist.server → track-batch-processor → playlist-utils → service-playlist` is a cycle if playlist-utils imports error classes from the facade. Keep `ServiceNotFoundError` / `NoTokensError` in `playlist-utils.server.ts` (where they're thrown), not in the facade.
+- **`BatchProcessorProvider.service` type mismatch:** The `transformPlaylistItem` return type in `BatchProcessorProvider` previously declared `service: { connect: { id: string } }` but Prisma's `PlaylistSyncProvider.transformPlaylistItem` returns `service?: ServiceWhereUniqueInput`. These are structurally incompatible. The field is always destructured-out by callers (`service: __`), so it was widened to `unknown`. If adding a new provider implementation, ensure the `service` field is present but don't constrain its type — `unknown` is correct.
 
 ### Dependency bump pitfalls
 
@@ -235,7 +256,34 @@ The repo's `CLAUDE.md` has an `## Agent skills` block pointing to `docs/agents/i
 ## Status
 
 - God-module decomposition complete (facade 942→716 lines)
-- Fork synced to upstream (no divergence)
-- Board clean
+- Fork synced to upstream (identical trees)
+- Board: all audio-archive tasks complete — slices 1-7 merged to fork + upstream
 - Dependency bumps PR #37: cookie v2, eslint v10, vitest v4 applied with fixes
-- **Audio archiving**: Reimplementing with cookie support. Architecture decisions in `CONTEXT.md` and issue [#38](https://github.com/Seven74AI/music-library/issues/38). Feature lives in `app/features/audio-archive/`. Key decisions: ArchiveJob separate from TrackAudioFile, yt-dlp cookies + sleep intervals, 2-min worker interval with polling breaks, direct presigned Tigris URLs for audio serving, Telegram Bot API for cookie-expiry notifications.
+- **Audio archiving**: Fully implemented and merged upstream (mnlamart/music-library#31). 16 architecture decisions in `CONTEXT.md`. Feature lives in `app/features/audio-archive/`. Key: ArchiveJob separate from TrackAudioFile, yt-dlp cookies + sleep intervals, 2-min worker interval with polling breaks, direct presigned Tigris URLs for audio serving, Telegram Bot API for cookie-expiry notifications.
+- **Worker wiring**: `app/entry.server.tsx` starts the worker via dynamic import + `setInterval(processQueueTick, AUDIO_ARCHIVE_INTERVAL_MS)` when `AUDIO_ARCHIVE_ENABLED=true`. Launched from the app layer (not `server/index.ts`) to respect ADR-002's no-cross-boundary-imports rule. Previously the worker was fully implemented and tested but never scheduled.
+- **Architecture review** (2026-07-07): 6 of 7 deepening candidates applied. Summary: removed `provider as any` cast (replaced with real `Prisma.ServiceCreateNestedOneWithoutTracksInput` type), deleted dead `server/utils/` (fixed ADR-002 violation), deduplicated `worker-control` mutations (155→125 lines), collapsed `youtube-cookie` (7→3 exports + type), consolidated env vars (11 missing vars added to Zod schema), wired the worker. Candidate #5 (inline playlist-utils) cancelled — 6+ call sites would create more duplication than the module removes.
+- **Worker wiring**: Worker launched from `app/entry.server.tsx` via dynamic import + `setInterval` (gated by `AUDIO_ARCHIVE_ENABLED === 'true'`). Launches from app layer — no ADR-002 cross-boundary violation. Former `server/utils/db.ts` and `server/utils/storage.ts` (dead code from ADR-004) have been removed.
+- **Cookie module API**: `youtube-cookie.server.ts` consolidated to 3 exports + type: `readCookies()`, `writeCookies(cookies, filePath?)`, `parseCookieLine()`. Deletion = `writeCookies([])`. Old names (`writeCookiesFile`, `readCookiesFile`, `deleteCookiesFile`, `serializeCookieLine`, `cookiesFromKeyValues`) no longer exist.
+- **Docs**: Post-audio-archiving documentation complete (README, ARCHITECTURE, CONTEXT.md, ADR-011, mocking, TESTING_PLAN). Merged to fork (#58) and upstream (#31).
+- **Architecture review** (2026-07-07): 6 of 7 deepening candidates applied. `BatchProcessorProvider.service` widened to `unknown` (was `{ connect: { id: string } }` — mismatched Prisma's `ServiceWhereUniqueInput`). `worker-control.server.ts` deduplicated (private `setWorkerState`). Env schema now covers all 27 vars. `provider as any` cast removed from `service-playlist.server.ts:96`.
+- **Issues**: #38 (architecture reference) remains open by design. All others (#39–#48) closed.
+## Kanban Telegram Notifications
+
+To enable Telegram notifications on kanban tasks (get pinged when workers complete/block):
+
+```bash
+# Find your Telegram target
+send_message(action='list')
+
+# Subscribe a task (use the exact target string from the list)
+hermes kanban --board music-library notify-subscribe <task_id> \
+  --platform telegram --chat-id "Lieutner 7D (dm)"
+
+# Verify subscriptions
+hermes kanban --board music-library notify-list <task_id>
+
+# Remove
+hermes kanban --board music-library notify-unsubscribe <task_id>
+```
+
+Note: subscriptions are per-task, not inherited by child tasks. When a coder task completes and creates a reviewer task, you must subscribe to the new reviewer task separately. Automate this with a cron watchdog script (see `~/.hermes/scripts/audit-notif-watchdog.py` — polls the board every 3 min and auto-subscribes new tasks linked to audit roots).

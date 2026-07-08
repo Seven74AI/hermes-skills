@@ -1,7 +1,7 @@
 ---
 name: kanban-worker
 description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.
-version: 2.4.0
+version: 2.5.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -370,6 +370,8 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 
 **Dispatcher DB corruption: `kanban.db is not a valid SQLite database`.** The dispatcher coordination DB (`/root/.hermes/kanban.db`) can get a corrupted header from an interrupted write (SIGKILL, OOM, host crash). Board DBs (`boards/<board>/kanban.db`) hold all the real data — the dispatcher DB is a coordination cache with zero critical data. Recovery: `mv kanban.db kanban.db.corrupted-backup` + restart gateway. It recreates the DB on the next dispatch tick. Board data is never at risk. Full diagnosis and recovery: `references/dispatcher-db-corruption.md`.
 
+**Index corruption: `idx_notify_task` — recovery without data loss.** When a single index is corrupt (e.g., `wrong # of entries in index idx_notify_task`), you can drop just the affected index + its table (`kanban_notify_subs`), recreate from a known-good schema, and re-subscribe notifications. Full recovery steps: `references/kanban-db-index-corruption.md`.
+
 **WAL leak → database locked in dispatcher ticks.** Gateway logs show repeated `kanban dispatcher: tick failed on board <name>` at `kanban_db.py line 1190` (`PRAGMA journal_mode=DELETE`). The gateway process has a leaked connection holding the DB in WAL mode, blocking the DELETE transition. Recovery: `hermes gateway restart` (kills all connections). The DB itself is usually healthy — no need to move it unless restart alone doesn't fix it. If restart fixes the WAL error but tasks still don't spawn, check for **stale claim_lock** (see `references/dispatcher-daemon-lifecycle.md` — two-phase failure pattern).
 
 **⛔ Dispatcher DB lock = silent dispatch failure (2026-06-05).** When `/root/.hermes/kanban.db` is locked, the dispatcher (which runs inside the gateway, not as a standalone daemon) silently fails every tick with `kanban dispatcher: tick failed on board <name>` at `kanban_db.py line 1190` (`PRAGMA journal_mode=DELETE`). Tasks sit in `ready` indefinitely with zero visible errors unless you check the gateway logs. The gateway itself stays up — only the dispatcher ticks fail. Diagnosis: `journalctl -u hermes-gateway --no-pager | grep "kanban dispatcher"`. Recovery: same as DB corruption — move the DB + restart gateway. Do NOT attempt to create a standalone daemon service; `hermes kanban daemon` is deprecated and exits with an error unless `--force` is used. Full lifecycle: `references/dispatcher-daemon-lifecycle.md`.
@@ -413,6 +415,32 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 UPDATE tasks SET status='ready', worker_pid=NULL, current_run_id=NULL, consecutive_failures=0 WHERE board='<name>' AND status IN ('running', 'blocked');
 ```
 (4) Kill any zombie workers that may still be running with the old credential: `pkill -f "hermes.*profile <name>"`. (5) The dispatcher picks up `ready` tasks on its next tick (~60s). Verify with `hermes kanban show <id> | grep "run "` — the latest run should show `active` and last >60s (the old-key runs all died in <61s). Do NOT rely on `hermes kanban promote` — this subcommand does not exist in all versions.
+
+**⛔ Broken symlink / unresolvable skill crash loop.** When a task carries skills that resolve to broken symlinks, the worker crashes at CLI startup with ``ValueError: Unknown skill(s): <name>`` before the agent loop begins. The dispatcher enters a self-sustaining crash cycle: promote → spawn → crash (exit 1, <61s) → promote → spawn → crash. The ``failure_limit`` auto-gates, but only resets the counter — it doesn't fix the root cause. The dispatcher itself is operating correctly; the crash loop is a symptom of unresolvable skills, not a dispatcher bug.
+
+**Root cause:** Skills in profile directories (``~/.hermes/profiles/<assignee>/skills/``) were synced from a temporary source that has since been deleted. The ``_validate_and_sync_skills()`` function (kanban_db.py:5464) copies skills to the profile at task creation time, resolving symlinks to their targets. If the target directory is later cleaned up (e.g. ``/tmp`` expiry), the synced symlinks become dangling — the skill directory exists but its contents are unreachable.
+
+**Real case (2026-07-07, music-library board):** Matt Pocock skills (``implement``, ``code-review``, ``tdd``) were installed from ``/tmp/mattpocock-skills/skills/engineering/`` as symlinks into ``~/.hermes/profiles/coder/skills/``. Run #642 (initial dispatch) succeeded because ``/tmp`` hadn't been cleaned yet. After the task blocked for review and was later unblocked, ``/tmp`` had been purged, all three symlinks were dangling, and runs #652–683 crashed identically with ``Unknown skill(s): implement, code-review``.
+
+**Diagnosis:**
+
+1. Check the task's skills list: ``hermes kanban --board <board> show <id> | grep skills:``
+2. Inspect each skill in the profile: ``file ~/.hermes/profiles/<assignee>/skills/<name>``
+3. Look for ``broken symbolic link to`` — dangling symlinks are the #1 cause
+4. Cross-check: ``ls /tmp/<source-dir>/`` — does the target still exist?
+5. Check gateway logs at task creation time for ``_validate_and_sync_skills`` warnings (``journalctl -u hermes-gateway --since "..." | grep validate_and_sync``)
+
+**Fix:**
+
+1. Reinstall the skills from a persistent location (NOT ``/tmp``) — clone the Matt Pocock skills repo to ``~/.hermes/mattpocock-skills/`` or similar
+2. Delete the broken symlinks: ``rm ~/.hermes/profiles/<assignee>/skills/<bad-symlink>``
+3. Re-run skill sync by completing the blocked task and creating a fresh one with the same skills — ``_validate_and_sync_skills`` runs on every ``kanban_create``
+4. Or manually recreate the symlinks pointing to the persistent install: ``ln -sf /persistent/path ~/.hermes/profiles/<assignee>/skills/<name>``
+5. Reset the task: ``hermes kanban --board <board> unblock <id>`` — the fresh dispatch will resolve skills from the fixed symlinks
+
+**⛔ User preference: never let a worker run without its declared skills.** When skills can't be resolved at task creation time, ``_validate_and_sync_skills`` (kanban_db.py) now creates the task in ``blocked`` state with a ``⛔ BLOCKED — skills not found`` notice in the body. The user explicitly rejected silent-skip behavior (\"I don't want an agent to run without a skill, that could be dangerous\"). If you encounter a task blocked this way, fix the skill installation and unblock — do NOT just remove the skill from the task and re-dispatch.
+
+**Prevention:** Never install kanban task skills from ``/tmp`` or any directory with automated cleanup (``/tmp``, ``/var/tmp`` with tmpfiles.d, Docker overlay mounts). Persistent locations: ``~/.hermes/skills/``, ``/opt/hermes/skills/``, or a Git-tracked directory. Verify with ``file`` after installation: every symlink should resolve to a real directory. The ``_validate_and_sync_skills`` patch also prunes broken symlinks from profiles when the source vanishes, preventing zombie references from causing future crash loops.
 
 **Dispatcher race condition:** Between `kill -9` and `kanban block`, the dispatcher can respawn a new worker (observed at 11:44 on 2026-06-05: kill, then new run #119 spawned at 11:44, blocked at 11:45). This creates a brief window where a NEW worker is already running when the block lands. The block prevents further dispatches, but does not retroactively kill the just-spawned worker. Always re-verify after blocking.
 
@@ -614,6 +642,13 @@ hermes kanban --board music-library notify-subscribe t_179dcf6b --platform teleg
 ```
 
 ### Manual reviewer ticket creation (from terminal, not a worker)
+
+When the user asks you directly (not inside a kanban worker) to create a review
+ticket, use the CLI create + notify-subscribe pattern.
+
+**For auto-subscribing notifications on dynamically-created child tasks** (e.g.,
+coder creates reviewer → reviewer creates fix tasks), use a cron watchdog script.
+See `references/notify-subscribe-watchdog.md` for the pattern and script template.
 
 When the user asks you directly (not inside a kanban worker) to create a review
 ticket, use the CLI create + notify-subscribe pattern:

@@ -80,6 +80,23 @@ from there. Verify with `grep GITHUB_TOKEN ~/.hermes/.env`.
 - Skill is NOT in `BUNDLED_SKILLS`
 - `SKILL.md` exists in the skill directory
 
+**Workers fail with "Unknown skill(s)" after skill_manage** — skills created via
+`skill_manage` go to `/root/.hermes/skills/` but worker profiles have ISOLATED
+skill directories at `/root/.hermes/profiles/<name>/skills/`. The dispatcher
+spawns workers with `--skills` directives; if the skill doesn't exist in the
+profile directory, the worker dies on startup. The daily GitHub sync (this skill)
+does NOT push to profile directories — it only syncs to the remote repo.
+
+**Fix:** After adding or patching any skill, rsync it to all active profiles:
+```bash
+for profile in coder reviewer planner music-coder music-reviewer; do
+  rsync -av --delete /root/.hermes/skills/ /root/.hermes/profiles/$profile/skills/
+done
+```
+This caused `hermes-skills` board workers to fail silently — 36 tasks created but
+0 completed in 24h because profile workers couldn't find the required skills at
+spawn time (2026-07-07).
+
 ## Memory context
 
 Memory records that `productivity/*` and `note-taking/*` are bundled (synced via

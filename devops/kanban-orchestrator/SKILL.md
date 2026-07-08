@@ -208,6 +208,13 @@ Full workflow for creating a new Kanban team from scratch: profiles, SOUL.md, Gi
 5. If approved → reviewer unblocks the coder, coder re-runs and completes
 6. If needs changes → reviewer blocks self, creates fix task for coder
 
+**Reviewer forgets to unblock after approval — systemic failure mode.** The reviewer SOUL.md instructs "Unblock coder → Complete yourself" but reviewers routinely call `kanban_complete` without the unblock step. This leaves the coder stuck in `blocked` even though the review is approved. The block watchdog detects this by checking if a blocked coder's reviewer completed with `approved: true` — it auto-unblocks. **Observed 3× in one night (2026-07-07):** t_8485d0d5, t_588daa6f (reviewer t_d00be01f), t_fbc6af2b (reviewer t_d1a0b300), and t_7634b8cf (reviewer t_5a006056) all had approved reviews but were never unblocked.
+
+**Prevention options (in order of reliability):**
+1. **Dispatcher-level guard (most robust):** auto-unblock a coder when its reviewer completes with `approved: true` — no prompt engineering needed
+2. **Skill + SOUL.md patches:** the `kanban-project-workflow` skill's reviewer APPROVE path was patched to include `kanban_unblock` BEFORE `kanban_complete` (2026-07-07). The reviewer SOUL.md was also updated with a ⛔ warning: "NEVER skip this step." Both files synced to all profiles. This is the prompt-level defense — effective but not bulletproof.
+3. **Block watchdog reactive fix:** already in place — detects approved-but-stuck coders within 5 min and auto-unblocks
+
 **⛔ NEVER use `parent=` on reviewer tasks.** The dispatcher does not promote `todo` children of blocked parents — creating a reviewer with `parent=coder_task_id` locks it in `todo` forever (deadlock observed on music-library board 2026-05-18: 6 reviewer tasks stuck until archived and recreated without parents). Always create reviewers standalone and include the coder task ID in the body text instead.
 
 **Pre-check for duplicates:** Before creating a review task, scan the board for an existing review with a similar title. If found, link to it instead of creating a duplicate.
@@ -276,6 +283,8 @@ done
 
 **Never say "cause probable" — user demands definitive root cause.** When investigating failures (corruption, crashes, missing data), do not present speculative conclusions. Either prove the cause with evidence (logs, file timestamps, integrity checks, code traces) or state what remains unknown. "Probable" is not acceptable. **Real case (2026-05-27):** agent said "Cause probable : une notification malformée" — user rejected this and demanded "une cause sûre." Full investigation revealed the real cause (WAL corruption from a 2-day-old crash). The notification error was a red herring.
 
+**⛔ Claims about infrastructure/config state require verification against the actual code/config — not inference from documentation.** Documentation (skills, READMEs, comments) can be stale. When making a claim like "the DB uses DELETE mode," "max_spawn defaults to 1," or "WAL is unstable on Linux," verify against: the actual config file (`hermes config get` or `grep`), the actual DB state (`PRAGMA journal_mode`), or the actual source code (`hermes_state.py` line 152). A claim verified against docs but contradicted by the running system destroys credibility and wastes the user's time. **Real case (2026-07-07):** agent claimed music-library DB used DELETE mode (based on orchestrator skill docs), that WAL was unstable on Linux (SQLite docs say otherwise), and that max_spawn=1 was the default (it's None). All three claims were wrong when checked against the actual code and config. User pushed back with "Do not assume, check thoroughly."
+
 **"Unknown skill(s)" crash-loop — worker profiles missing skills referenced in `--skill` flags.** Workers crash with `Error: Unknown skill(s): <name>` when a ticket's `--skill` flag references a skill that doesn't exist in the worker profile's skills directory (`/root/.hermes/profiles/<name>/skills/`). This is a silent crash — zero useful output, exit code 1, repeats indefinitely.
 
 **Diagnose:** `hermes kanban --board <board> log <task_id> | tail -5` — look for `Error: Unknown skill(s)`.
@@ -291,6 +300,22 @@ hermes kanban --board <board> reclaim <task_id>
 ```
 
 **Prevention:** Run `sync-to-profiles.sh` after: (a) installing a new skill, (b) editing any skill's SKILL.md/references/templates/scripts, (c) creating a new worker profile. The script syncs every skill under `productivity/` to every profile that already has a `skills/productivity/` directory. **Real case (2026-06-09):** planners crashed 54 times each on `book-extraction` because the skill was only in the main skills dir, not in the planner profile.
+
+**Auto-sync on `kanban_create`:** As of 2026-07-07, `kanban_db.py`'s `create_task` calls `_validate_and_sync_skills()` which searches `/root/.hermes/skills/` for each skill referenced in the task's `skills` list and auto-copies it to the assignee's profile if missing. Skills that don't exist in the source tree produce a warning log (but don't block creation). This covers both productivity/ AND top-level skills — closing the gap that `sync-to-profiles.sh` misses. Requires gateway restart after the `kanban_db.py` patch is applied.
+
+**⛔ `sync-to-profiles.sh` ONLY covers `productivity/` — top-level skills need manual copy.** `sync-to-profiles.sh` has a hardcoded `SKILLS_DIR="/root/.hermes/skills/productivity"` — it never touches top-level skills like `implement/`, `code-review/`, `tdd/`, `ask-matt/`, etc. These live at `/root/.hermes/skills/<name>/` and are invisible to any automated sync. When a new top-level skill is added (e.g. `implement` and `code-review` installed at Jul 6 22:38), workers referencing it via `--skill` crash with `Unknown skill(s)` until manually copied to each profile. The `pre-spawn-watchdog.py` has the same blind spot — it only checks `skills/productivity/`.
+
+**Fix when top-level skills cause crashes:**
+```bash
+# Copy a top-level skill to all profiles
+for profile in coder reviewer planner researcher; do
+  cp -r /root/.hermes/skills/implement /root/.hermes/profiles/$profile/skills/
+done
+# Then reclaim crashed tasks
+hermes kanban --board <board> reclaim <task_id>
+```
+
+**Prevention:** After installing any top-level skill via `skill_manage` or `setup-matt-pocock-skills`, manually copy it to all worker profiles. No automated script covers this path. **Real case (2026-07-07):** music-library Slice 1 coder crashed because `implement` and `code-review` were installed at 22:38 but never copied to profiles — first crash at 00:11.
 
 **Bundling independent lanes into one card.** If the user asks for two independent outcomes, create two cards. Example: "fix blockers and check model variants" is not one fixer task; create a fixer/engineer card for the fixes and an explorer/researcher card for the variant check, then optionally gate review on both.
 
@@ -346,7 +371,9 @@ hermes kanban --board <board> reclaim <id>
 
 **Prevention:** The kanban DB integrity watchdog (`kanban-integrity-watchdog.py`, cron `b568a8418cf3`) checks every hour and alerts on corruption BEFORE the DB goes fully empty. Ensure this cron job is active.
 
-**WAL mode → DELETE migration (corruption prevention).** SQLite WAL mode is vulnerable to checkpoint corruption on unclean shutdown. Hermes kanban DBs now use DELETE journal mode + FULL synchronous (patched in `kanban_db.py` May 2026). If you see WAL mode on a kanban DB, convert it and restart gateway. Full rationale and procedure in `references/kanban-db-corruption-recovery.md`.
+**WAL mode is the default — not DELETE.** Hermes kanban DBs use WAL journal mode by default (`hermes_state.py` line 152: `PRAGMA journal_mode=WAL`). DELETE mode is only a fallback for NFS/SMB/FUSE filesystems where WAL doesn't work. There is no `kanban_db.py` patch forcing DELETE — that claim in an earlier version of this skill was incorrect. The music-library DB remained WAL through July 2026 as evidence. Long gateway uptime (>2 weeks) can trigger intermittent WAL checkpoint corruption producing `sqlite3.OperationalError: disk I/O error` in the dispatcher. The fix is a controlled gateway restart (flushes WAL, resets connections). If corruption recurs after restart, then consider converting individual DBs to DELETE via `references/kanban-db-corruption-recovery.md`.
+
+**⚠️ WAL corruption symptom: `sqlite3.OperationalError: disk I/O error` in dispatcher.** The dispatcher's `dispatch_once → release_stale_claims` issues a SQL query that hits a corrupted page. The error crashes the entire dispatcher tick, producing `ready queue non-empty but 0 workers spawned` for 6→11→16→21... consecutive ticks. This is NOT a config or profile-health issue — the DB is physically corrupted (cause varies: transient I/O, memory pressure, concurrent WAL access under load). As of Jul 2026, `_is_corrupt_board_db_error` in `gateway/run.py` matches "disk i/o error" and auto-disables the board (re-enables when DB fingerprint changes). Integrity check re-runs hourly via `_guard_existing_db_is_healthy`. **Fix: restart gateway** (fastest recovery). **Real case (2026-07-07):** music-library kanban DB (WAL mode, gateway uptime 17 days) had 135 disk I/O errors after a bulk archive of 7 tasks, crashing every dispatch tick for ~2.5h. DB self-healed. Root cause unconfirmed — not unclean shutdown, possibly concurrent WAL checkpoint + reader conflict under heavy load.
 
 **Budget exhaustion on migration/refactoring tasks.** When a task asks a worker to apply a migration AND re-verify the full test suite inline, the worker exhausts its iteration budget on test output (e.g. 90 iterations burned on 283 test logs in 95s). Fix: split verification from application. Reference prior benchmark results in the task body and explicitly tell workers to SKIP tests — CI will catch regressions. Seen on shop pnpm migration (2026-05-18): task blocked at 90/90 after 20min because it ran `pnpm test` inline despite a prior benchmark proving 283/283 pass.
 
@@ -477,6 +504,11 @@ worker — the dispatcher keeps excess ready tasks queued until a slot
 frees up. Recommend setting to slightly below your number of active profiles
 (e.g. 3 profiles → `max_spawn=2`) to leave headroom. The default is `None` (unlimited).
 Gateway restart is mandatory — the config is read once at startup.
+
+**Per-board override:** individual boards can set their own `max_spawn` in
+`board.json` (e.g. `"max_spawn": 1` for memory-heavy boards like knowledge-base
+and kb-agent). The gateway reads it on every tick — no restart needed for
+metadata-only changes. Full recipe in `references/per-board-max-spawn.md`.
 
 **Verification:** after restart, `ps aux | grep "hermes.*kanban"` should
 show at most `max_spawn` workers **per board**, and `free -h` should show healthy memory.

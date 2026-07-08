@@ -39,7 +39,7 @@ This skill is _informed_ by the project's domain model. The domain language give
 
 Read the project's domain glossary and any ADRs in the area you're touching first.
 
-Then use the Agent tool with `subagent_type=Explore` to walk the codebase. Don't follow rigid heuristics — explore organically and note where you experience friction:
+Then explore the codebase. For codebases with 3+ distinct architectural zones, use the **parallel-zone exploration pattern** (see `references/parallel-exploration-pattern.md`): split exploration into parallel subagents via `delegate_task` with a `tasks` array, one subagent per zone. For smaller codebases, a single pass is sufficient. Don't follow rigid heuristics — explore organically and note where you experience friction:
 
 - Where does understanding one concept require bouncing between many small modules?
 - Where are modules **shallow** — interface nearly as complex as the implementation?
@@ -74,6 +74,14 @@ See [HTML-REPORT.md](HTML-REPORT.md) for the full HTML scaffold, diagram pattern
 
 Do NOT propose interfaces yet. After the file is written, ask the user: "Which of these would you like to explore?"
 
+## Prisma-specific patterns
+
+When the codebase uses Prisma, two patterns recur:
+- Hand-written interface types that accidentally diverge from Prisma-generated types (symptom: `as any` casts at seams).
+- Overusing `Prisma.GetPayload<>` for frontend types where conciseness matters more than derivation.
+
+See [prisma-types-in-interfaces.md](prisma-types-in-interfaces.md) for detection, fixes, and the decision framework.
+
 ### 3. Grilling loop
 
 Once the user picks a candidate, drop into a grilling conversation. Walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
@@ -84,3 +92,9 @@ Side effects happen inline as decisions crystallize:
 - **Sharpening a fuzzy term during the conversation?** Update `CONTEXT.md` right there.
 - **User rejects the candidate with a load-bearing reason?** Offer an ADR, framed as: _"Want me to record this as an ADR so future architecture reviews don't re-suggest it?"_ Only offer when the reason would actually be needed by a future explorer to avoid re-suggesting the same thing — skip ephemeral reasons ("not worth it right now") and self-evident ones. See [ADR-FORMAT.md](../grill-with-docs/ADR-FORMAT.md).
 - **Want to explore alternative interfaces for the deepened module?** See [INTERFACE-DESIGN.md](INTERFACE-DESIGN.md).
+
+## Pitfalls
+
+- **`as any` casts hide real type mismatches.** When removing a cast flagged in the report, run typecheck immediately — the cast may be papering over a structural incompatibility (e.g. Prisma-generated types vs hand-written interfaces with different field shapes). A common pattern: a `service` field typed as `Prisma.ServiceCreateNestedOneWithoutTracksInput` in the provider's return type doesn't match `{ connect: { id: string } }` in a hand-written consumer interface. Fix by importing the real generated type into the consumer interface — Prisma, GraphQL codegen, protobuf, or OpenAPI types are the source of truth, not hand-written guesses. If the field is destructured-and-discarded by every caller, note that in a comment, but still use the real type. Reserve `unknown` only for truly irreconcilable shapes.
+- **"All" is a valid answer to "Which one?"** — the user may want to tackle every candidate at once rather than picking one for the grilling loop. When they do, batch low-risk changes first (one-liners, deletions, internal refactors) and save the highest-risk candidate for last. Run typecheck/lint after each batch to catch cascading issues early.
+- **Deletion test reality check.** The deletion test is a thought experiment, but before inlining a module, literally search all call sites first. A function may have 6+ callers across multiple files — inlining would create more duplication than the module it removes. Mark such candidates as "cancelled — not worth the duplication" rather than blindly inlining. The deletion test reveals whether a module earns its keep; call-site count reveals whether the cost of removing it exceeds the benefit.

@@ -229,6 +229,11 @@ kanban_complete(
     metadata={"approved": True}
 )
 
+# ⚠️ REQUIRED: Unblock the coder task so it can complete.
+# The coder is blocked waiting for review — if you don't unblock, the
+# pipeline stalls even after approval. The CI watchdog handles the merge.
+terminal(f"hermes kanban --board {board} unblock {coder_task_id}")
+
 # 4b. Request changes — auto-merge blocked
 terminal(f"TOKEN=$(python3 ~/.config/gen-installation-token.py) && "
          f"gh api repos/{REPO}/pulls/{PR_NUMBER}/reviews "
