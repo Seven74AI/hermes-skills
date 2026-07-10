@@ -17,11 +17,19 @@ curl -sL -H "Authorization: Bearer $GITHUB_TOKEN" \
 
 ### 3. Reproduce locally (MANDATORY — do NOT fix blind)
 ```bash
-npx tsc --noEmit          # TypeScript errors
-npm run lint              # ESLint errors
-npx vitest run            # Unit test failures
-npx playwright test --workers=1  # E2E failures (needs server running)
+# Always specify --repo on forks (gh defaults to upstream, not your fork)
+gh run view <RUN_ID> --repo Owner/fork --log-failed
+
+# TypeScript/ESLint/unit tests don't need a server:
+npx tsc --noEmit
+npm run lint
+npx vitest run
+
+# Playwright E2E with CI=true mimics GitHub Actions:
+npm run build          # ⚠️ REQUIRED — server uses pre-built code from build/server/
+CI=true npx playwright test tests/e2e/failing-test.test.ts --reporter=line
 ```
+Without `npm run build` first, source changes to app code are NOT picked up — the `webServer` command (`start:mocks`) imports `build/server/index.js`. In CI, the build step runs before Playwright, so local runs must replicate that order.
 
 ### 4. Fix and validate locally before push
 

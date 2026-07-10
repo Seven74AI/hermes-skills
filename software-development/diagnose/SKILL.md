@@ -123,6 +123,10 @@ Required before declaring done:
 
 ## Pitfalls
 
+### React effect ordering race — stale state in sibling effects
+
+React runs effects in declaration order, but `setState()` calls are queued, not applied immediately. An effect that reads `state` in the same render cycle as its sibling that calls `setState(undefined)` will see the OLD value. The fix is a ref-based ready gate that only enables the consumer effect after the async work completes. See `references/react-effect-ordering-race.md` for the full pattern, diagnosis checklist, and a real case from music-library.
+
 ### Shell token redaction (Hermes-specific)
 
 The Hermes security scanner redacts sensitive values when tokens or keys pass through shell commands (`grep`, `curl`, pipes, heredocs). A token that works via Python `urllib` or file I/O will return 401/403 from every shell-based test.
@@ -135,9 +139,15 @@ The Hermes security scanner redacts sensitive values when tokens or keys pass th
 
 See `references/token-redaction.md` for detailed examples and the real-world incident report.
 
+See `references/e2e-playwright-flakes.md` for Playwright E2E-specific diagnosis patterns: reading error-context.md page snapshots, env var mismatch between test process and webServer, `.count()` not auto-waiting, `.first()` targeting wrong button.
+
 ### Fabricating facts during diagnosis
 
-Do NOT invent explanations like "known bug" or "probably a version issue" without evidence. When unsure, say "I don't know — let me check." If the user asks "how do you know," point to the source or admit uncertainty.
+Do NOT invent explanations like "known bug" or "probably a version issue" without evidence. The user explicitly rejects speculative conclusions — they want evidence-backed reports verified with code/logs/config, not assumptions. When unsure, say "I don't know — let me check." If the user asks "how do you know," point to the source or admit uncertainty.
+
+**Corollary: do not assume what the CI failure is.** When the user says tests are "still failing," pull the actual CI logs before acting. The failure might be on `main` (old code), not your branch (which may not even have triggered CI). A branch that pushes without a PR won't trigger CI at all if the workflow only fires on `push` to main/dev and `pull_request`.
+
+**Corollary: run tests locally before pushing.** CI is minutes; local is seconds. If a test passes locally but not on CI, the CI setup is the bug — not the test. Diagnose the CI environment differences before modifying test code.
 
 ### Codebase auditing: verify before asserting
 

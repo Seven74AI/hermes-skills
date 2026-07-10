@@ -46,15 +46,41 @@ await fsExtra.writeJSON(path.join(fixturesDir, `${email.to}.json`), email)
 
 ### storage.server.ts — mock S3/Tigris uploads
 
+In `app/utils/storage.server.ts`, add a MOCKS guard at the top of `uploadFile()`:
+
 ```typescript
-async function uploadToStorage(file: File | FileUpload, key: string) {
-  // In mocks mode, skip actual upload
+export async function uploadFile(params: {
+  file: File | FileUpload | Buffer
+  key: string
+  contentType?: string
+  metadata?: Record<string, string>
+  timings?: Timings
+  onProgress?: (progress: { loaded: number; total?: number }) => void
+}): Promise<string> {
+  const { file, key, contentType, metadata, onProgress } = params
+
+  // When running in mocks mode (E2E tests), skip the actual upload entirely.
+  // The test only verifies the redirect + DB record, not the file content.
   if (process.env.MOCKS === 'true') return key
+
   // ... rest of upload logic
 }
 ```
+
+This guard must appear BEFORE `isStorageConfigured()` and the local filesystem fallback — otherwise the local fallback path still tries to write files during CI runs, which can fail silently.
 
 ## What MOCKS does NOT fix
 
 - **GitHub OAuth e2e**: `remix-auth-github` does server-side token exchange that MSW can't intercept. These tests only work in unit tests (MSW runs server-side via `setupServer`). Skip them in e2e with `test.skip()`.
 - **MSW server-side calls**: MSW only intercepts browser-side requests. Any fetch() done in the server process (S3, Resend, GitHub API) needs its own mock logic in production code.
+
+## Pitfall: Local E2E testing requires a rebuild
+
+When running Playwright E2E tests locally with `CI=true`, the `webServer` command (`npm run start:mocks`) imports pre-built server code from `build/server/index.js`. Changes to source files (e.g., `app/utils/storage.server.ts`) are NOT picked up unless you rebuild first:
+
+```bash
+npm run build    # compile source changes into build/server/
+CI=true npx playwright test tests/e2e/some-test.test.ts
+```
+
+Without the rebuild, the server uses stale code and tests fail with the old behavior. This is the #1 cause of "it works on CI but not locally" (or vice versa). In CI, `npm run build` runs before Playwright (see `deploy.yml`), so local runs must replicate that order.

@@ -1,7 +1,7 @@
 ---
 name: music-library
 description: "Music Library project configuration — tech stack, repo, tenant."
-version: 1.10.0
+version: 1.11.0
 metadata:
   hermes:
     tags: [music, project, reference]
@@ -127,9 +127,13 @@ Never open a PR directly against upstream from a feature branch. Always land on 
 
 ⚠️ **Pitfall — never sync fork while kanban tasks are active.** Force-pushing fork `main` while kanban workers are running feature branches introduces avoidable risk (even though branches are technically independent). Wait until ALL tasks complete — check with `hermes kanban --board music-library list | grep -v "✓"`. If anything shows as running/blocked/todo, defer the sync. Consolidation PRs to upstream should happen only after the board is clean.
 
+⚠️ **Pitfall — "close" ≠ "merge".** When the user says "close" a PR, they mean **close it without merging**. Do NOT attempt to merge, rebase, or auto-merge. The PR's changes are unwanted — just `gh pr close`. Confirm the intent first if ambiguous, but when the command is explicit ("close #76", "close !!!!"), execute it literally.
+
 ## CI
 
 Full CI: `lint` + `typecheck` + `vitest` + `playwright-gate` (consolidates 2 shards into one check).
+
+**⛔ `CI: true` must be set in the Playwright job's `env:` block.** Without it, `playwright.config.ts` falls back to `npm run dev` (dev server with `tsx watch --inspect`), causing debug port conflicts, slower startup, `reuseExistingServer: false`, and flaky tests. The webServer command check is `process.env.CI ? 'npm run start:mocks' : 'npm run dev'`. Always verify: `grep "CI:" .github/workflows/deploy.yml` — must appear under the Playwright step's `env:`.
 
 **Deployment re-enabled (repo-gated):** container + deploy jobs restored in PR #34 (upstream). Guard: `github.repository == 'mnlamart/music-library'` — jobs only fire on upstream pushes, never the fork. Fork CI unchanged. Full YAML at `references/deployment-gating.md`.
 
@@ -161,6 +165,8 @@ Fixed in `Seven74AI/music-library#2`. Step-level emoji names are fine.
 
 - **⛔ Never trust a PR title claiming tests are "broken."** Run them. `references/verification-anti-patterns.md` has concrete examples (PR #76 removed 3 passing tests).
 - **⛔ Local E2E tests need `LITEFS_DIR=/tmp`.** Without it, dev server crashes during SSR. See `references/e2e-testing.md` for full setup.
+- **⛔ `playwright.config.ts` `webServer.env` must include ALL env vars required by `env.server.ts`.** `start:mocks` runs with `NODE_ENV=production`, which makes `DATABASE_PATH`, `CACHE_DATABASE_PATH`, `INTERNAL_COMMAND_TOKEN`, `HONEYPOT_SECRET`, and `SESSION_SECRET` required. Missing vars → 500 `Internal Server Error` on every request. Set them in both `process.env` (test process, before `dotenv/config`) and `webServer.env` (server subprocess).
+- **⛔ `SESSION_SECRET` must be IDENTICAL in test process and webServer process.** The `login()` fixture creates session cookies in the test process using `authSessionStorage(process.env.SESSION_SECRET)`. The webServer validates them with its own `SESSION_SECRET`. If they differ → cookies rejected → user never authenticated → page shows login form instead of target. Symptom: page snapshot contains `"Welcome back!"` login form.
 - **Reviewer self-approval:** GitHub App may show `authorAssociation: NONE` → admin-merge workaround (see `kanban-project-workflow`)
 - **Empty git remote token:** The remote URL is `https://oauth2:TOKEN@github.com/...` but the token portion may be empty on a fresh clone. Pushing fails with "Authentication failed." Fix with `gh auth token | xargs -I{} git remote set-url origin "https://oauth2:{}@github.com/Seven74AI/music-library.git"`.
 - **Stale local `main` after fork sync:** After a consolidation PR merges upstream and the fork is force-pushed to match (`git reset --hard upstream/main && git push --force origin main`), the local `main` branch is stale. Creating a feature branch from it produces a PR with dozens of already-merged files. Always branch from `origin/main` instead of local `main`:
@@ -179,7 +185,13 @@ Fixed in `Seven74AI/music-library#2`. Step-level emoji names are fine.
 
 ### Frontend pitfalls
 
-- **⛔ `formatDuration(track.duration || 0)` shows "0:00" for null durations.** The `formatDuration` function in `app/utils/format-duration.ts` already returns `"--:--"` for `null`, but passing `track.duration || 0` converts null to 0, which displays as "0:00" instead of "--:--". Fix: pass `track.duration` directly — let `formatDuration` handle null. Search pattern to find all instances: `formatDuration(` across the codebase.
+- **Patch tool escapes tabs in .tsx files.** The patch tool produces literal backslash-t instead of actual tab characters when editing indented files. After any patch to a .tsx or .ts file, verify with read_file — if lines show backslash-t sequences, fix with:
+  ```bash
+  python3 -c "path='<file>'; open(path,'w').write(open(path).read().replace('\\\\t','\t'))"
+  ```
+  The diff output may show proper tabs while the file on disk has escaped ones. Do NOT trust the diff.
+
+- **formatDuration(track.duration || 0) shows 0:00 for null durations.** The `formatDuration` function in `app/utils/format-duration.ts` already returns `"--:--"` for `null`, but passing `track.duration || 0` converts null to 0, which displays as "0:00" instead of "--:--". Fix: pass `track.duration` directly — let `formatDuration` handle null. Search pattern to find all instances: `formatDuration(` across the codebase.
 
 - **⛔ ArchiveJob worker never extracts metadata or updates `Track.duration`.** `worker.server.ts:135-143` creates a `TrackAudioFile` record with hardcoded `format: 'mp3'` and `mimeType: 'audio/mpeg'` — it never calls `extractAudioMetadata()` (from `audio-metadata.server.ts`) to extract duration, bitrate, or sample rate from the downloaded audio. Result: `Track.duration` stays `null` forever for all YouTube-imported tracks. The `yt-dlp` output file is available at `result.filePath` on disk BEFORE uploading to Tigris — metadata can be extracted there without re-downloading from S3. **Fix:** call `extractAudioMetadata(buffer)` on the downloaded file, update `Track.duration` via `prisma.track.update({ where: { id: trackId }, data: { duration } })`, and enrich the `TrackAudioFile.create` call with real `format`, `mimeType`, `fileSize`, `bitrate`, and `sampleRate` instead of hardcoded values. Full workflow at `references/archivejob-duration-gap.md`.
 
@@ -190,6 +202,10 @@ Fixed in `Seven74AI/music-library#2`. Step-level emoji names are fine.
 - **⛔ Audio resource route requires library membership — blocks service playlist tracks.** `audio.$trackId.tsx:35` gates on `track.userTracks.length === 0` → 403. This means a track with archive audio that exists in a synced YouTube playlist but is NOT in the user's library cannot be played, even though the user "owns" it via their service playlist. To extend access, add `servicePlaylistTracks: { where: { playlist: { ownerId: userId, isActive: true } }, take: 1 }` to the existing Prisma `include`. All joins are indexed (`ServicePlaylistTrack.trackId`, `ServicePlaylist` PK, `ServicePlaylist.ownerId`) — no performance impact. Count `userTracks.length > 0 || servicePlaylistTracks.length > 0` for the access decision.
 
 - **⛔ `<audio>` element has no `error` event listener — silent playback failure.** `audio-player.tsx` registers listeners for `timeupdate`, `loadedmetadata`, `play`, `pause`, `seeking`, `seeked`, `ended` — but NOT `error`. When an audio source returns 403, 404, or a network error, the failure is completely invisible: the play button flickers and no feedback is given. Always add an `error` listener that logs `MediaError.code` to console at minimum when wiring `<audio>` elements.
+
+- **⛔ Stale `audioSrc` race condition — next/auto-advance silently broken.** The `audioSrc` fetch effect and the play effect share `trackId` as a dependency, so they fire in the same render cycle. React runs effects in declaration order, but `setState()` calls are queued — the play effect sees the PREVIOUS track's stale `audioSrc`. This causes: (1) `previousTrackIdRef` burns on the new track ID prematurely, (2) `play()` is called on the stale `<audio src>`, (3) when the real presigned URL arrives, the guard says already-seen → skips. **Symptoms:** next button does nothing, auto-advance on `ended` does nothing. Track #1 works because `audioSrc` starts `undefined` (falsy), so the race doesn't trigger. **Fix:** replace `previousTrackIdRef` with `urlReadyRef` — set to `false` in the fetch effect (same render, gates the play effect), set to `true` only when the new presigned URL resolves. See `references/audio-player-stale-audiosrc-race.md` and `diagnose` skill `references/react-effect-ordering-race.md`.
+
+- **⛔ Service playlist API mismatch — next/auto-advance broken on YouTube playlist page.** `AudioPlayerProvider.fetchAllTracks` and `loadFullTrackData` call `/api/playlist-tracks` for `{ type: 'playlist' }` context, which queries `UserPlaylistTrack`. But the YouTube playlist page (`playlist.$id.tsx`) passes a `ServicePlaylist` ID — the wrong table, wrong data. The correct endpoint is `/api/service-playlist-tracks` (queries `ServicePlaylistTrack`, always includes `audioFiles`). **Symptoms:** first track plays from YouTube page, but next/auto-advance silently fail because the playlist data returns empty. Library page is unaffected (uses `/api/user-tracks`). **Fix:** introduce `'service-playlist'` context type, branch to `/api/service-playlist-tracks`. Full diagnosis at `references/audio-player-service-playlist-gap.md`.
 
 - **⛔ `<audio src>` type is `string | undefined`, NOT `string | null`.** React's `<audio>` element (via `JSX.IntrinsicElements['audio']`) declares `src?: string | undefined`. Using `useState<string | null>(null)` and passing it to `src={audioSrc}` fails with `TS2322: Type 'string | null' is not assignable to type 'string | undefined'`. Always use `useState<string | undefined>(undefined)` for audio/video source state. Same applies to `<video>`, `<img>`, `<source>`, and any HTML element with optional `src` attributes.
 
@@ -304,6 +320,12 @@ npx react-router typegen && npx tsc --noEmit
 
 ### Test infrastructure pitfalls
 
+- **Storage test fixtures:** Tests hitting the audio resource route fail with "Storage is not configured" because `getFileUrl()` requires S3 env vars. Create a local fixture file at `tests/fixtures/uploaded/<objectKey>` so the loader serves it directly without hitting S3. See `references/storage-test-fixtures.md` for the helper pattern.
+
+- **⛔ `waitForURL` pre-creation pattern is fragile.** Creating a `page.waitForURL()` promise BEFORE clicking the submit button, then awaiting it in a try/catch, silently times out when the form returns `data()` (same-page re-render) instead of `redirect()`. Remix actions that return `data()` trigger no URL change, so `waitForURL` never fires. **Instead:** click first, then `await page.waitForURL(…)` directly with a generous timeout (20s for file uploads on CI). This is the idiomatic Playwright pattern.
+
+- **⛔ `waitForTimeout` is a flake magnet.** Fixed-time waits (`page.waitForTimeout(500)`, `page.waitForTimeout(1000)`) are unreliable on slow CI. Playwright's `expect(…).toBeVisible()` and other web-first assertions auto-wait up to the test timeout. **Replace:** every `await page.waitForTimeout(N)` with a comment followed by the next `expect` that will naturally auto-wait. If no `expect` follows, use `page.waitForSelector` or `page.waitForResponse` targeting a specific element or network call.
+
 - **⛔ Moving UI elements between pages breaks Playwright tests.** When moving components (buttons, dialogs, `itemActions`) from one route to another, the corresponding Playwright e2e tests must be updated or inverted. The test at `tests/e2e/playlists.test.ts` has specific tests for library toggle buttons and "Add All Missing" — if those features move to a different page, the tests must be rewritten to target the new page (or inverted to assert absence on the old page). Always run `npx playwright test` after page-level changes before pushing.
 
 - **⛔ Strict mode violation: duplicate role/name buttons on desktop.** The YouTube import page has two "Search" buttons at desktop viewport — the global nav bar search (`getByRole('banner')`) and the import page's form button (`#main-content`). `page.getByRole('button', { name: /search/i })` resolves to 2 elements, failing strict mode. Fix: use `.first()` or scope to `#main-content`. This surfaced as a flaky failure in `tests/e2e/youtube-import.test.ts` — the test passes on mobile viewport (nav search hidden) but fails on desktop CI. Fixed in PR #77.
@@ -330,7 +352,41 @@ Full migration recipes at `references/dependency-migrations.md`.
 - **Vitest v4 (^3.x → ^4.x):** Constructor mocks break — `vi.fn()` is no longer callable with `new`. Use `vi.fn(function(this: any, ...) { … })` instead. `console.warn` mocks are enforced more strictly in test setup (`setup-test-env.ts` throws on warn). Affected test files may need `consoleWarn.mockImplementation(() => {})` in their `beforeEach`.
 - **Vitest v4 + jsdom + node:sqlite:** Vite 7's `import-analysis` plugin rejects `node:sqlite` as a bundlable built-in in the jsdom environment. `deps.external`, `ssr.external`, and `resolve.alias` do NOT intercept it. The working fix: add a Vite plugin with `enforce: 'pre'` to the MAIN `plugins` array (NOT `test.plugins`) that returns `{ id: 'node:sqlite', external: true }` from `resolveId`. The plugin MUST have an explicit `return undefined` on all code paths (TS7030, `noImplicitReturns`). See `references/dependency-migrations.md` for the full snippet.\n- **Vitest v4 coverage thresholds:** v4 ENFORCES thresholds; v3 silently ignored them. With `all: true` across ~100 source files, thresholds like 25% functions / 50% branches are impossible. Set floors just below actual coverage (~8% functions/branches). This is NOT a "lower to make CI pass" hack — the v3 values were never actually met, they just weren't checked.
 
-## Fork Sync After Consolidation
+## Fork Sync
+
+Two scenarios: **inbound sync** (upstream has new commits, fork is 0 ahead — fast-forward) and **consolidation sync** (fork has unsquashed commits ahead after PRs merged upstream — force push). Branch protection on the fork blocks ALL direct pushes (even fast-forwards), so both paths require the same lift-protection/push/restore dance.
+
+**Always check kanban first** — never sync while tasks are active:
+```bash
+hermes kanban --board music-library list | grep -v "✓"
+# If anything shows running/blocked/todo, defer.
+```
+
+### Inbound Sync (fast-forward — fork 0 ahead, N behind)
+
+When upstream has new commits and the fork has zero unique commits, this is a simple fast-forward merge:
+
+```bash
+cd /tmp/music-library
+git fetch upstream main
+
+# Check counts
+git rev-list --count origin/main..upstream/main   # commits behind
+git rev-list --count upstream/main..origin/main   # commits ahead (should be 0)
+
+# Fast-forward
+git merge upstream/main --ff-only
+```
+
+Then push — branch protection will block it, so temporarily lift it:
+
+```bash
+gh api -X DELETE repos/Seven74AI/music-library/branches/main/protection
+git push origin main
+# Restore protection (see full payload below)
+```
+
+### Consolidation Sync (force push — fork N ahead, 0 behind)
 
 After a consolidation PR merges to upstream, the fork will show N commits "ahead"
 (the unsquashed individual commits) while being "behind" by 0. To eliminate the
@@ -445,7 +501,7 @@ The repo's `CLAUDE.md` has an `## Agent skills` block pointing to `docs/agents/i
 ## Status
 
 - God-module decomposition complete (facade 942→716 lines)
-- Fork synced to upstream (identical trees at `e70d4c5`). Branch protection restored (enforce_admins, 1 review, required checks).
+- Fork synced to upstream (identical at `f432ed6`, 2026-07-09). Branch protection restored (enforce_admins, 1 review, required checks).
 - Board: all audio-archive tasks complete — slices 1-7 merged to fork + upstream
 - Dependency bumps PR #37: cookie v2, eslint v10, vitest v4 applied with fixes
 - **Audio archiving**: Fully implemented and merged upstream (mnlamart/music-library#31). 16 architecture decisions in `CONTEXT.md`. Feature lives in `app/features/audio-archive/`. Key: ArchiveJob separate from TrackAudioFile, yt-dlp cookies + sleep intervals, 2-min worker interval with polling breaks, direct presigned Tigris URLs for audio serving, Telegram Bot API for cookie-expiry notifications.
@@ -462,6 +518,7 @@ The repo's `CLAUDE.md` has an `## Agent skills` block pointing to `docs/agents/i
   - YouTube Cookies link added in admin UserDropdown
   - Null duration display fixed (0:00 → --:--)
 - **Playback fixes** (3 slices, merged upstream #40): YouTube playlist tracks now playable — added `audioFiles` to frontend mapping, relaxed audio resource access check for service playlist tracks, added error listener on `<audio>` element. 7 new test files. Upstream PR #40 consolidates all 3 slices.
+- **Next/auto-advance fix** (PR #90, pending review): Fixed stale `audioSrc` race condition that broke next button and auto-advance. Replaced `previousTrackIdRef` with `urlReadyRef` — gates the play effect so it fires only when the fresh presigned URL arrives, not during the same render cycle with stale state. PR #89's `setAudioSrc(undefined)` approach was insufficient because React effects run in declaration order before queued state flushes.
 ## Kanban Telegram Notifications
 
 To enable Telegram notifications on kanban tasks (get pinged when workers complete/block):
