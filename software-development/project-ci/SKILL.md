@@ -72,6 +72,54 @@ TEST: <stack> — <scope>. Cible: >85% coverage. CI verte obligatoire.
 
 **Audit approach:** If a project already has tests but coverage is unknown, create an audit ticket first — don't assume coverage is good just because CI is green. CI passing ≠ good coverage.
 
+## E2E Test Diagnosis — Playwright/CI Flaky Test Root Cause
+
+When an E2E test fails intermittently, do NOT reach for `waitForTimeout` or `waitForURL` as a first response. Use the diagnostic flow below. For recurring flaky patterns (networkidle hangs, SQLite contention, CDP timing, a11y color-contrast, shadcn checkbox hydration, toast races), see `references/flaky-e2e-fixes.md`.
+
+### Phase 0 — Run locally first. Never push guessed fixes.
+
+CI is for verification, not primary testing. Run the failing test locally before pushing. If you can't, figure out why (missing env vars, build step, wrong command) and fix that first. 
+
+Never assume the bug. Read the actual error output: check `error-context.md` for the page snapshot, check CI logs (not just the summary), run the test yourself.
+
+### The Two-Environment Problem (SESSION_SECRET trap)
+
+Playwright E2E tests run with TWO separate process environments that must be in sync:
+
+1. **Test process** — `process.env` at the top of `playwright.config.ts`. Runs fixtures like `login()`.
+2. **webServer subprocess** — `webServer.env` in `defineConfig()`. Runs the app server.
+
+If `SESSION_SECRET` differs between them, the cookie created by `login()` is rejected by the server, and the user appears logged out silently. The page snapshot shows "Welcome back!" login form instead of authenticated content.
+
+**Fix:** Set every env var required by `env.server.ts` (or equivalent) in BOTH locations with the SAME value. Common required vars: `DATABASE_URL`, `DATABASE_PATH`, `CACHE_DATABASE_PATH`, `INTERNAL_COMMAND_TOKEN`, `HONEYPOT_SECRET`, `SESSION_SECRET`.
+
+### Diagnosis Flow
+
+1. **Read `error-context.md`** first — `test-results/<test>-retryN/error-context.md`. The `# Page snapshot` tells you exactly what rendered:
+   - `Internal Server Error` → server crashed. Check env vars and stderr.
+   - Login screen ("Welcome back!") → `login()` fixture failed. SESSION_SECRET mismatch.
+   - Vite `virtual:react-router/server-build` → `NODE_ENV` mismatch. Server used Vite dev mode.
+   - Expected page but missing element → element genuinely absent. Check component code.
+
+2. **Run the server manually** to find missing env vars:
+   ```bash
+   npm run start:mocks > /tmp/stdout.log 2> /tmp/stderr.log &
+   sleep 10
+   curl -s http://localhost:3000/some-page
+   cat /tmp/stderr.log | grep "Invalid environment variables" -A 10
+   ```
+
+3. **Check env.server.ts** for vars that become required with `NODE_ENV=production`.
+
+### Additional Pitfalls
+
+- **`CI: true` must be set in workflow `env:` blocks.** Without it, Playwright webServer falls back to `npm run dev` (slower, debug port conflicts).
+- **`@slow` tag does NOT extend timeout.** Use `test.setTimeout(30000)` explicitly.
+- **`cross-env` in npm scripts overrides `webServer.env` values.** If `start:mocks` uses `cross-env NODE_ENV=production`, it will override whatever you set in `webServer.env`.
+- **`waitForTimeout` / pre-created `waitForURL` are anti-patterns.** They mask timing issues. Find the real synchronization gap.
+
+Full diagnostic walkthrough: `references/playwright-env-vars.md`.
+
 ## Pre-Push Hooks — Local Quality Gate
 
 Pre-push hooks catch failures BEFORE they reach CI/GitHub. Every repo MUST have a `.githooks/pre-push` script that runs the appropriate fast-path tests. This is the first line of defense — CI runs later on push, but pre-push saves round-trips.
