@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "oxc",
+    "react",
+    "import"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "react-hooks/exhaustive-deps": "warn",
+    "eslint/no-await-in-loop": "off",
+    "eslint/no-unused-vars": "warn",
+    "eslint/no-empty-pattern": "warn",
+    "eslint/no-async-promise-executor": "warn"
+  },
+  "env": {
+    "builtin": true,
+    "browser": true,
+    "node": true
+  },
+  "settings": {
+    "react": {
+      "version": "19.0",
+      "runtime": "automatic"
+    }
+  },
+  "ignorePatterns": [
+    "node_modules",
+    "build",
+    "public/build",
+    "generated",
+    "*.gen.*"
+  ]
+}

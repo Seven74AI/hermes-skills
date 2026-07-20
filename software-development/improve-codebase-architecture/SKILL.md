@@ -82,6 +82,8 @@ When the codebase uses Prisma, two patterns recur:
 
 See [prisma-types-in-interfaces.md](prisma-types-in-interfaces.md) for detection, fixes, and the decision framework.
 
+For query optimization (findMany→findFirst, upsert→findUnique, count→groupBy), see [prisma-query-optimization.md](prisma-query-optimization.md) — covers the test-mock pitfall, measurement discipline, and common patterns.
+
 ### 3. Grilling loop
 
 Once the user picks a candidate, drop into a grilling conversation. Walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.

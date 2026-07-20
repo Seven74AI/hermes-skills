@@ -17,7 +17,11 @@ CI commands to run after any dependency change (`npm install`, `pnpm install`, e
 vitest run && tsc --noEmit && npm run lint && playwright test --workers=1
 ```
 
-For diagnosing and fixing flaky E2E tests (SQLite contention, networkidle hangs, timeout defaults, a11y color-contrast, CDP timing), see `references/flaky-e2e-fixes.md` — recurring patterns observed across shop, the-swarm, and music-library projects.
+For diagnosing and fixing flaky E2E tests (SQLite contention, networkidle hangs, timeout defaults, a11y color-contrast, CDP timing, mock fixture prerequisites), see `references/flaky-e2e-fixes.md` and `references/e2e-mock-fixtures.md` — recurring patterns observed across shop, the-swarm, and music-library projects.
+
+## Runtime Upgrades
+
+When upgrading Node.js itself (e.g. 22→24), not just npm packages, the surface area spans package.json, Dockerfile, CI config, and lockfiles — with a lockfile staleness pitfall. See `references/node-runtime-upgrade.md` for the full checklist and verification steps.
 
 ## Why All Four
 
@@ -178,7 +182,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with: { node-version: '22' }  <!-- ⚠️ Must match engines.node in package.json -->
       - run: npm ci  # or pnpm install --frozen-lockfile
       - run: npx playwright install --with-deps
 ```

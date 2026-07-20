@@ -390,14 +390,7 @@ background CI. All profiles bumped to max_turns=120.
 When a worker creates a branch from a fork, the fork may contain commits that
 were **never merged to upstream main**. This happens when consolidation PRs,
 dep bumps, or cleanup sweeps were pushed to the fork but the PR to upstream
-was closed or never created.
-
-**Symptoms:**
-- PR diff shows unrelated commits (dep bumps, consolidation, cleanup) alongside
-  the actual feature work.
-- CI workflow regressions (`|| true`, wrong node version) reappear from old commits.
-- Commits from days/weeks ago show in `git log` but not on upstream main.
-- `gh api repos/X/compare/main...<branch>` shows diverged status.
+was closed or never created. See `references/pr-orphan-cleanup.md`.
 
 **Prevention:** Before starting work, always rebase the fork on upstream main:
 ```bash
@@ -1484,6 +1477,8 @@ When decomposing a research report into 10+ implementation tickets, use the
 `execute_code` loop pattern instead of creating tickets one at a time via CLI.
 
 See `references/batch-ticket-creation.md` for the template.
+
+## Fork Sync (force-push blocked) → `references/fork-sync-api-workaround.md`
 
 ## PR Consolidation
 

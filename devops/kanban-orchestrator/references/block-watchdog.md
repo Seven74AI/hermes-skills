@@ -94,6 +94,8 @@ Uses a single `LEFT JOIN` with a pre-aggregated subquery (`GROUP BY task_id` on 
 ## Known Limitations
 
 - Delivery to messaging platforms (Telegram, Discord) can fail with `RuntimeError('cannot schedule new futures after interpreter shutdown')` — use `deliver: local` and have the watchdog comment directly on tasks instead.
+
+- **`needs changes` blocks classified as `unknown` (fixed 2026-07-13):** `check-blocked-tasks.py` added `is_needs_changes_blocked()` — matches block reasons containing `"needs change"` case-insensitively. Before this fix, reviewer tasks blocked with `needs changes: ...` fell through to "unknown block type" in the watchdog output. The watchdog now reports them as `needs-changes-blocked (reviewer verdict, fix in progress)`.
 - When too many workers run concurrently, OOM kills workers → tasks cycle crash→unblock→crash. Fix: set `kanban.max_spawn` (see skill body) to cap concurrent workers at 2-3. This is the definitive fix — cloning/removing profiles does not address the root cause (dispatcher spawns per-task, not per-profile).
 - **Timeout loops with <20 runs aren't detected by Phase 2a** — the run-count threshold is 20 to avoid false positives from normal retry cycles. Tasks with 5-19 runs that are stuck in timeout are caught by Phase 2b if they run >1h without heartbeat.
 - **`consecutive_failures` kanban bug.** Timeout runs don't increment `consecutive_failures` in the DB (the `enforce_max_runtime → _record_task_failure` code path looks correct but the counter stays 0 on observed tasks with 400+ timed_out runs). Phase 2 and the DB sync work around this. Root cause not yet identified in `kanban_db.py`. Fix at source when discovered.
@@ -117,6 +119,46 @@ The watchdog should escalate when the same issue repeats, rather than silently r
 |-----------|--------|
 | Same task blocked with **same reason** for **3+ watchdog runs** | 🔴 **ESCALATE** — add to top of report: "ESCALATION: `<task_id>` blocked N runs with `<reason>`. Human intervention needed." |
 | Same task **unblocked 3+ times** still blocking with **same technical reason** | 🔴 **REPEATED BLOCKER** — do NOT unblock again. Escalate: "REPEATED BLOCKER: `<task_id>` blocked N times with `<reason>`. Needs root cause fix, not another unblock." |
+| **Reviewer blocked with `needs changes` + active fix task exists** | ✅ **NOT STUCK** — do NOT flag either the reviewer or the original coder. The fix chain is active: reviewer found issues → fix coder is working. Only escalate if the fix chain is broken (fix task done but coder still blocked without re-review). |
+
+### "Needs Changes" chain recognition (critical — avoids false stuck reports)
+
+When a reviewer blocks with `needs changes` and creates a fix coder task, the chain is:
+
+1. **Coder** blocks `review-required` → creates **reviewer** task
+2. **Reviewer** reviews → finds issues → blocks `needs changes: <summary>` → creates **fix coder** task
+3. **Fix coder** is running/ready
+
+The watchdog must recognize this chain. When checking a `review-required` coder:
+
+```python
+# For each review-required coder:
+#   1. Find the reviewer task that blocked with "needs changes"
+#   2. Find the fix coder task the reviewer created
+#   3. If fix coder is active (ready/running) → chain is healthy → do NOT flag
+#   4. If fix coder is done/archived AND no new review cycle started → chain broken → escalate
+```
+
+**Quick SQL check:**
+```sql
+-- Given a review-required coder t_coder:
+-- 1. Find the reviewer
+SELECT t2.id, t2.status, t2.latest_summary 
+FROM tasks t1
+JOIN task_links l ON l.parent_id = t1.id
+JOIN tasks t2 ON t2.id = l.child_id
+WHERE t1.id = 't_coder' AND t2.assignee = 'reviewer';
+
+-- 2. Find the fix task created by that reviewer
+SELECT t3.id, t3.status, t3.assignee
+FROM task_comments c
+JOIN tasks t3 ON c.body LIKE '%' || t3.id || '%'
+WHERE c.task_id = '<reviewer_id>' 
+  AND c.author = 'reviewer'
+  AND t3.status IN ('ready', 'running');
+```
+
+**Real case (2026-07-13, music-library):** t_3b1ff519 (coder, `review-required`), t_f6c9490d (reviewer, `needs changes`), t_8e211ca6 (fix coder, `running`). Watchdog reported both t_3b1ff519 and t_f6c9490d as blocked — but the fix chain was active. The watchdog should have recognized: reviewer verdict rendered → fix coder active → chain healthy → suppress.
 
 These rules prevent silent failure loops where the watchdog unblocks a task, the dispatcher retries, it fails with the same error, and the cycle repeats indefinitely without the user knowing.
 

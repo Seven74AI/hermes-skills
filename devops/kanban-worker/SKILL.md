@@ -23,12 +23,20 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
 | `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
 
-## ⛔ TOKEN ECONOMY — 90 TURNS, DON'T WASTE THEM
+## ⛔ TOKEN ECONOMY — DON'T WASTE YOUR BUDGET
 
-You have ~90 turns (iterations) per run. Every tool call burns 1 turn. When you
+Your turn budget is **profile-configured** — different profiles and tasks may
+have different limits (90, 180, 360, etc.). Check your `max_turns` in the
+profile config or the task metadata. Every tool call burns 1 turn. When you
 hit the limit, the gateway kills you with "iteration budget exhausted" — your
 work is LOST and the watchdog restarts you from zero. **This is the #1 cause of
 wasted kanban runs across all boards.**
+
+**Compute your checkpoints dynamically from your actual budget:**
+- `budget = $MAX_TURNS` (from profile config or task — default 90 if unknown)
+- `checkpoint_33 = floor(budget × 0.33)`
+- `checkpoint_66 = floor(budget × 0.66)`
+- `checkpoint_83 = floor(budget × 0.83)`
 
 ### The ONE rule: background+wait for ALL heavy work
 
@@ -72,13 +80,13 @@ If your task needs test→fix→retest→fix cycles, write a SINGLE bash script 
 does ALL the work internally, call it ONCE with background+wait. The worker uses
 3 turns instead of 30. See `templates/e2e-iteration-loop.sh` for a starter.
 
-### Budget checkpoints
+### Budget checkpoints (computed from your actual budget)
 
-- **30 turns (33%)** — heartbeat with "budget OK, X% used"
-- **60 turns (66%)** — ⛔ STOP immediately. Trigger the Memento Pattern: load the `handoff` skill, create a structured handoff document (see Memento Pattern below), then block with `kanban_block(reason="budget checkpoint: handoff created")`. Partial work + clean block > dead worker.
-- **75+ turns** — you're about to die. Push to git NOW, block immediately.
+- **`checkpoint_33` turns (33%)** — heartbeat with "budget OK, X% used"
+- **`checkpoint_66` turns (66%)** — ⛔ STOP immediately. Trigger the Memento Pattern: load the `handoff` skill, create a structured handoff document (see Memento Pattern below), then block with `kanban_block(reason="budget checkpoint: handoff created")`. Partial work + clean block > dead worker.
+- **`checkpoint_83` turns (83%)** — you're about to die. Push to git NOW, block immediately.
 
-**IMPORTANT: Turn budget ≠ Token budget (Smart/Dumb Zone).** These checkpoints track *iteration count*, not token accumulation. Matt Pocock's "smart zone" concept (~100K tokens) is about the LLM's attention window degrading — a completely different failure mode. A worker doing `background=true` + `process wait` burns very few tokens but still accumulates turns via heartbeats. Hitting the 60-turn checkpoint does NOT mean the worker is in the dumb zone — it may have a tiny context. Conversely, a worker that opens 10 large files in 20 turns can enter the dumb zone well before any turn checkpoint fires. The checkpoint system is a safety net against iteration exhaustion, NOT a token-budget guard. See `references/smart-zone-vs-turn-budget.md` for the full analysis and Matt Pocock's original recommendations from the hermes-ops audit.
+**IMPORTANT: Turn budget ≠ Token budget (Smart/Dumb Zone).** These checkpoints track *iteration count*, not token accumulation. Matt Pocock's "smart zone" concept (~100K tokens) is about the LLM's attention window degrading — a completely different failure mode. A worker doing `background=true` + `process wait` burns very few tokens but still accumulates turns via heartbeats. Hitting the 66% checkpoint does NOT mean the worker is in the dumb zone — it may have a tiny context. Conversely, a worker that opens 10 large files in 20 turns can enter the dumb zone well before any turn checkpoint fires. The checkpoint system is a safety net against iteration exhaustion, NOT a token-budget guard. See `references/smart-zone-vs-turn-budget.md` for the full analysis and Matt Pocock's original recommendations from the hermes-ops audit.
 
 ### Real case: t_8228590c on the-swarm (2026-05-20)
 
@@ -92,9 +100,29 @@ inline every time:
 
 ### Memento Pattern — structured handoff at budget checkpoints
 
-When you hit the 60% budget checkpoint, don't just block — create a structured
+When you hit the 66% budget checkpoint, don't just block — create a structured
 "memento" for the next worker. This is the **Memento Pattern**: a formalized
 handoff that lets a fresh worker resume exactly where you left off.
+
+**Pre-flight: when YOU are the next worker starting after a budget exhaustion:**
+
+Before starting fresh work, check if a previous run blocked on budget:
+```python
+from hermes_tools import kanban_show, read_file
+import os
+
+task = kanban_show(os.environ["HERMES_KANBAN_TASK"])
+if "budget" in task.get("last_block_reason", "") and task.get("runs"):
+    print("Previous run hit budget — checking for handoff.md...")
+    # Try reading handoff.md in the workspace
+    result = read_file("handoff.md")
+    if result.get("content"):
+        print("Found handoff.md — resuming from checkpoint instead of starting fresh")
+        # ... follow the handoff's Next steps
+    else:
+        print("⚠️ No handoff.md found — previous worker did NOT follow Memento Pattern")
+        print("Proceeding with fresh start, but save YOUR handoff at 66% budget!")
+```
 
 **Step-by-step:**
 
@@ -107,7 +135,7 @@ handoff that lets a fresh worker resume exactly where you left off.
    - **Do NOT duplicate** content from PRDs, ADRs, design docs, or tickets —
      reference them by absolute path or URL instead. The handoff is a pointer, not
      a copy. Duplication creates staleness: the PRD updates, the handoff stays frozen.
-3. **Push everything to git:** `git add -A && git commit -m "memento: budget checkpoint at ~60 turns" && git push origin $BRANCH`
+3. **Push everything to git:** `git add -A && git commit -m "memento: budget checkpoint at ~66%" && git push origin $BRANCH`
 4. **Block:** `kanban_block(reason="budget checkpoint: handoff created — next worker: read handoff.md in workspace, checkout $BRANCH, continue from Next steps")`
 
 **Why structured handoff > bare block:**
@@ -158,9 +186,10 @@ pattern. The full workflow (fork model, direct model, review-gated alternative)
 is documented in `kanban-project-workflow`. Quick reference:
 
 1. Push branch, create PR on fork with label: `gh pr create --label "kanban:$HERMES_KANBAN_TASK"`
-2. Block with: `kanban_block(reason="awaiting CI: PR label kanban:$HERMES_KANBAN_TASK")`
-3. CI-watchdog merges if green, unblocks you
-4. Respawn → verify merge → `kanban_complete`
+2. **Verify the branch is up-to-date with the target.** Auto-merge requires `mergeStateStatus != BEHIND`. If the PR branch is behind main, GitHub auto-merge silently does nothing — even with CI green and review approved. Observed 2026-07-13: PRs #141 and #139 both had auto-merge enabled, CI green, review approved, but sat unmerged because `mergeStateStatus: BEHIND`. Fix: `git fetch origin main && git merge origin/main` (or rebase), push, then enable auto-merge. Check with: `gh pr view <N> --json mergeStateStatus`.
+3. Block with: `kanban_block(reason="awaiting CI: PR label kanban:$HERMES_KANBAN_TASK")`
+4. CI-watchdog merges if green, unblocks you
+5. Respawn → verify merge → `kanban_complete`
 
 ## PR URLs in comments = 24h deadlock
 
@@ -215,7 +244,10 @@ kanban_block(
 
 **How the reviewer handles it:** The reviewer reads your comment, reviews the work, and picks one of three outcomes:
 
-- **Approves** → unblocks you with `hermes kanban unblock <id>` AND completes their own task with `kanban_complete(metadata={"approved": true})`
+- **Approves** → three REQUIRED steps before `kanban_complete`:
+  1. **Submit the GitHub review:** `gh pr review <N> --approve --body "LGTM"` — without this, the PR stays `REVIEW_REQUIRED` and never merges, regardless of CI. Reviewers MUST submit the actual GitHub approval; running `gh pr view` and seeing green CI is NOT enough (observed 2026-07-19 on music-library: t_03d2108c completed without submitting review, PR #222 sat open with `reviewDecision: REVIEW_REQUIRED` — all CI green, but no one clicked Approve).
+  2. **Enable auto-merge:** `gh pr merge <N> --auto --squash` (if not already enabled by the coder).
+  3. **Verify mergeability:** Run `gh pr view <N> --json mergeStateStatus,mergeable,reviewDecision` — ALL THREE must pass: `mergeStateStatus` is `CLEAN` or `BEHIND`, `mergeable` is `MERGEABLE`, AND `reviewDecision` is `APPROVED`. If any fails, do NOT complete. Instead, comment on the coder task with the issue and block yourself with `review-required: <reason>`. Observed 2026-07-13 on music-library: t_34de5101 completed as "APPROVED" but PR #105 was `CONFLICTING` — auto-merge silently did nothing, PR sat unmerged for hours.
 - **Requests changes** → comments on your task with feedback, blocks themselves with `needs changes: <summary>`, and creates a fix task assigned to the coder. The fix task completes → coder re-blocks review-required → watchdog re-promotes the reviewer.
 - **Rejects** → the approach is fundamentally wrong (not fixable with small changes). Complete with `kanban_complete(metadata={"approved": false, "reason": "..."})` and optionally archive the coder task. The coder task stays blocked — human operator must decide whether to archive and recreate.
 
@@ -325,6 +357,11 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 ## Do NOT
 
 - Call `delegate_task` as a substitute for `kanban_create`. `delegate_task` is for short reasoning subtasks inside YOUR run; `kanban_create` is for cross-agent handoffs that outlive one API loop.
+- **⛔ Create new branches/PRs for retries instead of force-pushing to existing ones.** When your task already has a PR open from a previous run, push to the SAME branch. Creating a new branch (e.g. `feat/t_3b1ff5` instead of `feat/t_3b1ff519`) produces duplicate PRs — the old one stays open with stale code while the new one sits unapproved. Observed 2026-07-13 on music-library: t_3b1ff519 #151 → retry created #168 on different branch → two PRs for same work, confusion. Same pattern on t_8e211ca6: #160 → #166. Force-push is the correct pattern: `git push --force-with-lease origin $BRANCH` updates the existing PR.
+- Push commits directly to `main` (or any protected branch) without a PR. Every code change MUST go through a PR — even a one-line gitignore edit. Observed 2026-07-13 on music-library: worker committed `f9ed03d` directly to main, introducing `<<<<<<< HEAD` / `=======` conflict markers in `.gitignore` that had zero review. The fix (`bae1d31`) had to be applied post-hoc. The merge conflict was trivially visible to any reviewer — it passed because there was no review at all. **Root cause:** `enforce_admins` was `false` on the branch protection rule — admins could bypass PR requirements. Enable it: `gh api repos/<owner>/<repo>/branches/main/protection --method PUT` with `"enforce_admins": true`.
+- **⛔ Self-approve deadlock on fork PRs — coder and reviewer share the same GITHUB_TOKEN.** On a fork with branch protection requiring 1 review, the same token used by both coder and reviewer cannot self-approve. GitHub rejects `gh pr review --approve` with "Can not approve your own pull request." The PR sits with `reviewDecision: REVIEW_REQUIRED` forever, even with CI green and reviewer task done. This is a fork architecture limitation, not a worker bug. Observed 2026-07-19 on music-library: PR #222 (Seven74AI/music-library) — all CI green, 2 reviewer tasks completed, but no one could click Approve because every token in the system belonged to the same account. Resolution: either (a) remove branch protection temporarily, merge manually, restore protection, or (b) have the coder use a different GitHub account/token than the reviewer, or (c) disable required reviews on the fork if self-approve is acceptable for fork PRs. Never let workers loop here — if `gh pr review --approve` returns "Can not approve your own pull request," block immediately with `review-required: self-approve gap — needs human token` rather than completing the reviewer task as if approved.
+
+- **⛔ `kanban_complete` when the PR is unmerged, conflicting, or pending review — protocol violation.** The coder's job is NOT done when the PR is still open. Observed 2026-07-13 on music-library: t_7b42e7fb was marked `done` even though PR #112 had `mergeStateStatus: DIRTY` (conflicts with main). The coder explicitly noted "PR blocked only on formal GitHub review — cannot self-approve" and then completed anyway. A merged PR is the ONLY proof of completion — if the PR isn't merged, block `review-required`, do NOT complete. Verification: `gh pr view <N> --json mergeStateStatus,state` — if `state != 'MERGED'`, the task is not done.
 - Modify files outside `$HERMES_KANBAN_WORKSPACE` unless the task body says to.
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
 - Complete a task you didn't actually finish. Block it instead.
@@ -369,6 +406,8 @@ The key: filenames must not contain spaces. Labels and titles containing spaces 
 **Task stuck in `ready` — dispatcher daemon may not be running.** The Kanban dispatcher is a foreground process (`hermes kanban daemon`) on a 60-second cycle — it is NOT a systemd service by default. If no terminal session is running the daemon, tasks sit in `ready` indefinitely. Check: `ps aux | grep 'hermes kanban daemon'`. Start: `hermes kanban daemon`. Full lifecycle, symptoms, and DB lock diagnosis: `references/dispatcher-daemon-lifecycle.md`.
 
 **Dispatcher DB corruption: `kanban.db is not a valid SQLite database`.** The dispatcher coordination DB (`/root/.hermes/kanban.db`) can get a corrupted header from an interrupted write (SIGKILL, OOM, host crash). Board DBs (`boards/<board>/kanban.db`) hold all the real data — the dispatcher DB is a coordination cache with zero critical data. Recovery: `mv kanban.db kanban.db.corrupted-backup` + restart gateway. It recreates the DB on the next dispatch tick. Board data is never at risk. Full diagnosis and recovery: `references/dispatcher-db-corruption.md`.
+
+**Stale file-handle variant (board-level DB):** The dispatcher logs `board <name> database /path/to/kanban.db is not a valid SQLite database; disabling dispatch` every 60s, but `sqlite3` can query the same DB without errors — the file is intact, but the gateway process has a stale file handle from a write that occurred while the gateway was holding the file open. The DB file itself is NOT corrupted. Recovery: `systemctl restart hermes-gateway` (the gateway restarts, reopens the file, dispatcher resumes). Do NOT move the board DB — it has all task data and would cause data loss. Observed 2026-07-19 on music-library board: gateway PID 3817737 held a stale handle to `/root/.hermes/kanban/boards/music-library/kanban.db`, all 4 ready tasks stuck for 30+ minutes, restart fixed it instantly.
 
 **Index corruption: `idx_notify_task` — recovery without data loss.** When a single index is corrupt (e.g., `wrong # of entries in index idx_notify_task`), you can drop just the affected index + its table (`kanban_notify_subs`), recreate from a known-good schema, and re-subscribe notifications. Full recovery steps: `references/kanban-db-index-corruption.md`.
 
@@ -499,7 +538,7 @@ This guarantees sequential execution (one task = one worker at a time) while pre
 
 Full diagnostic data from the 2026-06-05 incident and the OOM confirmation: `references/continuation-child-planner-chain-collision.md`.
 
-**False-positive budget blocks from background waits.** A worker that uses `background=true` + heartbeats while waiting for a long CPU task (transcription, large build, video encode) can hit the 60-turn checkpoint despite having minimal token context (< 5K tokens). The turn counter doesn't distinguish "working turns" from "waiting turns." This is NOT the smart/dumb zone problem Matt Pocock warned about — it's a false positive of the turn-based checkpoint system. When the transcription/build finishes right after the block, just re-dispatch. See `references/smart-zone-vs-turn-budget.md`.
+**False-positive budget blocks from background waits.** A worker that uses `background=true` + heartbeats while waiting for a long CPU task (transcription, large build, video encode) can hit the 66% checkpoint despite having minimal token context (< 5K tokens). The turn counter doesn't distinguish "working turns" from "waiting turns." This is NOT the smart/dumb zone problem Matt Pocock warned about — it's a false positive of the turn-based checkpoint system. When the transcription/build finishes right after the block, just re-dispatch. See `references/smart-zone-vs-turn-budget.md`.
 
 **Watchdog false-positives during process wait.** The crash-loop watchdog auto-blocks tasks with "no heartbeat >30min" — but `process(action="wait")` blocks the agent loop, so heartbeats CAN'T be sent. The claim system (15-min TTL, extended by the gateway via `pid_alive`) provides an independent liveness signal. The watchdog fix: check if `claim_extended > last_heartbeat` before flagging. See `references/kanban-claim-system.md` for the full mechanism.
 
@@ -546,6 +585,8 @@ Prevention: periodically verify `gh auth status` matches the expected account. S
 - Then read results with `read_file` or `search_files`
 
 This is the #2 cause of budget exhaustion: the worker launches correctly in background, then burns its budget waiting. One `process wait` call replaces 50-100 polling iterations.
+
+**Workers routinely ignore budget checkpoints → no handoff → infinite loop.** See `references/budget-exhaustion-no-handoff.md` for the t_8e211ca6 incident pattern: worker hits budget, blocks without handoff, watchdog unblocks, next worker starts from zero, repeats. The pre-flight check in the Memento Pattern section (above) is your defense against this.
 
 **Profile config changes require re-dispatch.** When you change a profile's `config.yaml` (e.g., increasing `max_turns` from 90 to 360), the change only applies to NEW spawns. A worker already running has the old config loaded at startup. The task must be unblocked and re-dispatched for the new config to take effect. Check with `hermes kanban show <id> | grep "run "` — if the run started before the config change, it has the old limits.
 
@@ -604,7 +645,75 @@ done
 
 This pattern also avoids one `hermes kanban list` call per status value, saving turn budget.
 
-## CLI fallback (for scripting)
+## Diagnosing "dispatcher stuck — ready tasks won't spawn"
+
+The dispatcher says `ready queue non-empty for N consecutive ticks but 0 workers spawned`. Tasks sit in `ready` forever. Don't assume WAL corruption or DB issues — they're almost certainly not the cause (debunked multiple times). Follow this diagnostic path instead:
+
+### Step 1: Check respawn guard
+
+```sql
+SELECT task_id, kind, payload, datetime(created_at, 'unixepoch', 'localtime')
+FROM task_events WHERE kind='respawn_guarded'
+AND created_at > $(date -d '1 hour ago' +%s)
+ORDER BY created_at DESC;
+```
+
+**`active_pr`**: A GitHub PR URL exists in a task comment within the last 24 hours. Even if the reviewer already completed and the task was unblocked, the respawn guard still blocks it. Common scenario: reviewer approves, watchdog unblocks coder, coder goes to `ready`, but the PR URL comment from the handoff remains → dispatcher can't spawn.
+
+**Fix for `active_pr`**: Remove the PR URL comment from the DB:
+```sql
+DELETE FROM task_comments WHERE task_id='<id>' AND body LIKE '%github.com%pull%';
+```
+
+### Step 2: Check skill resolution
+
+If workers crash silently (dispatcher shows `spawned=1 crashed=1` or similar), check for skill collisions:
+
+```bash
+# Check for duplicates between global skills and coder profile skills
+for skill in grill-with-docs implement tdd code-review; do
+  ls -d ~/.hermes/skills/$skill ~/.hermes/profiles/coder/skills/$skill \
+     ~/.hermes/skills/*/$skill ~/.hermes/profiles/coder/skills/*/$skill 2>/dev/null
+done
+```
+
+Any skill appearing in BOTH locations causes `Unknown skill(s): <name>` at worker startup. The worker crashes before producing any output. The dispatcher's `failure_limit` eventually trips, stopping all spawns for that assignee.
+
+### Step 3: Check active workers
+
+```bash
+ps aux | grep "hermes.*kanban task" | grep -v grep
+```
+
+`max_spawn` is a live concurrency cap (running workers + spawns per tick). If workers are stuck/zombied but show as `running` in the DB, the dispatcher counts them against the cap.
+
+### Step 4: Check stale claim_lock from gateway
+
+The dispatcher won't spawn a task that has a non-NULL `claim_lock` — it treats it
+as already claimed. The block watchdog cron runs inside the same gateway process.
+When the watchdog auto-unblocks a task, it can leave a stale `claim_lock` set to
+the gateway's own PID. The task sits in `ready` but the dispatcher skips it every
+tick.
+
+**Detection:**
+```sql
+SELECT id, status, claim_lock, worker_pid FROM tasks WHERE status='ready' AND claim_lock IS NOT NULL;
+```
+
+**`claim_lock` format:** `hostname:PID`. If PID matches the gateway process
+(`systemctl status hermes-gateway | grep PID`), the gateway itself is holding the lock.
+
+**Fix:**
+```sql
+UPDATE tasks SET claim_lock=NULL WHERE id='<task_id>';
+```
+
+The dispatcher picks up the task on the next tick. No restart needed.
+
+**Observed 2026-07-13 on music-library:** t_8e211ca6 sat in `ready` with
+`claim_lock=vmi3304846:3817737` (gateway PID). Dispatcher warned "ready queue
+non-empty for 21 consecutive ticks but 0 workers spawned" — the stale lock was
+preventing spawn. Clearing it fixed dispatch immediately.
 
 Every tool has a CLI equivalent for human operators and scripts:
 - `kanban_show` ↔ `hermes kanban show <id> --json`

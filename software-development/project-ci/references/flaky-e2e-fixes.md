@@ -4,6 +4,43 @@ Recurring root causes and fixes for flaky Playwright E2E tests in CI, observed a
 
 ## Root Cause Categories
 
+### 0. ⛔ No bandaidths — timeout increases are the LAST resort
+
+**User directive: never expand timeouts as a first fix.** A test timing out at 5s was already broken — making it 15s just makes CI slower. Find the root cause.
+
+**Real case (music-library 2026-07-17):** `play/pause toggle` test timed out on `toBeVisible(Pause, 5000)`. First attempt: bump to 15000. User: "We shouldn't have to expand the timeout." Root cause: dummy MP3 fixture never existed in mock storage, so the audio element couldn't load and transport controls never rendered. Fix: generate the fixture file. Timeout stayed at 5s.
+
+**Rules:**
+- If a test fails at 5s, don't make it 15s — find why the element isn't appearing
+- `waitForTimeout(N)` (sleep) is NEVER acceptable
+- If the root cause is CI environment (slow CPU), document it and apply environment fixes (busy_timeout, domcontentloaded) — but never mask a logic bug with a timeout bump
+
+### 1. `page.waitForResponse` — Fragile, Prefer Assertions
+
+**Symptom:** `page.waitForResponse(url_pattern, { timeout: 5000 })` times out — the response never arrives or arrives with unexpected status.
+
+**Cause:** `waitForResponse` is inherently fragile:
+- The server may use Single Fetch (React Router v7) and the URL pattern doesn't match
+- The response status may differ from what's expected (e.g. 200 instead of 409)
+- The response may arrive before the listener is registered (race condition)
+- Default 5s timeout is often too short
+
+**Fix:** Replace with assertion-based approach:
+```typescript
+// ❌ Fragile — races URL pattern vs actual server behavior
+await Promise.all([
+  page.waitForResponse(
+    (r) => r.url().includes('/create-playlist') && r.status() === 409,
+    { timeout: 5000 },
+  ),
+  input.press('Enter'),
+])
+
+// ✅ Robust — just do the action and assert on the DOM result
+await input.press('Enter')
+await expect(page.getByRole('alert')).toContainText(/duplicate/i, { timeout: 10000 })
+```
+
 ### 1. SQLite Busy Contention (Parallel Workers)
 
 **Symptom:** Random `toBeVisible()` timeouts, `SQLITE_BUSY` errors in server logs.

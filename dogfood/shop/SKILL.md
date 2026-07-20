@@ -353,6 +353,10 @@ hermes kanban --board shop create --assignee coder --max-runtime 3600s --priorit
 
 Full template: `references/fix-all-tests-ticket-template.md`
 
+## Monitoring (Sentry)
+
+Sentry `beforeSend` filters to error-level only. Console output is a separate channel — no `captureConsoleIntegration`. Full config at `references/sentry-level-filtering.md`.
+
 ## Phase Roadmap
 
 - **Board: 72 tickets (66 issues + 6 recette branches)** across 6 phases
