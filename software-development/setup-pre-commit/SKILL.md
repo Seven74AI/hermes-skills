@@ -48,11 +48,13 @@ This creates `.husky/` dir and adds `prepare: "husky"` to package.json.
 Write this file (no shebang needed for Husky v9+):
 
 ```
-npx lint-staged
-npm run lint
-npm run typecheck
+npx lint-staged &&
+npm run lint &&
+npm run typecheck &&
 npm run test -- --run
 ```
+
+**Critical: chain commands with `&&`.** Without `&&`, shell runs every command independently and only the LAST command's exit code matters — a failing `typecheck` (exit 2) is silently ignored if `test` happens to pass or fail differently. This is how type errors slip past pre-commit hooks.
 
 **Adapt**: Replace `npm` with detected package manager. If the repo has no `lint` script, omit that line. If `test` script is vitest, add `-- --run` to prevent watch mode. Always match the CI pipeline order (lint → typecheck → test).
 

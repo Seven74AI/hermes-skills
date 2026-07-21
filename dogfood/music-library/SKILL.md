@@ -219,7 +219,9 @@ hermes kanban --board music-library notify-subscribe <task_id> --platform telegr
 Happy-path only — no pitfalls, gotchas, symptoms, or anti-patterns. When adding new reference files,
 state what to do, not what to avoid.
 
-- `references/search.md` — FTS5 architecture, cursor pagination, caching, icons, known gaps
+- `references/search.md` — FTS5 architecture, cursor pagination, caching, icons, bottom nav z-index hierarchy, artist/album page routes
+- `references/fts5-admin.md` — FTS5 index rebuild commands, health check queries, admin page route
+- `references/fts5-rebuild.md` — FTS5 rebuild commands, admin page, diagnosis
 - `references/github-operations.md` — `--repo` flag, cross-repo PRs, label management
 - `references/audio-archiving-implementation.md` — models, yt-dlp command, worker loop, retry strategy
 - `references/cross-playlist-bulk-operations.md` — API routes for bulk library/playlist operations
@@ -230,4 +232,7 @@ state what to do, not what to avoid.
 - `references/player-now-playing-sheet.md` — mobile now-playing view architecture
 - `references/serwist-navigation-route-method.md` — service worker navigation method internals
 - `references/storage-test-fixtures.md` — local file fixture pattern for audio/image test routes
+- `references/react-router-typescript-patterns.md` — BreadcrumbHandle Zod inference fix, JSX && narrowing for Prisma relations
+- `references/react-router-8-client-action.md` — clientAction proxy pattern for React Router 8 code-split routes
+- `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection
 - `templates/oxlintrc.json` — oxlint configuration template

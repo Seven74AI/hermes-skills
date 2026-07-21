@@ -65,3 +65,34 @@ env: {
     CI: true
     MOCKS: true
 ```
+
+## Common test utilities
+
+### Dismiss install banner
+
+The PWA install banner renders at `z-30` and can intercept clicks on the bottom nav (z-40) or be covered by the audio player (z-50). Use `{ force: true }` to click through overlays:
+
+```ts
+async function dismissInstallBanner(page: import("@playwright/test").Page) {
+  const installBanner = page.getByRole("region", { name: "Install app" });
+  if (await installBanner.isVisible().catch(() => false)) {
+    await page.getByRole("button", { name: "Not now" }).click({ force: true });
+  }
+  // Remove Radix toast notifications that intercept pointer events
+  await page.evaluate(() => {
+    const region = document.querySelector('[aria-label="Notifications (F8)"]');
+    if (region) region.remove();
+  });
+}
+```
+
+Call this before interacting with bottom-positioned elements (nav, player mini bar) on mobile viewports.
+
+### Close lingering dialogs between tests
+
+Previous tests can leave Radix dialogs/sheets open, causing their overlay (fixed inset-0 z-50) to intercept clicks in subsequent tests. Press Escape before any test that interacts with a dialog:
+
+```ts
+await page.keyboard.press("Escape");
+await page.waitForTimeout(300);  // let animation complete
+```

@@ -149,6 +149,14 @@ Do NOT invent explanations like "known bug" or "probably a version issue" withou
 
 **Corollary: run tests locally before pushing.** CI is minutes; local is seconds. If a test passes locally but not on CI, the CI setup is the bug — not the test. Diagnose the CI environment differences before modifying test code.
 
+### Verifying library/API behavior against authoritative docs
+
+When you make a claim about how a tool, library, or API works (e.g., "X command doesn't work on Y type of table", "Z function always returns null in this case"), **verify against authoritative docs before asserting.** Reasoning from first principles about library behavior is error-prone — one missing edge case or version difference invalidates the entire claim. Use Context7, official docs, or source code as the ground truth.
+
+Pattern: search docs → verify the claim → then assert. Not: reason from first principles → assert → get called out → check docs → retract.
+
+This applies when making claims about SQL/SQLite behavior, framework API semantics, tool CLI flags, language runtime guarantees, or any external dependency's documented contract. If you cannot find confirmation in the docs, say "I'm not sure — let me check" rather than asserting.
+
 ### Codebase auditing: verify before asserting
 
 When asked to "review the codebase" or "audit for issues," **read the files FIRST, present findings AFTER.** Never state a claim about a file you haven't read. Every finding must include file + line number as evidence. Presenting a list of "bugs" then being challenged and retracting half of them destroys credibility irreversibly.

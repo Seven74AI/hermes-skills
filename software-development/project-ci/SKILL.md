@@ -156,6 +156,28 @@ The hook should inspect which files changed and skip irrelevant tests:
 
 **Bypass in emergencies:** `git push --no-verify` (should be documented in each repo's CONTRIBUTING.md).
 
+### Shell hook `&&` pitfall
+
+Commands on separate lines in shell hooks (`.husky/pre-commit`, `.githooks/pre-push`) run **independently** — the script continues past failures. Without `&&` chaining, only the **last** command's exit code determines success/failure. A `tsc --noEmit` with 195 errors on line 3 is invisible if `vitest --run` on line 4 exits 0. Even worse: tsc exits 2, vitest exits 1 for "no test files" — a *different* failure masks the real one, making the agent think the hook works.
+
+```bash
+# BROKEN — failures don't cascade. Each line executes independently.
+npx lint-staged
+npm run lint
+npm run typecheck
+npm run test -- --run
+
+# CORRECT — any failure aborts the hook immediately.
+npx lint-staged &&
+npm run lint &&
+npm run typecheck &&
+npm run test -- --run
+```
+
+**Real case (music-library 2026-07-20):** hook had no `&&`, tsc had 195 pre-existing errors (exit 2), but `npm run test -- --run` exited 1 (no test files found) — a different failure masked the tsc error. Agent bypassed the hook with `--no-verify` thinking typecheck was clean, pushed a commit whose type error would have been caught if the hook had `&&`.
+
+**Diagnosis:** run the hook script with `bash -x .husky/pre-commit` to see each command's exit code. If commands after a failure still execute, `&&` is missing.
+
 ## npm → pnpm migration
 
 To migrate a project from npm to pnpm, see `references/pnpm-migration.md` for the validated step-by-step protocol (backup → import → install → validate → benchmark).
