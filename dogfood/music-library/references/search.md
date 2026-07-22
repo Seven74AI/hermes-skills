@@ -68,7 +68,13 @@ search:${type}:${userId || "public"}:${query}:${limit}:${cursor}:${usePrefix}
 
 **Load More accumulation:** Results accumulate across pages. Implementation: `useRef` flag (`isLoadMore`) set to `true` before Load More fetch; `useEffect` watching `fetcher.data` appends or replaces based on the flag. Accumulation resets on new search or type change.
 
-**Auto-focus:** The search input auto-focuses on every navigation to `/search`. The `useEffect` depends on `location.pathname` (not `[]`) so it refires when navigating back from another page. The bottom nav Search button uses `navigate("/search")` + `setTimeout(() => focus(), 0)` as a fallback for when already on `/search` (pathname unchanged, effect doesn't fire).
+**Auto-focus:** The search input auto-focuses on every navigation to `/search`. The
+`useEffect` depends on `location.key` (not `pathname`) so it refires when tapping
+the Search tab from the bottom nav even when already on `/search` — React Router
+assigns a new key on every `navigate()` call. The search page uses a React ref
+(`useRef<HTMLInputElement>`) attached to the `<Input>` component. Note that the
+shadcn `Input` must use `React.forwardRef` — without it, `ref` from `{...props}`
+spread does not attach to the DOM element (see `mobile-layout.md`).
 
 ## Result Display
 

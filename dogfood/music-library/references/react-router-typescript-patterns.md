@@ -108,8 +108,8 @@ When a page has an auto-focus `useEffect([], [])`, it only fires on initial moun
 If the user navigates away and back, React Router may reuse the component instance
 and the input won't refocus.
 
-**Fix:** depend on `location.pathname` so the effect fires on every navigation
-that changes the path:
+**Fix:** depend on `location.key`, not `location.pathname`. React Router assigns
+a new key to every navigation — even to the same path — so the effect fires reliably:
 
 ```tsx
 import { useLocation } from 'react-router'
@@ -118,9 +118,10 @@ const location = useLocation()
 
 useEffect(() => {
   inputRef.current?.focus()
-}, [location.pathname])
+}, [location.key])
 ```
 
-Pair this with a programmatic `navigate()` + `setTimeout(() => focus(), 0)` in
-the triggering button to cover the case where the user is already on the route
-(pathname doesn't change, so the effect won't fire).
+Using `location.pathname` fails when the user clicks the nav tab while already on
+the route — the pathname doesn't change, so the effect never fires. `location.key`
+handles this case without needing a `setTimeout` + `document.querySelector` hack
+in the triggering button.

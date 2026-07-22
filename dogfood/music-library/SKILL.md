@@ -1,7 +1,7 @@
 ---
 name: music-library
 description: "Music Library project configuration — tech stack, repo, tenant."
-version: 1.21.0
+version: 1.22.0
 metadata:
   hermes:
     tags: [music, project, reference]
@@ -105,15 +105,51 @@ git pull --rebase origin main
 Local branches go stale fast since multiple agents and kanban workers commit
 to the same fork. Skipping this causes merge conflicts and wasted work.
 
+**⛔ Consolidation PR pitfall — branches go stale while open.** If your feature
+branch was created more than a few minutes ago, upstream/main may have moved
+(previous consolidation PRs merged, dependabot, direct commits).
+ALWAYS rebase before creating the consolidation branch:
+
+```bash
+# DON'T: git checkout upstream/main -b chore/consolidate-... && git merge old-branch
+#       — old-branch may be based on a parent that no longer exists on upstream
+
+# DO: reset to latest upstream first, then re-apply changes
+git fetch upstream main && git reset --hard upstream/main
+# Re-apply your fixes on the clean base, THEN push
+```
+
+Multiple open consolidation PRs that touch the same files are guaranteed to
+conflict if they're not all based on the same upstream commit. One clean rebased
+PR is always better than several stale ones.
+
 1. Push feature branch to `Seven74AI/music-library` fork
 2. Open PR on the fork — review and merge there first
-3. Open consolidation PR from fork → upstream. When the token lacks write access to upstream, use a cross-repo PR (head lives on Seven74AI):
+3. Open consolidation PR from fork → upstream using a dedicated branch (NOT fork main directly):
    ```bash
-   gh pr create -R mnlamart/music-library --base main --head Seven74AI:main \
-     --title "Consolidation: sync from Seven74AI fork" \
-     --body "Sync from Seven74AI/music-library main."
+   git fetch origin main
+   git fetch upstream main
+   git checkout upstream/main -b chore/consolidate-fork-<date>
+   git merge origin/main --no-edit
+
+   # Verify no commits were missed
+   git log chore/consolidate-fork-<date>..origin/main --oneline
+   # MUST be empty.
+
+   git push origin chore/consolidate-fork-<date>
+   gh pr create -R mnlamart/music-library --base main \
+     --head Seven74AI:chore/consolidate-fork-<date> \
+     --title "chore: consolidate fork — <summary>" \
+     --body "Consolidation from Seven74AI/music-library fork."
    ```
+   Using a dedicated branch instead of `Seven74AI:main` avoids blocking other
+   work on the fork while the consolidation PR is open.
 4. Consolidation PRs need manual merge by upstream maintainers — auto-merge requires write access to the target repo.
+5. After upstream merge, reset the fork to match upstream (see Fork Sync below).
+
+**Human orchestrator shortcut:** when the user explicitly says "create pr directly
+on upstream" or "skip the fork PR," go straight to step 3 — branch off
+`upstream/main`, merge the feature branch, push to fork, and create the upstream PR.
 
 ### Fork Sync
 
@@ -149,6 +185,10 @@ gh api -X PUT repos/Seven74AI/music-library/branches/main/protection \
 # 4. Re-enable auto-merge
 gh api -X PATCH repos/Seven74AI/music-library \
   -f allow_auto_merge=true -f delete_branch_on_merge=true
+
+# 5. Clean up consolidation branch
+git branch -D chore/consolidate-fork-<date>
+git push origin --delete chore/consolidate-fork-<date>
 ```
 
 ## Code Review
@@ -235,4 +275,5 @@ state what to do, not what to avoid.
 - `references/react-router-typescript-patterns.md` — BreadcrumbHandle Zod inference fix, JSX && narrowing for Prisma relations
 - `references/react-router-8-client-action.md` — clientAction proxy pattern for React Router 8 code-split routes
 - `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection
+- `references/mobile-layout.md` — z-index hierarchy, --bottom-bar-height CSS var, sheet positioning, search overlay
 - `templates/oxlintrc.json` — oxlint configuration template
