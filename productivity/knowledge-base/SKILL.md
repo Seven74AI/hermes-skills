@@ -330,6 +330,7 @@ Batch inventory ("titre des done"): `templates/kanban-ticket-template.md`
 | **Pipeline architecture (rebuild reference)** | `references/pipeline-architecture.md` |
 | **Detection & pre-flight model** | `references/detection-model.md` |
 | **OCR / scanned PDFs** | `references/ocr-scanned-pdfs.md` |
+| **KB Synthesis → Blog Posts** | `references/kb-synthesis.md` — multi-note synthesis workflow (blog posts, Notion articles) |
 
 Vault path: `OBSIDIAN_VAULT_PATH` (from `~/.hermes/.env`). Git sync: obsidian skill `references/git-sync.md`.
 Persist transcripts and source files to MinIO

@@ -260,7 +260,18 @@ git push
 
 Substack Notes with video attachments use **Mux** as CDN, but Substack exposes a public API to get the signed Mux URL. No auth, no cookies, no browser needed.
 
-### Phase 0 — Extract video ID and download
+**IMPORTANT: Text + Video.** Video Notes often have substantial written content alongside the video. Always extract BOTH: `web_extract` for the text content, then the video pipeline for the transcript. Combine both in a single Obsidian note — text analysis first, transcript in a `## Transcript` section.
+
+### Phase 0 — Extract text content
+
+```bash
+# web_extract works for Notes — gets full text + discussion
+web_extract "$SUBSTACK_URL"
+```
+
+Read the full text before writing the note. Treat it like any article: Key Claims from the text, section analysis, context. The transcript supplements, it doesn't replace.
+
+### Phase 1 — Extract video ID and download
 
 The `<video>` element (rendered via Firecrawl JS) has a `data-video-id` attribute. Substack's API at `/api/v1/video/upload/{id}/src?type=mp4` returns a 307 redirect to the signed Mux URL.
 
