@@ -79,6 +79,8 @@ For cron job inventory and other non-kanban data sources the Morning Report need
 | **Daily Reflection** (`0f04492645c5`) | `*/3` days | 06:10 | Local | Patterns + action tracking |
 | **Weekly Curator** (`2e1f5c35f5aa`) | Sundays | 03:00 | Local | Skill deduplication, tracking, consolidation |
 
+For the manual curator pass workflow — including near-duplicate detection, symlink handling, and provenance checks — see `references/curator-pass-workflow.md`.
+
 All three `*/3` jobs run on the same cycle (days 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31). Use `hermes cron list` for the live schedule — it is authoritative when this table drifts.
 
 Morning Report, Daily Journal, and Daily Reflection all write to the **Hermes Ops Journal** Notion DB. Morning Report extracts blog-worthy entries (technical insights, novel workflows, interesting bugs) from general activity. Daily Journal captures ops-specific lessons (infrastructure, debugging, config). Daily Reflection tracks patterns and action items across runs.

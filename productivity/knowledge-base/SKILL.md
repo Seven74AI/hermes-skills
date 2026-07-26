@@ -78,7 +78,14 @@ When the user's description disagrees with the URL path, confirm the type first.
 
 `references/pipeline-substack.md` — extraction Firecrawl, nettoyage markdown, note Obsidian. Pas besoin de cookies pour les articles publics.
 
-- Dedup: check vault for existing `source_url` **before creating kanban ticket** (Phase -2).
+- **Load the pipeline reference before creating tickets** — `skill_view(name='knowledge-base', file_path='references/pipeline-substack.md')`. The SKILL.md summary is not enough. The reference contains Phase -1 (content-type detection: text vs video vs image), Phase 0 (dedup + Firecrawl health check), and the full worker pipeline.
+- **Phase -1 required** — detect content type BEFORE ticket creation. Video Notes → `researcher-videos`, text+image → `researcher`, text-only → `researcher`. Skipping this phase assigns the wrong worker and the ticket fails silently.
+- Dedup: check vault for existing `source_url` **before creating kanban ticket** (Phase -2). Use the **canonical URL** (strip `?r=`, `&utm_medium=`, and other tracking params). Search the full `source_url:` field, not just the slug — slugs can appear in unrelated note bodies. Use individual `grep -rl` per URL, never a combined regex (silent failures):
+
+  ```bash
+  CLEAN_URL="https://open.substack.com/pub/<author>/p/<slug>"
+  grep -rql "source_url: $CLEAN_URL" "$OBSIDIAN_VAULT_PATH/Knowledge base/"
+  ```
 
 ### Wikispooks
 
@@ -153,6 +160,8 @@ When the user drops URLs, create tickets on the **`knowledge-base`** board.
 The `default` board is a sandbox only — never create KB tickets there.
 See `templates/kanban-ticket-template.md` and `references/kb-board-plan.md`.
 
+**⚠️ Pitfall — \"KB ticket\" = `knowledge-base` board, NOT `kb-agent`.** When the user asks about \"KB tickets\" or \"the kb tickets,\" they mean the `knowledge-base` kanban board. The `kb-agent` board is for the replacement agent project (code, infrastructure). These are entirely separate — do not search `kb-agent` when the user is asking about knowledge base processing tickets.
+
 - 5 URLs per ticket; chain with `--parent`
 - 2 video transcriptions per worker session (`video-pipeline-global.md`)
 - `--max-runtime 3600`
@@ -210,7 +219,15 @@ All notes follow the same depth standard as `templates/book-note-template.md`. T
 
 Required depth for every note, regardless of source or length — see `templates/note-template.md` for the complete common template. Book-specific: `templates/book-note-template.md`. Video-specific: `templates/youtube-note-template.md`.
 
-**Red flag: if the note is shorter than the book-note-template, it's too shallow.** Books get chapter-level depth. Articles get section-level depth. The standard is the same — only the scale differs.
+**Exception — exhaustive reference list.** When the source IS a reference list/compendium (e.g., a list of studies, a catalog of evidence, an index of sources), the note priority shifts from analysis to **completeness**. Preserve every entry. The note becomes an exhaustive reference document — copy-paste fidelity matters more than synthesis. Key rules:
+
+- **Check links first.** Reference lists often have broken or fused links (e.g., two URLs merged into one Markdown link). Spot-check suspicious entries before writing.
+- **No kanban ticket needed** (user explicitly says \"do it yourself\" for exhaustive notes — the kanban pipeline is for batch processing, not single high-fidelity notes).
+- **Still follow pipeline for archiving**: Firecrawl → read full source → MinIO `knowledge-base/articles/` → `source_files:` in frontmatter → Git push.
+- **Preserve original structure.** Numbering, grouping, notes — keep the author's organization intact. Add KB frontmatter and a Summary + Critical Analysis wrapper, but the body is the list.
+- **Coverage check**: every entry must appear. No omissions tolerated.
+
+**Red flag: if the note is shorter than the book-note-template, it's too shallow.** Books get chapter-level depth. Articles get section-level depth. The standard is the same — only the scale differs (exhaustive lists are the one exception — length is determined by the source list, not by analysis).
 
 **Size target:** 15 000-25 000 chars for long-form (>5000 words). Proportionally less for short-form. A note under 5 000 chars for a long-form source means you did not read enough.
 

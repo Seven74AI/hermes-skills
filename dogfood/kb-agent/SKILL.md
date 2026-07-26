@@ -31,7 +31,7 @@ Both **private**.
 - **Board:** `kb-agent`
 - **Assignees:** `coder` (implementation), `reviewer` (auto-swarm)
 - **Pattern:** Swarm v1 — coder → reviewer → auto-unblock. Tickets chained with `--parent`.
-- **Ticket count:** 26 tickets, phases 0-6 (all done)
+- **Ticket count:** 58 tickets (all done) — run `hermes kanban --board kb-agent list` for live count; the number grows with drift-fix and bug-fix tickets
 - **Current status:** `hermes kanban --board kb-agent list` (0 pending)
 
 ## Tech Stack
@@ -283,6 +283,8 @@ A post can pass detection (no login wall) but still have `captions: []` — the 
 May 2026 Edgee streaming bugs were Hermes-specific (HTTP/2, h11, agent loop). KB Agent calls Edgee directly via httpx — standard OpenAI-compatible endpoint. Both streaming and non-streaming supported per Edgee SDK docs. Do NOT carry Hermes conclusions to KB Agent — clean slate.
 
 ## Pitfalls
+
+- **⚠️ "KB" is ambiguous — clarify which board.** When the user says "KB tickets" or "KB board," they may mean `kb-agent` (this board — the agent codebase) OR `knowledge-base` (content processing — Substack batches, book notes, video digests). The `knowledge-base` board has its own ticket lifecycle (researcher → reviewer). Defaulting to `kb-agent` without checking causes wrong answers. **Pattern:** when asked about "KB," check BOTH boards: `hermes kanban --board kb-agent list` AND `hermes kanban --board knowledge-base list`. If only one has recent activity, that's the one the user means. If still unclear, ask "kb-agent or knowledge-base?"
 
 - **Verify before asserting.** When asked "is that all?" or "are you sure?", grep the code before confirming. Never answer coverage questions from memory. Run `grep register_pipeline agent/pipelines/*.py`. The user catches every omission — "t'es sûr de toi ?" means you missed something. Answer once, completely, with evidence.
 - **Test URLs from vault, not skipped queues.** The Hermes vault at `/root/Documents/Obsidian Vault/Knowledge base/` contains notes with `source_url:` in frontmatter — these were successfully processed. The `/root/.hermes/queues/skipped_*.txt` files contain failed URLs (login walls, dead links). Skipped ≠ processed.
