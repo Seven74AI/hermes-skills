@@ -1,7 +1,7 @@
 ---
 name: music-library
 description: "Music Library project configuration — tech stack, repo, tenant."
-version: 1.22.0
+version: 1.23.0
 metadata:
   hermes:
     tags: [music, project, reference]
@@ -74,6 +74,37 @@ npx vitest run                                             # all vitest tests
 ```bash
 gh auth token | xargs -I{} git remote set-url origin "https://oauth2:{}@github.com/Seven74AI/music-library.git"
 ```
+
+## Route Loader Rule (PITFALL)
+
+`root.tsx` uses `clientLoader.hydrate = true` via `defineOfflineClientLoader("root")`.
+This means **every route in the matched tree MUST export a loader** — layout routes
+AND leaf routes. Routes without a loader are excluded from the single-fetch
+hydration response, causing:
+
+```
+SingleFetchNoResultError: No result found for routeId "..."
+```
+
+A route that exports an `ErrorBoundary` silently swallows the error, hiding the
+problem.
+
+**When fixing `SingleFetchNoResultError`, always run the scan script to find ALL
+missing loaders — don't stop at the one the user reported.** See
+`references/react-router-single-fetch-layout-loaders.md` for the verification
+script and the full list of affected routes.
+
+Add to any route lacking a loader:
+
+```tsx
+import { data } from "react-router";
+
+export function loader() {
+  return data({});
+}
+```
+
+After adding loaders, always run `npx react-router typegen && npx tsc --noEmit`.
 
 ## Tech Stack
 
@@ -276,4 +307,5 @@ state what to do, not what to avoid.
 - `references/react-router-8-client-action.md` — clientAction proxy pattern for React Router 8 code-split routes
 - `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection
 - `references/mobile-layout.md` — z-index hierarchy, --bottom-bar-height CSS var, sheet positioning, search overlay
+- `references/react-router-single-fetch-layout-loaders.md` — layout routes must export a loader when `clientLoader.hydrate` is on a parent; SingleFetchNoResultError pattern
 - `templates/oxlintrc.json` — oxlint configuration template
