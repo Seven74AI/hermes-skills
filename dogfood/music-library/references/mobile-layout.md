@@ -4,15 +4,30 @@
 
 ```
 Player mini-bar:    fixed bottom-16  z-50
-Bottom nav:         fixed bottom-0   z-[51]  (above sheet backdrops)
+Bottom nav:         fixed bottom-0   z-40   (below sheets, above content)
 Sheet overlay:      fixed inset-0    z-50
 Sheet content:      fixed            z-50
-Search page:        fixed inset-0    z-[80]  (full-screen, covers everything)
+Search page:        fixed inset-0    z-[80] (full-screen, covers everything)
 Toast:              fixed            z-[100]
 ```
 
-Bottom nav sits **above** sheet backdrops (z-51 > z-50) intentionally — the sheet's
-`shadow-lg` would visually cut into the nav bar if the overlay sat above it.
+Bottom nav sits **below** sheet overlays (z-40 < z-50). Sheets are Radix
+`Dialog.Portal` children that stack above everything — they should cover the
+full viewport including the bottom bar. The sheet's backdrop properly dims the
+entire screen with no chrome peeking through.
+
+## Sheet Positioning
+
+Bottom sheets are full-viewport dialogs. The base `sheet.tsx` component does NOT
+add bottom-bar padding — the `side="bottom"` variant is simply:
+
+```
+inset-x-0 bottom-0 border-t data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom
+```
+
+All bottom sheets (player-context and otherwise) use this default. Individual
+sheets set their own height constraints (`h-[80vh]`, `max-h-[85vh]`,
+`max-h-[60vh]`) but never add `pb-*` for the bottom bar.
 
 ## `--bottom-bar-height` CSS Custom Property
 
@@ -50,34 +65,6 @@ cannot see variables set on a sibling element. `document.body` is the lowest com
 ancestor.
 
 ## Consumers of the Variable
-
-### Sheet component (`ui/sheet.tsx`)
-
-All `side="bottom"` sheets automatically get bottom padding:
-
-```
-pb-[calc(var(--bottom-bar-height)+env(safe-area-inset-bottom))]
-```
-
-This covers: playlist hero sheet, track-list-item action sheets, and any other
-generic `side="bottom"` sheet that needs to clear the bottom chrome.
-
-**Exception — player-context sheets:** Sheets opened from within the player chrome
-(QueueSheet, NowPlayingSheet, AddToPlaylist sheet, track actions overflow sheet)
-MUST override with `pb-0`. These sheets are opened while the player mini-bar is
-visible and have their own height constraints (`h-[80vh]`, `max-h-[85vh]`,
-`max-h-[60vh]`) that would be incorrectly shrunk by the auto padding.
-
-```tsx
-// QueueSheet
-<SheetContent side="bottom" className="h-[80vh] flex flex-col pb-0">
-// NowPlayingSheet
-<SheetContent side="bottom" className="flex max-h-[85vh] flex-col gap-6 pb-0">
-// AddToPlaylist sheet (nested in NowPlaying)
-<SheetContent side="bottom" className="flex max-h-[60vh] flex-col pb-0">
-// Overflow actions
-<SheetContent side="bottom" className="flex flex-col gap-2 pb-0">
-```
 
 ### Main content area
 

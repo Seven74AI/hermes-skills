@@ -307,5 +307,6 @@ state what to do, not what to avoid.
 - `references/react-router-8-client-action.md` — clientAction proxy pattern for React Router 8 code-split routes
 - `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection
 - `references/mobile-layout.md` — z-index hierarchy, --bottom-bar-height CSS var, sheet positioning, search overlay
+- `references/autoplay-guide.md` — browser autoplay blocking, getAutoplayPolicy API, guide dialog pattern
 - `references/react-router-single-fetch-layout-loaders.md` — layout routes must export a loader when `clientLoader.hydrate` is on a parent; SingleFetchNoResultError pattern
 - `templates/oxlintrc.json` — oxlint configuration template
