@@ -157,6 +157,23 @@ Pattern: search docs → verify the claim → then assert. Not: reason from firs
 
 This applies when making claims about SQL/SQLite behavior, framework API semantics, tool CLI flags, language runtime guarantees, or any external dependency's documented contract. If you cannot find confirmation in the docs, say "I'm not sure — let me check" rather than asserting.
 
+### Hermes tool errors: diagnose infrastructure before blaming the tool's internal call
+
+When a Hermes tool (browser, web_extract, terminal, etc.) returns an error referencing an internal URL or endpoint, do NOT immediately conclude the tool's internal call is wrong. The tool's behavior is almost always correct — the infrastructure serving that endpoint is likely broken.
+
+**Anti-pattern:** "Tool X failed because it tried to call /some/endpoint and got 404 — that endpoint doesn't exist" when the endpoint IS correct and the service is just unhealthy. This triggers user frustration: "Why the fuck would /tabs not work?" — because you blamed the tool instead of the infrastructure.
+
+**What to do instead:**
+
+1. Check the Hermes docs for the tool to understand what backend it uses and what endpoints it expects
+2. Inspect what's actually running on the referenced port/host (`curl`, `docker ps`, `docker logs`)
+3. Verify service health — check logs for queue errors, connection failures, restart loops
+4. Only then assert what's broken
+
+**Real case (2026-07-30):** `browser_navigate` returned "404 on http://127.0.0.1:3002/tabs". Initially blamed `/tabs` as a wrong endpoint. Reality: `/tabs` IS the Firecrawl browser session endpoint — the self-hosted Firecrawl stack had RabbitMQ queue errors (`INTERNAL_ERROR - noproc`), and `/v2/browser` returned 500. The tool's behavior was correct; the infrastructure was broken.
+
+Rule: **"The tool's internal call is probably right — verify infrastructure health first."**
+
 ### Codebase auditing: verify before asserting
 
 When asked to "review the codebase" or "audit for issues," **read the files FIRST, present findings AFTER.** Never state a claim about a file you haven't read. Every finding must include file + line number as evidence. Presenting a list of "bugs" then being challenged and retracting half of them destroys credibility irreversibly.

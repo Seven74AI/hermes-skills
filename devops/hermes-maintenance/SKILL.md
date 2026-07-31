@@ -93,3 +93,7 @@ After updating, `pip install -e .` handles new dependencies. Watch for:
 - **Hard reset loses fork history**: `git reset --hard upstream/main` discards all local commits. Before doing this, verify that local commits are either cherry-picks already in upstream (look for upstream PR numbers like `(#30858)`) or are safely stashed.
 - **Editable installs need explicit reinstall**: After pulling new code, `pip install -e .` is required to pick up new dependency declarations. Skipping this step means the old dependency set is used, which can cause import errors for new features.
 - **Stash conflicts on refactored code**: If you stashed changes to a file that upstream heavily refactored (e.g., extracted to a mixin), the stash will conflict. Prefer upstream's version — the refactoring is intentional and your old patch is likely obsolete.
+
+## References
+
+- `references/browser-diagnostics.md` — Diagnosing browser tool failures: Firecrawl config, playwright service, agent-browser fallback

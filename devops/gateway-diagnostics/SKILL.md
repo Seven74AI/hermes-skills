@@ -145,6 +145,10 @@ When `hermes-dashboard.service` is in `activating (auto-restart)` with a climbin
 
 When the dispatcher auto-disables a board due to DB corruption, or when WAL mode causes recurring index corruption, see `references/kanban-board-recovery.md` for recovery procedures (touch-to-re-enable, dump→restore, WAL→DELETE mode migration, 0-byte ghost DB detection).
 
+## Firecrawl / Browser Tool Infrastructure
+
+When Hermes browser tools fail with errors referencing internal URLs (e.g., `127.0.0.1:3002/tabs`), the issue is usually the self-hosted Firecrawl Docker stack. See `references/firecrawl-stack-health.md` for health checks and common failure modes (RabbitMQ queue corruption, browser endpoint 500s).
+
 ## Pitfalls
 
 - **Flood control ≠ disconnected**: Telegram rate-limiting is transient.

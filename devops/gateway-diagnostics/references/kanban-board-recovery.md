@@ -76,7 +76,7 @@ This watchdog currently exists but does not perform the re-enable step — it on
 
 ### Root Cause
 
-WAL mode is SQLite's default and allows concurrent readers + one writer. Under sustained load — a kanban worker writing task events while the Block Watchdog queries the DB — WAL checkpoints can corrupt secondary indexes. The main table data is usually intact; only the index structure is wrong. This is silent corruption: the DB opens and reads, but queries touching the corrupt index return wrong results or fail silently.
+**WAL mode is the default — not DELETE.** The gateway sets WAL journal mode on every connection (`hermes_state.py` → `apply_wal_with_fallback`). `synchronous=NORMAL` is safe per SQLite docs. The user decided to keep WAL mode (Jul 2026). DELETE mode is only a fallback for NFS/SMB/FUSE filesystems where WAL doesn't work. The claim that "Hermes kanban DBs now use DELETE journal mode" (from an earlier version of this skill) was aspirational and never applied to any board.
 
 ### Recovery Procedure
 
@@ -183,7 +183,63 @@ If the plugin/worker is pointing at the 0-byte file, update the config to point 
 
 If the dispatcher has been writing to the 0-byte file for days, any tickets "created" during that period were never persisted. Restore from the real DB and manually re-create any critical tickets that were lost.
 
+### Scenario D: Mid-Session WAL Corruption from Concurrent Operations (Self-Healing)
+
+**Distinct from** the transient file-level corruption (Scenario A) and recurring index corruption (Scenario B). This is a *single-incident* corruption caused by a concurrent archive operation while the dispatcher was under heavy load. The DB self-healed after 2.5 hours.
+
+### Symptoms
+
+- `sqlite3.OperationalError: disk I/O error` on every dispatcher tick for a single board
+- Errors persist for hours (not seconds), then vanish without intervention
+- `PRAGMA integrity_check` passes after the incident — the corruption was in-memory / WAL-transient, not on-disk
+- Only one board affected (the one where the concurrent write happened)
+- The gateway never restarted — the cached `_guard_existing_db_is_healthy` check never re-ran
+
+### Root Cause
+
+At 23:00, a worker ran `hermes kanban archive` on 7 tasks while the gateway was under heavy load (recursion depth 3, loadavg > 5). The concurrent WAL checkpoint from the archive conflicted with the dispatcher's read, leaving the DB in an inconsistent state for new connections. Every subsequent `connect()` → `release_stale_claims()` hit `SQLITE_IOERR`.
+
+**Why `_guard_existing_db_is_healthy` didn't catch it:** The health check is **cached per-process** — it runs once on the first `connect()` and never again. The corruption developed 21+ days into the process lifetime, well after the initial check passed. No subsequent connection ever re-ran `integrity_check`.
+
+**Why `synchronous=NORMAL` was ruled out:** SQLite docs explicitly confirm WAL mode with `synchronous=NORMAL` is corruption-safe for data integrity. The user challenged this during the session and was proven right — the issue was the lack of periodic re-checking, not the sync mode.
+
+### Diagnostic Technique: Journalctl Timeline Tracing
+
+Trace from the FIRST error timestamp backward to find the triggering operation:
+
+```bash
+# 1. Find the first error timestamp
+journalctl -u hermes-gateway --since "2026-07-06 23:00" --until "2026-07-06 23:30" \
+  2>/dev/null | grep "disk I/O error" | head -1
+
+# 2. Look at ALL gateway activity in the 10 minutes BEFORE the first error
+journalctl -u hermes-gateway --since "2026-07-06 22:50" --until "<first_error_time>" \
+  2>/dev/null | grep -v "kanban notifier\|UFW BLOCK" | head -50
+
+# 3. Match the trigger: look for archive/complete/write operations on the affected board
+#    in the minute before the first error
+```
+
+Key signals in the output:
+- `kanban dispatcher: tick failed on board <name>` — the first error
+- `Archived t_xxx` — concurrent archive operation (the trigger)
+- `Interrupt recursion depth N reached` — gateway overload (the precondition)
+
+### Recovery
+
+**No manual recovery needed — the DB self-heals.** The WAL auto-replays after ~2.5 hours when SQLite recovers from the checkpoint conflict. The gateway doesn't need a restart. The board doesn't need to be touched.
+
+However, the gateway is **blind** during the entire incident. 135 errors cycled silently for 2.5 hours with no alerting.
+
 ### Prevention
+
+1. **Periodic `integrity_check`**: Re-run `PRAGMA integrity_check` on every board DB every ~100 dispatcher ticks or every hour. If it fails and the DB is still readable, move dispatcher to read-only mode + alert rather than silently cycling errors.
+
+2. **Gateway restart detection**: The `_guard_existing_db_is_healthy` cache should be invalidated after gateway restart, not just on first connect. A stale cache from 21+ days of uptime guarantees the check is worthless for any corruption that develops mid-session.
+
+**Real case (2026-07-06):** music-library board, 135 `disk I/O error` ticks from 23:09 to 01:25. Triggered by 7-task archive at 23:00 under gateway load (recursion depth 3). Self-healed without intervention.
+
+## Prevention
 
 - **Cron health check should verify kanban.db is not 0 bytes** — this is a one-line check (`[ -s /path/to/kanban.db ]`) that catches both never-initialized and accidentally-truncated files.
 - **Monitor DB size over time** — a DB that was 196 KB yesterday and 0 bytes today is a clear signal, even if all other health checks pass.

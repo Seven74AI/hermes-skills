@@ -1,7 +1,7 @@
 ---
 name: music-library
 description: "Music Library project configuration — tech stack, repo, tenant."
-version: 1.23.0
+version: 1.26.0
 metadata:
   hermes:
     tags: [music, project, reference]
@@ -56,6 +56,25 @@ AWS_ENDPOINT_URL_S3="https://fly.storage.tigris.dev"
 BUCKET_NAME="mock-bucket"
 ```
 
+### Database setup
+
+On a fresh clone or after a reset, the SQLite database file is empty — no tables exist.
+Run migrations before seeding:
+
+```bash
+npx prisma migrate deploy   # apply all migrations (non-interactive, works in CI/scripts)
+npm run db:seed             # seed test data (5 users, 2 playlists, 4 tracks)
+```
+
+**Pitfall:** `prisma migrate dev` is interactive and will fail with `non-interactive` errors
+in scripts or terminal sessions. Use `prisma migrate deploy` instead — it applies existing
+migrations without prompting.
+
+If the schema has pending drift, run `prisma migrate dev` once interactively to generate
+the migration, then `prisma migrate deploy` for subsequent runs.
+
+For a full reset: `npm run db:reset` (wraps `prisma migrate reset --force && prisma generate`).
+
 ### Prisma client generation
 
 ```bash
@@ -69,42 +88,167 @@ npx vitest run app/utils/service-playlist.server.test.ts   # single file
 npx vitest run                                             # all vitest tests
 ```
 
+### Browser testing
+
+See `docs/browser-testing-guide.md` for the full manual browser testing guide: dev server setup, test credentials (`kody`/`kodyuser`), page checklist, DevTools tabs, mobile viewport, offline mode, auth flows.
+
+**Interactive browser automation** from Hermes uses `agent-browser` (not the Firecrawl browser tool — the self-hosted Firecrawl stack lacks browser session support). See `references/agent-browser-testing.md` for the setup, core loop, login flow, and pitfalls.
+
+**Pitfall — form submission with agent-browser:** React Router `<Form>` components may not submit via `agent-browser click` alone. Use `agent-browser press Enter` after filling the last field, or click the field first then press Enter. The core loop: `fill @e8 "user" → fill @e9 "pass" → click @e9 → press Enter`.
+
 ### Git push
 
 ```bash
 gh auth token | xargs -I{} git remote set-url origin "https://oauth2:{}@github.com/Seven74AI/music-library.git"
 ```
 
-## Route Loader Rule (PITFALL)
+## Route Loader Rule — ARCHITECTURAL FIX (supersedes previous bandaid fixes)
 
-`root.tsx` uses `clientLoader.hydrate = true` via `defineOfflineClientLoader("root")`.
-This means **every route in the matched tree MUST export a loader** — layout routes
-AND leaf routes. Routes without a loader are excluded from the single-fetch
-hydration response, causing:
+**Root cause (verified against React Router v8.2.0 `single-fetch.tsx`):**
+`clientLoader.hydrate=true` on a parent layout route (root) triggers React Router's
+`foundOptOutRoute` single-fetch path, which excludes layout routes without their own
+clientLoaders from hydration data.  The `SingleFetchNoResultError` is silently caught
+by `ErrorBoundary` components (e.g. `music.tsx`'s `<OfflineAwareErrorBoundary />`).
 
+### Final state: Unified offline middleware (PR #138, ADR-0015)
+
+The entire offline feature was refactored into a **single middleware layer**.
+No route exports `clientLoader` for offline purposes.  `persistOfflineRootShell`
+moved into `offlineClientMiddleware`.
+
+Key files:
+- `app/middleware/offline-client.middleware.client.ts` — handles online root shell
+  persist offline data patching for ALL routes.  Includes a `typeof document === "undefined"`
+  server guard (defense-in-depth — React Router v7/v8 keeps `clientMiddleware` and
+  `middleware` as separate export slots; `clientMiddleware` does NOT execute during
+  SSR, but the guard ensures offline logic stays browser-only regardless).
+- `app/features/offline-app/offline-route-policies.client.ts` — unified stub map
+  (no more "live" vs "stub" split; sync/async entries)
+- `docs/adr/0015-unified-offline-middleware.md` — full decision record
+
+**Dead code removed:** `define-offline-client-loader.ts`, `offline-loader.client.ts`
+(`createOfflineClientLoader`, `loadWithOfflineFallback`, `isLikelyNetworkFailure`,
+`ServerLoaderData`).
+
+**Exception:** `downloads.tsx` keeps a plain `clientLoader` (no server loader exists;
+no `hydrate=true` so no `foundOptOutRoute` trigger).
+
+### Pitfall: wrong comment in `offlineClientMiddleware`
+
+The file `app/middleware/offline-client.middleware.client.ts` contains a comment at
+line 57-59 that incorrectly claims:
+
+> React Router v8 runs clientMiddleware during SSR data strategy execution
+
+This is **wrong**. See `references/react-router-middleware-architecture.md` — the Vite
+plugin keeps `middleware` and `clientMiddleware` as separate export slots; they are
+not cross-mapped. `clientMiddleware` does NOT execute during SSR.
+
+The `typeof document === "undefined"` guard at line 77 is defense-in-depth — it
+targets a code path that currently never runs on the server. Do not rely on the comment.
+
+### Pitfall: "No result found for routeId 'root'" on reload in prod
+
+This React Router 8 single-fetch error only occurs on **production builds**
+(`react-router build`), not on the Vite dev server. The error only manifests
+**when logged in** — the logged-out path does not trigger it.
+
+**Verified root cause (July 2026): React Router 8.2.0 HydrateFallback + `routesParams.size === 0` shortcut.**
+
+`root.tsx` exports `HydrateFallback` (line 161-163). This triggers React Router's
+hydration path where `singleFetchLoaderNavigationStrategy` checks
+`window.__reactRouterHdrActive` (line 174 of `single-fetch.js`). This flag is
+set ONLY by Vite HMR refresh utils (injected during `react-router dev`), NEVER on
+initial page load and NEVER in production builds. Source: `refresh-utils.mjs:70-73`
+and `rsc-refresh-utils.mjs:28-31` in the `@react-router/dev` package.
+
+Because `__reactRouterHdrActive` is `undefined` on initial load, the guard
+`!window.__reactRouterHdrActive` is always `true`. When combined with
+`routesParams.size === 0` (all routes already have SSR-embedded data and skip
+revalidation), the deferred resolves with `{ routes: {} }` — empty routes.
+
+When `unwrapSingleFetchResult` later looks up `result.routes["root"]`, it's `null`
+→ throws `SingleFetchNoResultError`.
+
+The **SSR response is correct** — the embedded stream includes `"root"` data
+(confirmed via curl). The manifest is also correct: `hasLoader: true`,
+`hasClientLoader: false`, `hasClientMiddleware: true`. The error is in the
+client-side revalidation path, not the server.
+
+**Reproduction recipe:**
+1. `npm run build && NODE_ENV=production node index.js`
+2. Open `http://localhost:3000/login` in a browser, log in as `kody` / `kodylovesyou`
+3. After redirect, reload the page → `No result found for routeId "root"` appears
+4. The error does NOT reproduce when logged out (different hydration state)
+
+The minified call site is: `errorBoundaries-*.js:2:5707` — `k()` function
+looks up `e.routes[routeId]`.
+
+**Possible fixes (unverified):**
+- Remove `HydrateFallback` export from `root.tsx` (loses loading indicator but
+  bypasses the buggy code path entirely)
+- Patch React Router to set `window.__reactRouterHdrActive = true` during hydration
+  (requires upstream fix or fork)
+
+See `references/no-result-found-root-routeid.md` for the full trace.
+
+### Pitfall: `navigator.onLine` is `undefined` in Node ≥21
+
+Node.js ≥21 exposes a global `navigator` object, but `navigator.onLine` is `undefined`
+(not a boolean).  Any code that reads `navigator.onLine` during SSR and treats it as a
+boolean will break on Node ≥21 because `!undefined` is `true`.
+
+**All three affected locations (fix ALL):**
+
+1. `app/features/offline-app/is-offline-environment.ts` — `isOfflineEnvironment()`
+2. **`app/hooks/use-online-status.ts` — `readInitialOnlineStatus()` ← SSR-breaking**
+3. `app/middleware/offline-client.middleware.client.ts` — defense-in-depth server guard
+
+**Location #2 is the real SSR bug**: `useState(navigator.onLine)` → `undefined` →
+falsy → `OfflineStatusBanner` renders "You're offline" during SSR. The banner
+breaks client hydration and the page never finishes loading (timed out `page.goto`).
+
+**Correct pattern (all three locations):**
+```ts
+typeof navigator !== "undefined" &&
+  typeof navigator.onLine === "boolean" &&
+  !navigator.onLine
 ```
-SingleFetchNoResultError: No result found for routeId "..."
-```
 
-A route that exports an `ErrorBoundary` silently swallows the error, hiding the
-problem.
+**⁉ `clientMiddleware` does NOT run during SSR.** React Router v7/v8's Vite plugin
+uses two separate middleware export slots:
+- `middleware` (server export, in `SERVER_ONLY_ROUTE_EXPORTS`) → executed via
+  `runServerMiddlewarePipeline` during SSR `staticHandler.query()`
+- `clientMiddleware` (client export, in `CLIENT_NON_COMPONENT_EXPORTS`) → executed via
+  `runClientMiddlewarePipeline` during client navigations
 
-**When fixing `SingleFetchNoResultError`, always run the scan script to find ALL
-missing loaders — don't stop at the one the user reported.** See
-`references/react-router-single-fetch-layout-loaders.md` for the verification
-script and the full list of affected routes.
+They are not cross-mapped.  `root.tsx` only exports `clientMiddleware`, so
+`route.module.middleware` is `undefined` during SSR and no client middleware code
+executes on the server.  See `references/react-router-middleware-architecture.md`.
 
-Add to any route lacking a loader:
+**Why PR #140 didn't fix the SSR bug**: it fixed location #1 and added guard #3, but
+never checked #2 (`use-online-status.ts`).  The `SingleFetchNoResultError` was not
+caused by `offlineClientMiddleware` patching data during SSR — that code path never
+executes.  The actual root cause was `readInitialOnlineStatus()` returning
+`undefined` during SSR, causing the offline banner to render and breaking hydration.
 
-```tsx
-import { data } from "react-router";
+**Why Playwright didn't catch this:** Playwright runs in a browser where
+`navigator.onLine` is always a boolean.  But the bug DID manifest in Playwright —
+the SSR HTML contained the offline banner, and `page.goto("/")` timed out because
+hydration failed.  No existing E2E test did a login + reload of `/` and checked
+for the offline banner in the SSR output.  A targeted SSR hydration test catches it.
 
-export function loader() {
-  return data({});
-}
-```
+See `references/node-navigator-online-ssr-pitfall.md` for the full diagnosis.
 
-After adding loaders, always run `npx react-router typegen && npx tsc --noEmit`.
+### Previous wrong fixes (DO NOT USE)
+
+- **Adding empty `loader()` to all routes** (commit `5a972fb`): bandaid.  `foundOptOutRoute`
+  was still true.  Error persisted.
+- **Removing `clientLoader` entirely** (PR #136): fixed `SingleFetchNoResultError` but
+  broke offline Playwright tests.
+- **Restoring `clientLoader` without `hydrate=true`** (PR #137): worked but kept the
+  split architecture (clientLoader on root + `defineOfflineClientLoader` on leaf routes).
+  Superseded by the unified middleware refactor.
 
 ## Tech Stack
 
@@ -227,10 +371,64 @@ git push origin --delete chore/consolidate-fork-<date>
 Reviewer kanban tasks are only for **fork PRs** (`Seven74AI/music-library`).
 Upstream PRs (`mnlamart/music-library`) are reviewed by upstream maintainers — just open and wait.
 
+**Exception:** when the user explicitly asks you to review an upstream PR (e.g. "code review
+https://github.com/mnlamart/music-library/pull/140"), do it — but use the correct `--repo` flag.
+
 **How to review:** review directly — read the diff, check files, produce findings inline.
 Do NOT delegate reviews to sub-agents. Sub-agents die silently (OOM, push rejection on
 stale bases), leaving the user with nothing after 40+ minute waits. Direct execution is
 always faster for this repo's PR sizes.
+
+**For already-merged PRs:** the review must also check whether the fix actually resolved
+the reported problem. Read the PR body for the original issue description, then verify:
+- Is the fix deployed? (check deploy workflow, Fly.io status)
+- Does the bug still manifest in production? (curl, browser)
+- Did the fix address the root cause or just symptoms? (trace ALL code paths, not just the
+  one the PR author identified)
+
+If the bug persists post-deploy, flag it explicitly: "⚠️ Merged and deployed, but the bug
+still manifests — the fix didn't address the root cause."
+
+### Pitfall — repo mismatch
+
+Fork and upstream have **independent PR numbering**. `#140` on `Seven74AI/music-library`
+is a completely different PR from `#140` on `mnlamart/music-library`. When the user
+provides a URL, extract the `org/repo` from it and pass it to `gh pr view --repo`.
+Do NOT default to `--repo Seven74AI/music-library` just because most work happens there.
+
+```bash
+# Wrong: defaults to fork — may pull a completely different PR
+gh pr view 140 --repo Seven74AI/music-library  # ❌
+
+# Right: extract from the URL the user gave you
+gh pr view 140 --repo mnlamart/music-library   # ✓
+```
+
+Always log the full `--repo org/repo` in your `gh pr view` call so you can verify it
+matches the URL the user provided.
+
+### Pitfall — fix doesn't work in production (STOP AND INVESTIGATE, don't fix more)
+
+When the user reports that a deployed fix didn't solve the problem ("still broken in prod"),
+**do NOT create another fix PR**. STOP adding patches — the root cause is still unknown.
+Additional fixes pollute the codebase with dead guards.
+
+**What to do instead:**
+1. Verify the fix was actually deployed (check Fly.io deploy logs, CI runs on main)
+2. Access the production URL to see the actual error (curl, browser)
+3. Trace the full rendering path from root layout → route → component
+4. Check if the original diagnosis was wrong (e.g., assumed `clientMiddleware` runs during SSR)
+5. Ask the user what they actually see (blank page? error? offline banner? server error?)
+
+The `navigator.onLine` fix in `use-online-status.ts` fixed the `OfflineStatusBanner` SSR issue,
+but if the problem isn't the offline banner, that fix is irrelevant.
+
+### Pitfall — documentation-as-fix
+
+When a PR responds to a bug report, audit finding, or actionable issue but the change
+is documentation-only (comments, README edits), flag it.  A PR that describes a problem
+without fixing it "passes spec" but doesn't close the loop.  Call it out explicitly:
+"⚠️ This documents the problem but doesn't fix it — the underlying issue still exists."
 
 Create a reviewer kanban task for fork PRs (not a GitHub issue):
 
@@ -256,6 +454,8 @@ Audio archiving was reimplemented (reversing ADR-004). Settled decisions in `doc
 - **#18 (Idempotent enqueue)**: Unique constraint caught, silently skips
 - **#22 (Audio serving)**: No redirect — return presigned URL directly, client fetches it
 - **#23 (Null durations)**: Display convention (`--:--`), not a playback issue
+- **ADR-0015 (Unified offline middleware)**: Single middleware layer handles all offline
+  data; no route exports clientLoader for offline. Supersedes PRs #136/#137.
 
 Condensed implementation reference: `references/audio-archiving-implementation.md`.
 
@@ -299,6 +499,9 @@ state what to do, not what to avoid.
 - `references/db-performance-audit.md` — Prisma batch explosion, over-fetching patterns, profiling workflow
 - `references/dependency-migrations.md` — step-by-step recipes for major version bumps
 - `references/e2e-audio-fixtures.md` — dummy MP3 prerequisites for transport E2E tests
+- `references/e2e-responsive-locators.md` — locators that break on desktop viewport (md:hidden elements) + strict mode violations (regex matching URL paths in error pages)
+- `references/agent-browser-testing.md` — local interactive browser testing with `agent-browser` CLI
+- `references/browser-testing-setup.md` — manual browser testing: dev setup, credentials, agent-browser workflow, login flow
 - `references/e2e-testing.md` — commands, env config, webServer setup
 - `references/player-now-playing-sheet.md` — mobile now-playing view architecture
 - `references/serwist-navigation-route-method.md` — service worker navigation method internals
@@ -308,5 +511,9 @@ state what to do, not what to avoid.
 - `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection
 - `references/mobile-layout.md` — z-index hierarchy, --bottom-bar-height CSS var, sheet positioning, search overlay
 - `references/autoplay-guide.md` — browser autoplay blocking, getAutoplayPolicy API, guide dialog pattern
-- `references/react-router-single-fetch-layout-loaders.md` — layout routes must export a loader when `clientLoader.hydrate` is on a parent; SingleFetchNoResultError pattern
+- `references/react-router-single-fetch-layout-loaders.md` — `clientLoader.hydrate=true` on parent layouts is an anti-pattern; verified React Router v8.2.0 single-fetch internals; correct fix is removing clientLoader from root, not adding loaders to children
+- `references/react-router-middleware-architecture.md` — React Router v7/v8 has two separate middleware export slots (`middleware` for server, `clientMiddleware` for client); they are not cross-mapped; `clientMiddleware` does NOT execute during SSR; full trace from `handleDocumentRequest` through `runServerMiddlewarePipeline`
+- `references/node-navigator-online-ssr-pitfall.md` — Node 21+ navigator.onLine SSR pitfall: symptoms, fix, detection, Playwright gap, and corrected SSR execution analysis
+- `references/no-result-found-root-routeid.md` — `HydrateFallback` + `routesParams.size === 0` shortcut causes `No result found for routeId "root"`; `__reactRouterHdrActive` only set by Vite HMR, never on initial load
+- `references/react-router-source-tracing.md` — workflow for tracing React Router internals from source (clone repo, cross-reference dist vs source, check Vite-injected runtime files)
 - `templates/oxlintrc.json` — oxlint configuration template
