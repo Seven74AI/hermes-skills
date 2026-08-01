@@ -149,6 +149,18 @@ Do NOT invent explanations like "known bug" or "probably a version issue" withou
 
 **Corollary: run tests locally before pushing.** CI is minutes; local is seconds. If a test passes locally but not on CI, the CI setup is the bug — not the test. Diagnose the CI environment differences before modifying test code.
 
+### React Router 8: "No result found for routeId" on production hydration
+
+React Router 8.2.0 single-fetch can drop the `"root"` entry during production hydration when `HydrateFallback` is used and SSR data is present for all routes. The `routesParams.size === 0` check in `singleFetchLoaderNavigationStrategy` short-circuits to `{ routes: {} }` when `window.__reactRouterHdrActive` is falsy — and that flag is only set in dev HMR utilities, never on production initial load.
+
+**Symptom:** `No result found for routeId "root"` only in production, only after login + reload.
+
+**Fix:** Set `window.__reactRouterHdrActive = true` at the top of `clientMiddleware` (after the `typeof document === "undefined"` server guard). React Router v8 runs `clientMiddleware` during data strategy execution, so the flag is set before the single-fetch check reads it.
+
+**CI trap:** TypeScript will fail with `TS2339: Property '__reactRouterHdrActive' does not exist on type 'Window & typeof globalThis'`. Add `declare global { interface Window { __reactRouterHdrActive?: boolean } }` to the middleware file.
+
+See `references/react-router-8-hydrate-fallback-hdr-guard.md` for full diagnosis workflow, reproduction recipe (Playwright), a trace-through-RR-source guide, and the required type declaration.
+
 ### Verifying library/API behavior against authoritative docs
 
 When you make a claim about how a tool, library, or API works (e.g., "X command doesn't work on Y type of table", "Z function always returns null in this case"), **verify against authoritative docs before asserting.** Reasoning from first principles about library behavior is error-prone — one missing edge case or version difference invalidates the entire claim. Use Context7, official docs, or source code as the ground truth.

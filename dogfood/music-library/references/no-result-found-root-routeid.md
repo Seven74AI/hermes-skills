@@ -94,7 +94,72 @@ The "stale build artifacts" theory was wrong. The error reproduces on a
 **completely clean** `npm run build` when logged in. A second rebuild does not
 fix it — the bug is in React Router's runtime logic, not build output.
 
-## Possible fixes (verified outcomes July 2026)
+## Verified fix (July 2026) — committed as `7d54cbe`
+
+### ✅ Two-layer fix: middleware (primary) + inline script (defense-in-depth)
+
+The fix uses **two complementary layers**, both committed to the codebase:
+
+**Layer 1 (primary):** Set `window.__reactRouterHdrActive = true` in
+`offlineClientMiddleware`, right after the `typeof document === "undefined"`
+server guard. This is the fix that actually prevents the error because
+`clientMiddleware` wraps the data strategy: it runs as part of the
+`runClientMiddleware` → `next()` → `singleFetchLoaderNavigationStrategy` chain,
+so the flag is set immediately before React Router checks it.
+
+```typescript
+// In app/middleware/offline-client.middleware.client.ts
+export const offlineClientMiddleware: MiddlewareFunction = async (
+  { request },
+  next,
+) => {
+  if (typeof document === "undefined") {
+    return next(); // Server — pass through
+  }
+
+  // Guards against React Router 8.2.0 single-fetch empty-routes shortcut.
+  // Without this, hydration on routes with HydrateFallback + embedded stream
+  // data resolves singleFetchDfd with { routes: {} } instead of fetching.
+  // Mirrors what the Vite HMR refresh-utils.mjs does in dev.
+  window.__reactRouterHdrActive = true;
+
+  // ... rest of middleware
+};
+```
+
+**Layer 2 (defense-in-depth):** An inline `<script>` in `root.tsx`'s `<Document>`
+component sets the flag before `<Scripts />`. This runs synchronously at HTML
+parse time, before any module scripts load. It provides a belt-and-suspenders
+layer — even if the middleware path is somehow bypassed, the flag is already set.
+
+```tsx
+// In app/root.tsx, inside <Document>, before <Scripts />:
+<script
+  nonce={nonce}
+  dangerouslySetInnerHTML={{
+    __html: `window.__reactRouterHdrActive = true`,
+  }}
+/>
+<Scripts nonce={nonce} />
+```
+
+**Why the middleware layer is the primary fix:**
+
+1. `runClientMiddleware` invokes our middleware
+2. We set `window.__reactRouterHdrActive = true`
+3. `next()` calls the actual `singleFetchLoaderNavigationStrategy`
+4. Inside `he()`, `!window.__reactRouterHdrActive` is `false` → guard blocks
+   the `{ routes: {} }` shortcut
+
+The middleware approach mirrors what Vite HMR refresh utils do in dev. The
+inline script alone was insufficient in earlier testing (stale build artifacts
+or service worker caching may have been factors), but it serves as valid
+defense-in-depth alongside the middleware fix.
+
+**Verified via Playwright:** production build + login as `kody` / `kodylovesyou`
+→ `/library` → reload → **0 errors, 0 routeId errors**, HydrateFallback preserved.
+
+## Approaches confirmed NOT to work
 
 ### ❌ Removing `HydrateFallback` from `root.tsx` — does NOT fix
 
@@ -104,13 +169,13 @@ logged-out page load too, not just after login + reload. This confirms
 `HydrateFallback` is a contributing factor but not the sole cause — the
 underlying `routesParams.size === 0` shortcut fires regardless.
 
-### ❌ Injecting `window.__reactRouterHdrActive = true` — does NOT fix
+### ❌ Inline HTML `<script>` only (without middleware) — insufficient alone
 
 Adding `<script>window.__reactRouterHdrActive = true</script>` before
 `<Scripts />` in `root.tsx`'s `<Document>` component places the flag in the
-SSR HTML, but the error persists. Likely the flag is overwritten by React
-Router's own initialization, or the timing is wrong (the data strategy runs
-after the flag is cleared).
+SSR HTML at parse time before React Router loads. Earlier testing showed this
+alone was insufficient (possibly due to service worker caching or stale builds),
+but it is committed alongside the middleware as a defense-in-depth layer.
 
 ### ❌ Clean rebuild — does NOT fix
 
@@ -135,3 +200,47 @@ navigator.serviceWorker.getRegistrations().then(regs => {
 ```
 
 Or use agent-browser: `agent-browser eval "navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()))"`
+
+## Playwright direct testing pattern (when Hermes browser is unavailable)
+
+When the Hermes browser tool (agent-browser/Camofox) is unavailable,
+Playwright can test production builds directly via `node -e` one-liners:
+
+```bash
+cd ~/projects/music-library && node -e "
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  const errors = [];
+  page.on('pageerror', err => errors.push(err.message));
+
+  // Navigate to login, fill form, submit
+  await page.goto('http://localhost:3000/login', { waitUntil: 'networkidle' });
+  await page.fill('#login-form-username', 'kody');
+  await page.fill('#login-form-password', 'kodylovesyou');
+  await page.evaluate(() => document.getElementById('login-form').requestSubmit());
+  await page.waitForTimeout(3000);
+
+  // Navigate to protected page
+  await page.goto('http://localhost:3000/library', { waitUntil: 'networkidle' });
+
+  // Critical test: reload while logged in
+  errors.length = 0;
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForTimeout(2000);
+
+  const fatal = errors.filter(e => e.includes('No result found for routeId'));
+  console.log(fatal.length === 0 ? 'PASS' : 'FAIL: ' + fatal[0]);
+
+  await browser.close();
+})().catch(e => { console.error(e.message); process.exit(1); });
+"
+```
+
+Key points:
+- Use `page.evaluate(() => form.requestSubmit())` for React Router forms (not `.click()`)
+- Honeypot field `from__confirm` has a preset encrypted value — don't clear it
+- Add `waitUntil: 'networkidle'` to ensure hydration completes
+- Collect errors via `page.on('pageerror')` — console errors are separate

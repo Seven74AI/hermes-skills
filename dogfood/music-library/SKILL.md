@@ -184,11 +184,35 @@ client-side revalidation path, not the server.
 The minified call site is: `errorBoundaries-*.js:2:5707` — `k()` function
 looks up `e.routes[routeId]`.
 
-**Possible fixes (unverified):**
-- Remove `HydrateFallback` export from `root.tsx` (loses loading indicator but
-  bypasses the buggy code path entirely)
-- Patch React Router to set `window.__reactRouterHdrActive = true` during hydration
-  (requires upstream fix or fork)
+**Verified fix (July 2026): Set `__reactRouterHdrActive` in `offlineClientMiddleware` + inline script defense-in-depth.**
+
+The flag must be set **inside the data strategy execution flow**, right after the
+`typeof document === "undefined"` server guard — this is the primary fix.
+An inline HTML script provides defense-in-depth by setting the flag at HTML parse
+time before React Router modules load.
+
+The middleware runs as part of `runClientMiddleware` → `next()` →
+`singleFetchLoaderNavigationStrategy`, so the flag is set right before the
+`!window.__reactRouterHdrActive` check. This is the layer that prevents the
+empty-routes shortcut.
+
+```typescript
+// In offline-client.middleware.client.ts, after the server guard:
+if (typeof document === "undefined") {
+  return next();
+}
+
+// Guard against React Router 8.2.0 single-fetch empty-routes shortcut
+window.__reactRouterHdrActive = true;
+
+// ... rest of middleware
+```
+
+This mirrors what the Vite HMR refresh utils do in dev (`refresh-utils.mjs`).
+
+**Approaches confirmed NOT to work:**
+- Removing `HydrateFallback` export — error still fires (even on cold load)
+- Inline `<script>` alone without the middleware — insufficient as the sole fix
 
 See `references/no-result-found-root-routeid.md` for the full trace.
 
