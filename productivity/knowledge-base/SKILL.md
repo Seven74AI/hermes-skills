@@ -6,14 +6,15 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [knowledge-management, research, notes]
-    related_skills: [obsidian]
+    related_skills: []
 ---
 
 # Knowledge Base
 
 Personal knowledge base in the Obsidian vault at `Knowledge base/`.
 Categorize with Obsidian `tags` in frontmatter.
-Uses the `obsidian` skill for file operations. Git push after each note.
+Uses Obsidian vault file operations for reading, searching, creating, and editing notes.
+See `references/obsidian-vault-ops.md` for vault path resolution, note CRUD patterns, wikilinks, and git sync.
 
 ## Content sources
 
@@ -198,7 +199,7 @@ If `web_extract` is unavailable: `curl` + Googlebot UA (`references/instagram-ex
 
 ## Adding a note — workflow
 
-1. **Load obsidian skill** (`skill_view(name='obsidian')`)
+1. **Use Obsidian vault operations** — resolve vault path from `OBSIDIAN_VAULT_PATH` env var, use file tools with absolute paths. See `references/obsidian-vault-ops.md`.
 2. **Extract** core claim, fact, or insight
 3. **Language:** content in source language; section labels per template (English)
 4. **Verify** when possible — search, cross-reference
@@ -287,7 +288,7 @@ All notes MUST use these fields consistently:
 ## Retrieving information
 
 When the user asks "qu'est-ce qu'on a sur X ?":
-1. Load obsidian skill
+1. Use Obsidian vault operations to search (see `references/obsidian-vault-ops.md`)
 2. `search_files(target='content', pattern='<keyword>', path='<vault>/Knowledge base/')`
 3. Present findings grouped by confidence
 4. Offer to research and add if nothing matches
@@ -349,5 +350,5 @@ Batch inventory ("titre des done"): `templates/kanban-ticket-template.md`
 | **OCR / scanned PDFs** | `references/ocr-scanned-pdfs.md` |
 | **KB Synthesis → Blog Posts** | `references/kb-synthesis.md` — multi-note synthesis workflow (blog posts, Notion articles) |
 
-Vault path: `OBSIDIAN_VAULT_PATH` (from `~/.hermes/.env`). Git sync: obsidian skill `references/git-sync.md`.
+Vault path: `OBSIDIAN_VAULT_PATH` (from `~/.hermes/.env`). Git sync: see `references/obsidian-vault-ops.md` (vault setup, Obsidian Git plugin config, fresh-machine bootstrap).
 Persist transcripts and source files to MinIO

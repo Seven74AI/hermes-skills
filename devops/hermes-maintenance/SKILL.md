@@ -97,3 +97,4 @@ After updating, `pip install -e .` handles new dependencies. Watch for:
 ## References
 
 - `references/browser-diagnostics.md` — Diagnosing browser tool failures: Firecrawl config, playwright service, agent-browser fallback
+- `references/curator-workflow.md` — Full skill library curation pass: status survey, duplicate detection, consolidation, pruning
