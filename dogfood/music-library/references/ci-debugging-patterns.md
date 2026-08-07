@@ -32,4 +32,26 @@ gh run view <run_id> --json conclusion,jobs --jq '.jobs[] | select(.conclusion==
 gh run view <run_id> --job $(gh run view <run_id> --json jobs --jq '.jobs[] | select(.name=="playwright (1)") | .databaseId') --log
 
 # Note: gh run list doesn't support --json jobs on the list command — use gh run view for jobs
+
+## Concurrency cancels runs on force push
+
+The `deploy.yml` workflow has `concurrency: cancel-in-progress: true`:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+**Pitfall:** Every `git push --force` while a CI run is in progress cancels the previous run. Multiple rapid force pushes leave no clean run. This manifests as all jobs showing "cancelled" and the run marked "failure."
+
+**Rule:** After force-pushing, wait for CI to complete before pushing again. If you need to amend, wait for the current run to finish first. If runs keep getting cancelled, squash to one commit and push once.
+
+**Symptom check:** All jobs show `completed/cancelled` → you force-pushed during a run.
+
+```bash
+gh run list --repo Seven74AI/music-library --branch <branch> --limit 5 \
+  --json status,databaseId,headSha,conclusion \
+  --jq '.[] | "\(.databaseId) \(.status)/\(.conclusion) \(.headSha[0:7])"'
+```
 ```

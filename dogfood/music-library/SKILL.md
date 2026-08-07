@@ -352,6 +352,8 @@ on upstream" or "skip the fork PR," go straight to step 3 — branch off
 
 ### Fork Sync
 
+**Pitfall — force-pushing during CI cancels the run.** The CI workflow has `concurrency: cancel-in-progress: true` (in `deploy.yml`). Every force-push while CI is running cancels the current run. Multiple rapid pushes leave no clean run — all jobs show `cancelled`. **Push once and wait for CI to complete.** See `references/ci-debugging-patterns.md`.
+
 ```bash
 # 1. Remove protection
 gh api -X DELETE repos/Seven74AI/music-library/branches/main/protection
@@ -522,17 +524,18 @@ state what to do, not what to avoid.
 - `references/cross-playlist-bulk-operations.md` — API routes for bulk library/playlist operations
 - `references/db-performance-audit.md` — Prisma batch explosion, over-fetching patterns, profiling workflow
 - `references/dependency-migrations.md` — step-by-step recipes for major version bumps
+- `references/radix-sheet-playwright-testing.md` — Radix Sheet `aria-hidden` interferes with Playwright `getByRole` (accessibility tree exclusion); CSS locators work but can cause hangs; prefer verifying sheet unmount over checking external elements
 - `references/e2e-audio-fixtures.md` — dummy MP3 prerequisites for transport E2E tests
 - `references/e2e-responsive-locators.md` — locators that break on desktop viewport (md:hidden elements) + strict mode violations (regex matching URL paths in error pages)
 - `references/agent-browser-testing.md` — local interactive browser testing with `agent-browser` CLI
 - `references/browser-testing-setup.md` — manual browser testing: dev setup, credentials, agent-browser workflow, login flow
-- `references/e2e-testing.md` — commands, env config, webServer setup
+- `references/e2e-testing.md` — commands, env config, webServer setup, nested Radix Escape counts, CSS z-index overlay click bypass with page.evaluate
 - `references/player-now-playing-sheet.md` — mobile now-playing view architecture
 - `references/serwist-navigation-route-method.md` — service worker navigation method internals
 - `references/storage-test-fixtures.md` — local file fixture pattern for audio/image test routes
 - `references/react-router-typescript-patterns.md` — BreadcrumbHandle Zod inference fix, JSX && narrowing for Prisma relations
 - `references/react-router-8-client-action.md` — clientAction proxy pattern for React Router 8 code-split routes
-- `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection
+- `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection, concurrency cancels runs on force push
 - `references/mobile-layout.md` — z-index hierarchy, --bottom-bar-height CSS var, sheet positioning, search overlay
 - `references/autoplay-guide.md` — browser autoplay blocking, getAutoplayPolicy API, guide dialog pattern
 - `references/react-router-single-fetch-layout-loaders.md` — `clientLoader.hydrate=true` on parent layouts is an anti-pattern; verified React Router v8.2.0 single-fetch internals; correct fix is removing clientLoader from root, not adding loaders to children

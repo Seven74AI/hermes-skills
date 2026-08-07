@@ -70,7 +70,7 @@ env: {
 
 ### Dismiss install banner
 
-The PWA install banner renders at `z-30` and can intercept clicks on the bottom nav (z-40) or be covered by the audio player (z-50). Use `{ force: true }` to click through overlays:
+The PWA install banner renders at z-30 and can intercept clicks on the bottom nav (z-51) or be covered by the audio player (z-50).
 
 ```ts
 async function dismissInstallBanner(page: import("@playwright/test").Page) {
@@ -90,9 +90,60 @@ Call this before interacting with bottom-positioned elements (nav, player mini b
 
 ### Close lingering dialogs between tests
 
-Previous tests can leave Radix dialogs/sheets open, causing their overlay (fixed inset-0 z-50) to intercept clicks in subsequent tests. Press Escape before any test that interacts with a dialog:
+Previous tests can leave Radix dialogs/sheets open, causing their overlay (fixed inset-0 z-53) to intercept clicks in subsequent tests. Press Escape before any test that interacts with a dialog:
 
 ```ts
 await page.keyboard.press("Escape");
 await page.waitForTimeout(300);  // let animation complete
 ```
+
+### Pitfall: nested Radix Sheets need multiple Escape presses
+
+Radix primitives open in a stack. Pressing Escape dismisses only the topmost primitive — a Sheet nested inside another Sheet needs two Escapes (one for the inner, one for the outer). This matters because:
+
+1. **`aria-hidden` removes elements from the accessibility tree, not just hides them.** When a Radix Sheet is open, everything outside it gets `aria-hidden="true"`. Playwright's `getByRole` queries the accessibility tree, so those elements resolve to **0 matches** — `toBeVisible()` fails with `Error: element(s) not found`, NOT "element is hidden."
+
+2. **`toBeHidden()` passes for `aria-hidden` elements** (and also for elements not in the DOM), so the pattern `expect(el).toBeHidden()` → Escape → `expect(el).toBeVisible()` looks correct but breaks when there's a nested sheet.
+
+**Example — Overflow sheet inside NowPlaying sheet:**
+
+```ts
+// Open the now-playing sheet
+await miniBar.getByLabel("Open now playing").click();
+const sheet = page.getByTestId("player-now-playing-sheet");
+await expect(sheet).toBeVisible();
+
+// Open overflow sheet inside the now-playing sheet
+await sheet.getByLabel("More actions").click();
+
+// ❌ WRONG — one Escape only closes overflow, main sheet stays open
+//    bottom nav is aria-hidden → getByRole returns 0 elements
+await page.keyboard.press("Escape");
+await expect(homeLink).toBeVisible(); // "element(s) not found"
+
+// ✓ RIGHT — dismiss both sheets before asserting elements outside them
+await page.keyboard.press("Escape"); // Close overflow sheet
+await page.keyboard.press("Escape"); // Close now-playing sheet
+await expect(homeLink).toBeVisible(); // Back in accessibility tree
+```
+
+**Rule of thumb:** count how many Radix overlays the test opened, and press Escape that many times before asserting elements *outside* all of them.
+
+### Pitfall: CSS z-index overlays blocking clicks (not Radix)
+
+When a CSS layer (e.g. a `fixed inset-0 z-52` search overlay) sits above the target element at a lower z-index, Playwright's `click({ force: true })` dispatches the event but the DOM click can still be intercepted by the overlay's pointer-events. The button fires the click handler, but the overlay consumes the event.
+
+**Fix:** Use `page.evaluate` to call `.click()` directly in JavaScript, bypassing all CSS layering:
+
+```ts
+// ❌ force:true doesn't help — overlay at z-52 intercepts the click on element at z-50
+await page.getByLabel("Open queue").click({ force: true });
+
+// ✓ JavaScript click bypasses CSS pointer-events entirely
+await page.evaluate(() => {
+  const btn = document.querySelector('[aria-label="Open queue"]') as HTMLButtonElement;
+  btn?.click();
+});
+```
+
+Real case: the search overlay (z-52, fixed inset-0) covered the player bar's "Open queue" button (z-50). `force: true` didn't help — the overlay consumed the click event. `page.evaluate` solved it.
