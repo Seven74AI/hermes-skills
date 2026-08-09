@@ -8,7 +8,7 @@ prerequisites:
 metadata:
   hermes:
     tags: [journal, operations, infrastructure, debugging, lessons-learned]
-    related_skills: [productivity/notion, autonomous-ai-agents/hermes-agent]
+    related_skills: [notion, hermes-maintenance]
 ---
 
 # Hermes Journal — Operations Knowledge Base

@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [debugging, nodejs, python, pdb, debugpy, node-inspect, cdp, breakpoints]
-    related_skills: [diagnose, debugging-hermes-tui-commands]
+    related_skills: [diagnose, gateway-diagnostics]
 ---
 
 # Language Debuggers
