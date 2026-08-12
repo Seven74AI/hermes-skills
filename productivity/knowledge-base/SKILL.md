@@ -88,6 +88,8 @@ When the user's description disagrees with the URL path, confirm the type first.
   grep -rql "source_url: $CLEAN_URL" "$OBSIDIAN_VAULT_PATH/Knowledge base/"
   ```
 
+- **Paywall check before ticket creation.** Before queueing a Substack URL for processing, check whether the article is paywalled. Use `web_extract` — the definitive signal is **"∙ Paid"** in the byline. Articles without this are free or soft-paywall (content accessible). Full methodology: `references/substack-paywall-detection.md`.
+
 ### Wikispooks
 
 `references/pipeline-wikispooks.md` — wiki-style deep-research pages. DDOS bypass obligatoire via `welcome_back.php?goto=`. Firecrawl → deep analysis → MinIO → Obsidian.
@@ -320,6 +322,7 @@ Batch inventory ("titre des done"): `templates/kanban-ticket-template.md`
 | Topic | File |
 |-------|------|
 | Substack | `references/pipeline-substack.md` |
+| Substack paywall detection | `references/substack-paywall-detection.md` |
 | Generic web | `references/pipeline-web.md` |
 | Edge cases | `references/edge-cases.md` |
 | Video global rules | `references/video-pipeline-global.md` |

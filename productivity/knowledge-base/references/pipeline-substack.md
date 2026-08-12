@@ -2,6 +2,59 @@
 
 Substack articles (long-form newsletters) and Notes (short-form posts, may contain video). Text extraction via Firecrawl. Video hosted on Mux (Substack's CDN) — see "Substack Video Notes" section below.
 
+## Phase -2 — Paywall detection (before ticket creation)
+
+Many Substack articles are **paid** (marked "∙ Paid" in the byline). Firecrawl returns only the free preview for paywalled articles — the full content is gated behind the subscriber login. **Detect the paywall BEFORE creating a kanban ticket** to avoid workers spending time on incomplete content.
+
+### Detection via web_extract
+
+Run `web_extract` on the URL. Look for these paywall indicators in the output:
+
+```python
+# Paywall signals (any one = blocked):
+# - "∙ Paid" in the byline area
+# - "This post has bonus content for paid subscribers"
+# - "Keep reading with a 7-day free trial"
+# - "Already a paid subscriber? Sign in"
+```
+
+**Example — paywalled article:**
+```
+Unbekoming · Aug 10, 2026 · ∙ Paid
+...
+This post has bonus content for paid subscribers. Upgrade to get full access.
+Keep reading with a 7-day free trial
+```
+
+**Example — free article:** no "∙ Paid" marker, no subscriber prompts at the bottom.
+
+### Decision
+
+| Paywall? | Action |
+|----------|--------|
+| **Yes** (hard paywall) | Tell user. Do NOT create kanban ticket. User must provide cookies or copy-paste full text. |
+| **Yes** (soft paywall — free trial available) | Create ticket with note: "Soft paywall — free trial may work. Full content not guaranteed." |
+| **No** | Proceed to Phase -1 (content-type detection). |
+
+### Substack cookie handling for paywalled content
+
+If the user has a Substack subscription, they can export cookies from Chrome:
+- Key cookies: `connect.sid`, any `substack`-named cookies
+- Export from `substack.com` and `open.substack.com` domains
+- Pass to Firecrawl via cookie injection to scrape full paid content
+
+Without cookies, Firecrawl/web_extract only returns the free preview.
+
+### Known paywalled authors
+
+Based on vault audit (2026-08-11, 109 Substack notes):
+- **Unbekoming** — uses hard paywalls for most articles
+- **Dr. Marizelle** — mixed free/paid; confirmed incomplete note: `drmarizelle_goal-no-longer-hormone` (free preview only)
+- **Books Behind Borders (BBB)** — soft paywalls, "paywalled in part", content usually extractable
+- **Control Studies** — occasionally paywalled then freed after one week
+
+1 confirmed incomplete note out of 109 total Substack notes. 101 notes don't mention "paywall" — unknown if they had full access or processed from preview only.
+
 ## Phase -1 — Content-type detection (before ticket creation)
 
 Substack Notes can embed video or image attachments. Detect before creating the ticket — this determines assignee and pipeline.
