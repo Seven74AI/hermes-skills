@@ -68,25 +68,35 @@ env: {
 
 ## Common test utilities
 
-### Dismiss install banner
+### Dismissing toasts + install banner (shared helpers)
 
-The PWA install banner renders at z-30 and can intercept clicks on the bottom nav (z-51) or be covered by the audio player (z-50).
+Use the shared helpers in `tests/playwright-utils.ts` — don't re-implement per-test:
 
 ```ts
-async function dismissInstallBanner(page: import("@playwright/test").Page) {
-  const installBanner = page.getByRole("region", { name: "Install app" });
-  if (await installBanner.isVisible().catch(() => false)) {
-    await page.getByRole("button", { name: "Not now" }).click({ force: true });
-  }
-  // Remove Radix toast notifications that intercept pointer events
-  await page.evaluate(() => {
-    const region = document.querySelector('[aria-label="Notifications (F8)"]');
-    if (region) region.remove();
-  });
-}
+await dismissOverlays(page);        // install banner + any visible toast
+await dismissVisibleToasts(page);   // visible toast only
 ```
 
-Call this before interacting with bottom-positioned elements (nav, player mini bar) on mobile viewports.
+`dismissVisibleToasts` clicks the toast body to trigger the click-to-dismiss handler
+in `app/components/ui/toaster.tsx`.
+
+**Pitfall — the Radix toast `<li>` has NO `role="status"`.** Radix renders the
+screen-reader announcement as a separate `<span role="status" aria-live>`, so
+`page.getByRole("status")` does NOT match the toast card. It matches `@dnd-kit`'s
+`DndContext` live region (`<div role="status" id="DndLiveRegion-0">`) instead. Target
+toasts via `data-testid="toast"` (set on the `<Toast>` root in `toaster.tsx`), never
+by role. The toast viewport is `aria-label="Notifications (F8)"` (Radix default).
+
+**Pitfall — e2e serves the built bundle, not source.** `start:mocks` (`NODE_ENV=production tsx .`)
+serves `build/client`, so `app/**` edits need `npm run build` before they show up.
+`reuseExistingServer: true` reuses whatever is already on the port — run on a fresh
+`PORT` to avoid a stale dev server (its `tsx watch --ignore app/**` won't reload `app/**`).
+Playwright launch args include `--autoplay-policy=no-user-gesture-required`, so the
+"Autoplay blocked" toast does NOT fire in e2e tests.
+
+The install banner renders at z-30; the toast viewport is `z-100` with `pointer-events-none`,
+but the toast card is `pointer-events-auto` and overlaps the player bar (z-50), so a visible
+toast blocks `Open queue` and other right-side player controls.
 
 ### Close lingering dialogs between tests
 
@@ -129,21 +139,52 @@ await expect(homeLink).toBeVisible(); // Back in accessibility tree
 
 **Rule of thumb:** count how many Radix overlays the test opened, and press Escape that many times before asserting elements *outside* all of them.
 
-### Pitfall: CSS z-index overlays blocking clicks (not Radix)
+### Pitfall: CSS z-index overlays blocking clicks — DO NOT work around with page.evaluate
 
-When a CSS layer (e.g. a `fixed inset-0 z-52` search overlay) sits above the target element at a lower z-index, Playwright's `click({ force: true })` dispatches the event but the DOM click can still be intercepted by the overlay's pointer-events. The button fires the click handler, but the overlay consumes the event.
+When a CSS layer (e.g. a `fixed inset-0 z-52` search overlay) sits above a target element at a lower z-index and blocks a click, the correct fix is **not** to bypass z-index with `page.evaluate`. The overlay is there for a reason — it covers the element intentionally. A `page.evaluate` click hack is a symptom that the test is trying to verify something it shouldn't.
 
-**Fix:** Use `page.evaluate` to call `.click()` directly in JavaScript, bypassing all CSS layering:
+**Rule:** If an overlay blocks your click, the test is testing the wrong thing. Remove the blocked assertion, don't work around it.
 
 ```ts
-// ❌ force:true doesn't help — overlay at z-52 intercepts the click on element at z-50
-await page.getByLabel("Open queue").click({ force: true });
-
-// ✓ JavaScript click bypasses CSS pointer-events entirely
+// ❌ WRONG — page.evaluate bypasses CSS layering to click a covered element.
+//    If the test is called "clicking a track result plays the track,"
+//    verifying the player bar shows the track title IS the test.
+//    Opening the queue and checking the dialog is a different concern.
 await page.evaluate(() => {
   const btn = document.querySelector('[aria-label="Open queue"]') as HTMLButtonElement;
   btn?.click();
 });
+
+// ✓ RIGHT — trim the test to its core assertion.
+//    The player bar showing the track proves "playing from search" works.
+const playerBar = await waitForPlayerBar(page);
+await expect(playerBar.getByText("Search Play Track")).toBeVisible();
 ```
 
-Real case: the search overlay (z-52, fixed inset-0) covered the player bar's "Open queue" button (z-50). `force: true` didn't help — the overlay consumed the click event. `page.evaluate` solved it.
+Real case: the search overlay (z-52) covered the player bar's "Open queue" button (z-50). Instead of working around it, the queue verification was removed — the test already proved the track plays by checking the player bar showed the track title. The queue checking was not what the test was supposed to verify.
+
+### Pitfall: test.setTimeout(60_000) — don't use per-test timeouts
+
+Do NOT add `test.setTimeout(60_000)` to every test. Playwright's default timeout (30s in CI) is already generous. If a test needs 60 seconds, the test is too slow — fix the test, not the timeout.
+
+```ts
+// ❌ WRONG — if every test needs this, the timeout isn't the problem
+test("something", async ({ page }) => {
+  test.setTimeout(60_000);
+  // ...
+});
+
+// ✓ RIGHT — use the default timeout. If individual steps are slow,
+//    add focused timeouts on the slow step, not the whole test.
+```
+
+### Pitfall: tests should test what they claim to test
+
+A test named `"clicking a track result plays the track"` should verify that clicking a search result plays the track. It should NOT also verify queue dialog state, bottom nav visibility after closing sheets, or anything else. When a test breaks because an overlay covers an element, ask: "is this assertion actually what the test is supposed to verify?" If not, remove it.
+
+### When fixing one test issue, audit the whole file
+
+When a file has one broken test, the same pattern (excessive timeouts, wrong assertions, unnecessary interactions) often exists in other tests in the same file. After fixing the known issue, scan the entire file for:
+- `test.setTimeout(60_000)` — remove
+- `page.evaluate` workarounds for z-index — rewrite or remove
+- Assertions that don't match the test name — trim to the core

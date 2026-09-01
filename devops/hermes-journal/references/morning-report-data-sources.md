@@ -13,6 +13,7 @@ Docs the schemas and safe query patterns for sources that aren't kanban (see `ka
   "jobs": [
     {
       "id": "8628d151e230",
+      "name": "arXiv Daily Digest",
       "schedule": {"kind": "cron", "expr": "0 4 * * *", "display": "0 4 * * *"},
       "description": "...",
       "prompt": "..."
@@ -22,7 +23,7 @@ Docs the schemas and safe query patterns for sources that aren't kanban (see `ka
 }
 ```
 
-**Key pitfall:** This is a **dict** wrapping a `jobs` list, not a flat list. Direct iteration over the loaded JSON will fail.
+**Key pitfall:** This is a **dict** wrapping a `jobs` list, not a flat list. Direct iteration over the loaded JSON will fail. **Prefer the `name` field for report headers** — `description`/`prompt` are often just the anti-pipe-rule prompt prefix, not a useful label (e.g. `name=Disk Cleanup Agent`, `name=Kanban Block Watchdog`). Also note `hermes cron list` does NOT accept `--json` (exits 2) — `jobs.json` is the authoritative source.
 
 **Safe query (no pipe-to-interpreter):**
 ```bash
@@ -34,10 +35,11 @@ jobs = data.get('jobs', data)  # tolerate both shapes
 if isinstance(jobs, list):
     for j in jobs:
         jid = j.get('id','?')
+        name = j.get('name','')
         sched = j.get('schedule',{})
-        desc = j.get('description', j.get('prompt','?'))[:100]
+        desc = (name or j.get('description', j.get('prompt','?')))[:100]
         display = sched.get('display', sched.get('expr','?'))
-        print(f'{jid[:14]} | {display:20s} | {desc}')
+        print(f'{jid[:14]} | {display:18s} | {desc}')
 "
 ```
 
@@ -131,7 +133,7 @@ And the backup repo (always churns with backup+prune cycles):
 cd /root/.hermes/backups && git log --since="24 hours ago" --oneline
 ```
 
-**Key pitfall:** The backup repo will always have commits (backup + prune every 2h). Filter these mentally — they're infrastructure, not code changes.
+**Key pitfall:** The backup repo *usually* churns with backup+prune commits (every ~2h when the backup job actually exists). **A stale backup repo (no commits in >24h) is a CRITICAL alert** — it means the backup cron/timer was silently removed and Hermes state is no longer being backed up. Every Morning Report should run `git -C /root/.hermes/backups log -1 --format='%ci'` and flag the result if it is older than a day. Detected 2026-08-13: backups had silently stopped on 2026-06-12 (no backup job in `jobs.json`, no systemd timer) — ~2 months gone unnoticed because the repo simply stops churning with no error and no watchdog firing.
 
 ## Cron Output Directory Growth
 

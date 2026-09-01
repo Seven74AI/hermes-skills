@@ -9,6 +9,34 @@ Backup strategy for a Hermes Agent installation. Covers both quick backups (conf
 
 Use when setting up, troubleshooting, or modifying Hermes backup cron jobs, when backup size explodes or Git LFS quotas are at risk, or when planning a VPS migration / server rebuild. See `references/pre-migration-discovery.md` for the full server inventory checklist.
 
+## 🔴 Verify backups are ACTUALLY running — a populated dir is not proof
+
+A `~/.hermes/backups/` directory with a `.git` and `RECOMBINE.md` is **not** evidence that backups are current. A previous reflection falsely reported "the backup system is running" from the dir's existence alone, while the last real commit was 65 days old and no backup cron job existed at all. Verify with two independent checks:
+
+```bash
+# 1. Last actual commit date (the dir .git mtime is misleading — git gc updates it)
+git -C ~/.hermes/backups log -1 --format='%ci %s'
+
+# 2. A cron job actually references the backup script (hermes cron list has NO --json flag)
+python3 -c "import json; d=json.load(open('/root/.hermes/cron/jobs.json')); jobs=d['jobs']; [print(j.get('name'), '->', j.get('script') or j.get('prompt','')[:60]) for j in jobs if 'backup' in json.dumps(j).lower()]"
+```
+
+If no cron job references `sanitized-backup.sh`, backups are silent. This happened in practice: the LLM-driven backup agent was replaced by `sanitized-backup.sh` (~June 2026) but the cron job to run it was never created, leaving backups frozen for 65+ days undetected.
+
+## 🔴 `sanitized-backup.sh` is OBSOLETE — `hermes backup -q` no longer emits a zip
+
+As of Hermes v0.18.x, `hermes backup -q` (quick) **does not produce a `.zip` file anymore.** It emits a **"state snapshot"** — a full directory copy (~1.9 GB with a 1.7 GB state.db) under `~/.hermes/state-snapshots/<timestamp>/`, printed as "State snapshot created: … stored in ~/.hermes/state-snapshots/". The `-o` flag is silently ignored in quick mode. Full `hermes backup` (no `-q`) *does* still emit a zip, but it is **multi-GB (>3.3 GB) and takes >5 min**, so it is unsuitable for a 2-hourly cron and for the git-backed backup repo.
+
+Consequences:
+- `scripts/sanitized-backup.sh` (written 2026-06-13 against the old zip behaviour) breaks at its `RAW_ZIP=$(ls …/*.zip)` line: the glob matches nothing, `ls` exits 2, `set -euo pipefail` + `pipefail` propagate the non-zero status out of the `$(…)` assignment, and the script dies with exit 2 **before** the `FATAL` guard runs. (It also had a duplicated `hermes backup -q` block leaving an unclosed `if` — a syntax error — fixed 2026-08-22.)
+- A bare `hermes backup -q` run still creates a full 1.9 GB snapshot even when the script then aborts — so a failing cron wired to it would consume ~1.9 GB per run (catastrophic on a 2-hourly cadence). **Do NOT wire `sanitized-backup.sh` to a cron job as-is.**
+- Local snapshot pruning: `~/.hermes/scripts/prune-snapshots.py` keeps the N=2 newest snapshots. There is no cron wiring it either.
+
+**Remediation options (needs a decision):**
+1. **Local-only rolling snapshots** — cron `hermes backup -q` every 2h + cron `prune-snapshots.py`. Fast and simple, but no off-site redundancy, and each snapshot is ~1.9 GB (state.db is the bulk).
+2. **Off-site git backup (original intent)** — rewrite the script to run full `hermes backup -o <file>.zip` (slow, >5 min, multi-GB), strip `.env`/`auth.json`, and push. Feasible only if the repo can absorb multi-GB archives and the cron timeout is raised well past 5 min.
+3. **Shrink state.db first** (`hermes sessions optimize` / `prune`) so snapshots and zips are small again, then re-evaluate.
+
 ## Backup types
 
 | Type | Command | Contents | Typical size | Frequency |
@@ -152,6 +180,8 @@ The backup repo accumulates loose objects from frequent pushes (12+/day). `git g
 cd /root/.hermes/backups && git gc --prune=now
 ```
 This repacks loose objects and typically reclaims 3–4 GB. Safe to run in the backup cron after each push, or as a standalone weekly cron.
+
+**⚠️ `git gc` reclaims NOTHING once the repo is already a single pack.** The 3–4 GB win only happens when loose objects have accumulated (shallow-clone regression). Check first with `git count-objects -vH`: if it reports `packs: 1`, `size-pack: ~3.4 GiB`, `count: 0` (loose), `garbage: 0`, `prune-packable: 0`, everything is already packed and `git gc --prune=now` returns 0B reclaimed — the bulk is the actual committed backup history (tar.gz/zip committed as git objects), NOT loose-object bloat. Reducing it then requires either (a) shrinking `state.db` first so future snapshots are small, or (b) a history rewrite (`git filter-branch`/`reflog expire` + `gc --aggressive`) to drop old archives — see the "force push HTTP 500" pitfall for the rewrite sequence. Observed 2026-08-31: single 3.43 GiB pack (670 objects), 0 loose, 0 garbage.
 
 Diagnose current state:
 ```bash

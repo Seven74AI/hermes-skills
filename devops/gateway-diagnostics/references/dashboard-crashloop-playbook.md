@@ -1,9 +1,22 @@
 # Dashboard Crash-Loop Diagnostic Playbook
 
-Symptom: `hermes-dashboard.service` in `activating (auto-restart)` with restart counter climbing
+Symptom A (port conflict): `hermes-dashboard.service` in `activating (auto-restart)` with restart counter climbing
 (>100). Journal shows `[Errno 98] address already in use` on port 9119.
 
-## Step-by-step diagnosis
+Symptom B (auth gate): same restart loop, but journal shows
+`Refusing to bind dashboard to 0.0.0.0 — the auth gate engages on non-loopback binds, but no auth providers are registered.`
+and `ss -tlnp | grep 9119` is empty. Caused by `ExecStart` using `--host 0.0.0.0 --insecure` after the auth-gate update.
+
+## Auth-gate fix (Symptom B)
+
+Pick one:
+- Password: set `dashboard.basic_auth.username` + `password_hash` in `config.yaml`
+  (`python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('your-password'))"`).
+- OAuth: `hermes dashboard register`.
+- Loopback + tunnel: edit the unit to `--host 127.0.0.1` then `systemctl daemon-reload && systemctl restart hermes-dashboard`
+  (correct for a "Tailscale-accessible" service reached over SSH/Tailscale).
+
+## Step-by-step diagnosis (port conflict, Symptom A)
 
 ```bash
 # 1. Confirm the crash loop

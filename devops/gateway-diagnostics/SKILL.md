@@ -139,7 +139,20 @@ Upload to MinIO and append to `/root/.hermes/queues/ocr_books.txt` instead.
 
 ## Dashboard Crash-Loop
 
-When `hermes-dashboard.service` is in `activating (auto-restart)` with a climbing restart counter, it's typically a port conflict from a stale manual process. See `references/dashboard-crashloop-playbook.md` for the full diagnosis and fix (kill stale PID → restart).
+When `hermes-dashboard.service` is in `activating (auto-restart)` with a climbing restart counter, there are two causes:
+
+1. **Port conflict** from a stale manual process. See `references/dashboard-crashloop-playbook.md` (kill stale PID → restart).
+
+2. **Auth gate refusing a non-loopback bind** (post-auth-gate Hermes versions). The journal shows:
+   ```
+   Refusing to bind dashboard to 0.0.0.0 — the auth gate engages on non-loopback binds, but no auth providers are registered.
+   ```
+   The unit's `ExecStart` passes `--host 0.0.0.0 --insecure`, but `--insecure` no longer bypasses auth for non-loopback binds. The process exits `status=1/FAILURE` immediately and systemd restarts it every ~5 min indefinitely (restart counter climbs into the thousands). Fix — pick one:
+   - **Password auth:** set `dashboard.basic_auth.username` + `password_hash` in `config.yaml` (hash with `python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('your-password'))"`), OR
+   - **OAuth:** run `hermes dashboard register`, OR
+   - **Loopback + tunnel:** change the unit to `--host 127.0.0.1` and reach it over SSH/Tailscale (the natural fix for a "Tailscale-accessible" service).
+
+   Detection: `journalctl -u hermes-dashboard -n 20` shows the "Refusing to bind" line, while `ss -tlnp | grep 9119` shows NOTHING holding the port (rules out the port-conflict cause). `errors.log`/`gui.log` also spam `--insecure no longer bypasses dashboard authentication` every ~5 min. Real case 2026-08-13: restart counter 4277 (~15 days) — dashboard down since the auth-gate update landed ~2026-07-29.
 
 ## Kanban Board Recovery
 

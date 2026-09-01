@@ -13,6 +13,19 @@ Load this skill when working on the Music Library app.
 Also load `kanban-project-workflow` — it contains the shared PR workflow,
 respawn guard, profile sync, and worker tuning patterns.
 
+### Planning flow (grill → PRD → issues)
+
+When the user says **"grill with docs"** (or runs the Matt Pocock flow), **write the decision
+record incrementally as each decision locks — do not wait until the end.** On this repo that's
+the numbered ADR convention: `docs/decisions/NNN-*.md` (Status starts `Proposed — draft`, flips
+to `Accepted` when the grill finishes; include a `Non-goals` section). The `grilling` skill is
+only the interview loop (one question at a time, always give a recommended answer, look facts up
+in the codebase rather than asking) — it does NOT mention docs, but this user expects a running
+ADR updated after each confirmed answer. `to-prd` then gates on a **seam-confirmation** step:
+present the proposed test seams (prefer existing seams, fewest new ones) and get the user's OK
+before writing the PRD. `to-issues` splits into tracer-bullet vertical slices and quizzes on
+granularity/dependencies before publishing.
+
 ## GitHub
 
 - **Upstream:** `mnlamart/music-library` — `https://github.com/mnlamart/music-library.git`
@@ -70,6 +83,14 @@ npm run db:seed             # seed test data (5 users, 2 playlists, 4 tracks)
 in scripts or terminal sessions. Use `prisma migrate deploy` instead — it applies existing
 migrations without prompting.
 
+**Pitfall — `?connection_limit=1` breaks ad-hoc Prisma scripts.** `DATABASE_URL` carries
+`?connection_limit=1`, which the `PrismaBetterSqlite3` adapter treats as part of the FILENAME —
+an ad-hoc script using the raw URL opens an empty `data.db?connection_limit=1` file and hits
+`TableDoesNotExist`. The app strips it via `getDatabaseUrl()` (`app/utils/database-url.server.ts`).
+For throwaway repro scripts, pass `DATABASE_URL="file:./data.db"` (no query param) or replicate
+`getDatabaseUrl()`. Also: the Prisma CLI and the runtime adapter resolve relative `file:` paths
+differently — verify which `.db` actually holds tables with `sqlite3 <file> .tables`.
+
 If the schema has pending drift, run `prisma migrate dev` once interactively to generate
 the migration, then `prisma migrate deploy` for subsequent runs.
 
@@ -88,6 +109,30 @@ npx vitest run app/utils/service-playlist.server.test.ts   # single file
 npx vitest run                                             # all vitest tests
 ```
 
+**DB-behavior tests use the real client.** Mocked prisma (`vi.mock("#app/utils/db.server")`)
+can't reproduce unique-constraint collisions or upsert matching. For those, import the real
+`prisma` (leave `db.server` unmocked) — the harness gives each pool an isolated copy of
+`tests/prisma/base.db`. Shared mock fns referenced by `vi.mock` factories need `vi.hoisted()`
+when the module under test is statically imported. See `references/integration-testing-real-db.md`.
+
+**Pitfall — pre-commit runs vitest WITHOUT coverage; CI runs WITH `--coverage`.** The
+hook (`.husky/pre-commit`) runs `npm run test -- --run` (plain `vitest run`); CI
+(`deploy.yml`) runs `npm run test -- --coverage`. A timing-sensitive test passes the hook
+locally but times out (5s default) on CI's slower runner under coverage instrumentation —
+so "pre-commit passed" does NOT mean "CI vitest will pass". Keep tests lean: don't loop
+heavy DB writes to drive in-memory state — exhaust the pure function directly, then assert
+the boundary once. (Real case: the play-event 429 test looped `PLAY_EVENT_MAX_PER_WINDOW`=60
+full `action()` calls; fixed by calling `consumePlayEventBudget()` in-memory 60×, then one
+`action()` for the 429 — and the 429 path short-circuits before any DB access.)
+
+**Pitfall — e2e (Playwright) serves the built bundle, not source.** In `CI=true` mode
+Playwright runs `npm run start:mocks` (`NODE_ENV=production tsx .`), which serves
+`build/client` — so edits to `app/**` are NOT reflected until you run `npm run build`.
+Also `reuseExistingServer: true` reuses whatever is already on the port (e.g. a stale
+dev server from a previous session, whose `tsx watch --ignore app/**` won't reload
+`app/**` changes). Before verifying e2e changes locally: `npm run build`, then run on a
+fresh `PORT` to dodge stale servers. See `references/e2e-testing.md`.
+
 ### Browser testing
 
 See `docs/browser-testing-guide.md` for the full manual browser testing guide: dev server setup, test credentials (`kody`/`kodyuser`), page checklist, DevTools tabs, mobile viewport, offline mode, auth flows.
@@ -95,6 +140,18 @@ See `docs/browser-testing-guide.md` for the full manual browser testing guide: d
 **Interactive browser automation** from Hermes uses `agent-browser` (not the Firecrawl browser tool — the self-hosted Firecrawl stack lacks browser session support). See `references/agent-browser-testing.md` for the setup, core loop, login flow, and pitfalls.
 
 **Pitfall — form submission with agent-browser:** React Router `<Form>` components may not submit via `agent-browser click` alone. Use `agent-browser press Enter` after filling the last field, or click the field first then press Enter. The core loop: `fill @e8 "user" → fill @e9 "pass" → click @e9 → press Enter`.
+
+### Token source & rotation
+
+Canonical token is `GITHUB_TOKEN` in `/root/.hermes/.env` (classic PAT, `repo` + `workflow` scope). Re-wire after rotation:
+
+```bash
+T=$(grep -E '^GITHUB_TOKEN=' /root/.hermes/.env | head -1 | sed -E 's/^GITHUB_TOKEN=//' | tr -d '\r\n')
+echo "$T" | gh auth login -h github.com --with-token
+git remote set-url origin "https://oauth2:$T@github.com/Seven74AI/music-library.git"
+git remote set-url upstream "https://oauth2:$T@github.com/mnlamart/music-library.git"
+printf 'https://oauth2:%s@github.com\n' "$T" > ~/.git-credentials
+```
 
 ### Git push
 
@@ -352,13 +409,75 @@ on upstream" or "skip the fork PR," go straight to step 3 — branch off
 
 ### Fork Sync
 
+**Pitfall — `git fetch` success is NOT proof of a valid token.** Both repos are
+public, so read traffic is unauthenticated — `git fetch`/`pull` succeed even with
+an expired/revoked token. Before starting a sync (which needs `gh api` for the
+protection removal/restore below), verify the token against the API and read the
+current protection state (also public info, no auth needed):
+
+```bash
+T=$(git remote get-url origin | sed -E 's|https://oauth2:([^@]+)@.*|\1|')
+curl -sS -o /dev/null -w "user=%{http_code}\n" -H "Authorization: token $T" https://api.github.com/user   # 200 = valid, 401 = dead
+curl -sS https://api.github.com/repos/Seven74AI/music-library/branches/main | grep '"protected"'
+```
+
+Token sources to check when `gh auth status` reports "invalid token":
+`~/.config/gh/hosts.yml`, the URL-embedded token in `git remote -v`, and
+`~/.git-credentials`. Per-profile homes under `~/.hermes/profiles/<name>/home/`
+carry their own copies and may hold a *different* token. If every token returns
+401 on `/user`, stop and get a fresh PAT — pushing to protected `main` is
+impossible without a working API token.
+
 **Pitfall — force-pushing during CI cancels the run.** The CI workflow has `concurrency: cancel-in-progress: true` (in `deploy.yml`). Every force-push while CI is running cancels the current run. Multiple rapid pushes leave no clean run — all jobs show `cancelled`. **Push once and wait for CI to complete.** See `references/ci-debugging-patterns.md`.
+
+**Pitfall — a fork PR goes `BEHIND` main and auto-merge stalls silently.** When several slices/PRs merge in sequence (the normal kanban parallel flow), a feature branch created before the previous PR merged ends up 1+ commits behind `main`. Under `strict` branch protection (`required_status_checks.strict = true`), GitHub auto-merge will NOT fire on a stale branch — the PR shows `APPROVED` + `MERGEABLE` + all checks green but `mergeStateStatus: BEHIND`, and it sits forever with zero signal. Diagnose the gap and update the branch (merges `main` in, re-runs CI):
+
+```bash
+# how far behind / ahead?
+gh api repos/Seven74AI/music-library/compare/<branch>...main --jq '{behind_by, ahead_by}'
+# fix — note: `gh pr update-branch` is NOT a subcommand in the installed gh; use the REST API
+gh api -X PUT repos/Seven74AI/music-library/pulls/<N>/update-branch
+```
+
+After updating, checks flip to `pending` and auto-merge completes once green. Watch for this whenever you see `mergeStateStatus` != `CLEAN` on an otherwise-ready PR.
+
+**Pitfall — "N ahead / N behind" after a rebase-merge is usually a FALSE divergence.** When a
+consolidation PR is **rebase**-merged upstream (GitHub "rebase and merge", not squash/merge-commit),
+upstream re-applies the fork's commits with NEW SHAs. The fork then reports equal counts on both sides
+(`git rev-list --left-right --count origin/main...upstream/main` → `"6  6"`), which reads as real
+divergence but is the SAME commits under new SHAs. Before force-resetting, confirm:
+`git diff origin/main upstream/main --stat` — **empty output = identical trees = safe to
+`git reset --hard upstream/main`** (loses nothing). Only a NON-empty diff means genuine fork-only work
+that needs a merge or a fresh consolidation PR. (Real case: consolidation PR #166 rebase-merged; the
+fork showed 6/6 but `git diff` was empty — the 6 fork commits were superseded by their rebased twins.)
+
+**Pitfall — an embedded token in the remote URL goes stale and breaks `git push`.** If push fails with
+`Invalid username or token. Password authentication is not supported for Git operations` while `gh api`
+still works, `git remote -v` embeds a stale PAT (`https://git:ghp_...@github.com/...` or
+`https://oauth2:...@...`) that overrides the `gh auth git-credential` helper. Strip it so the helper
+supplies the current token: `git remote set-url origin https://github.com/Seven74AI/music-library.git`
+(same for `upstream`). Prefer plain URLs + the `gh` helper over embedding tokens — an embedded token is
+a snapshot that rots on the next rotation (the "Token source & rotation" re-wire below embeds it, so
+re-strip the URL after any future rotation).
+
+**Pitfall — restoring branch protection 422s if `restrictions` is missing.** The `PUT` restore body
+MUST include `"restrictions": null` (when no push restrictions exist). A `GET` backup omits `restrictions`
+entirely in that case, and re-PUTting it fails with `422 "restrictions" wasn't supplied`. The restore JSON
+below already includes the field — don't drop it when rewriting.
 
 ```bash
 # 1. Remove protection
 gh api -X DELETE repos/Seven74AI/music-library/branches/main/protection
 
-# 2. Force push
+# 2. Check ahead/behind first — prefer a clean fast-forward when the fork is strictly behind
+git rev-list --left-right --count upstream/main...origin/main   # prints "<upstream-only> <fork-only>"
+
+# 2a. Fork has 0 unique commits (right == 0): fast-forward, NO history rewrite, NO force-push
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+
+# 2b. Fork diverged (right > 0): must rewrite
 git checkout main
 git reset --hard upstream/main
 git push --force origin main
@@ -474,6 +593,8 @@ Then `notify-subscribe` on the task.
 
 ## Domain Architecture
 
+**Scale fact:** a standard user library is ~15k tracks (cuid IDs, ~25 chars each). Any design that serializes or iterates the *full* track list — queue persistence, shuffle state, play-order snapshots — must NOT write O(library-size) blobs (a 15k-ID JSON list is ~420KB, rewritten on every queue mutation). Prefer re-derivation (store context + position) and seeded PRNGs (store a 32-bit `shuffleSeed`, not the permutation) over materializing the track-ID list.
+
 Audio archiving was reimplemented (reversing ADR-004). Settled decisions in `docs/CONTEXT.md`. Key decisions:
 
 - **#5 (Error categorization)**: yt-dlp stderr → 7 categories, retry logic
@@ -482,6 +603,38 @@ Audio archiving was reimplemented (reversing ADR-004). Settled decisions in `doc
 - **#23 (Null durations)**: Display convention (`--:--`), not a playback issue
 - **ADR-0015 (Unified offline middleware)**: Single middleware layer handles all offline
   data; no route exports clientLoader for offline. Supersedes PRs #136/#137.
+- **ADR-017 (Cross-device queue persistence + play history) — ✅ SHIPPED (Aug 2026, PRs #245–249)**:
+  `PlayerState` table (one row/user: `playContext`, `currentTrackId`, `upNextIds`,
+  `shuffleSeed`, `loopMode`) + nullable `playId` column on `UsageEvent` + `[userId, type,
+  createdAt]` index. Seeded shuffle (`createSeededRandom`/mulberry32 in `queue-shuffle.ts`;
+  `LoopMode` union now derived from a `LOOP_MODES` const array in `queue-navigation.ts` — single
+  source of truth). New `/history` route (cursor pagination + infinite scroll, per-play rows,
+  completed badge via `playId`, skip dangling track IDs). Restore-and-wait (no autoplay); spine
+  re-derived from context, never snapshotted; debounced ~1s write + unload flush; offline partial
+  restore (current + upNext if downloaded, spine backfilled on reconnect); logout keeps the queue.
+  Full record: `docs/decisions/017-cross-device-queue-persistence-play-history.md` and
+  `docs/specs/queue-persistence-play-history-prd.md`. Review note #2 (reconnect backfill can discard
+  in-session offline mutations — a freshest-wins merge) is a documented non-goal/follow-up.
+
+- **Public playlist sync (by URL) — ⚠️ UNMERGED**: `syncServicePlaylistByUrl()` syncs
+  public/unlisted YouTube playlists the user does **not** own, using the API key (no OAuth
+  connection). This feature + its `syncSource` column live on the **UNMERGED**
+  `feat/sync-playlist-by-url` branch, NOT upstream/main. Current `prisma/schema.prisma` keeps
+  `ServicePlaylist` keyed globally on `[serviceId, externalId]` (no `syncSource`). Verify the
+  actual schema before trusting these docs. See `references/public-playlist-sync.md`
+  (aspirational) and `references/cross-user-unique-key-bugs.md` (bug class + fix + test pattern).
+
+### Pitfall: YouTube OAuth `Connection` unique key is global (multi-user corruption)
+
+`Connection` has `@@unique([providerName, providerId])` (no `userId`), but the YouTube OAuth
+callback (`app/routes/music+/services+/youtube+/callback.tsx`) hardcodes `providerId: "youtube"`
+and its `update` branch never sets `userId`. Every YouTube connection collides on
+`("youtube","youtube")` — only ONE can exist globally. The second user who connects appears
+"not connected" (lookup is `findFirst({ providerName, userId })` in
+`service-connection.server.ts` → `resolveYouTubeAccessToken`), and the first user's tokens get
+silently overwritten. Login providers (`auth.$provider.callback.ts`) use
+`providerId: String(profile.id)` correctly; YouTube must use the real channel id (from
+`getYouTubeUserInfo()` → `channel.id`). See `references/youtube-oauth-connection-bug.md`.
 
 Condensed implementation reference: `references/audio-archiving-implementation.md`.
 
@@ -494,8 +647,7 @@ hermes kanban --board music-library create \
   --assignee coder \
   --skill music-library --skill kanban-project-workflow --skill implement --skill tdd --skill code-review \
   --body "Task description." \
-  --parent <parent_task_id> \
-  --initial-status blocked
+  --parent <parent_task_id>
 
 # Reviewer
 hermes kanban --board music-library create \
@@ -506,10 +658,31 @@ hermes kanban --board music-library create \
 
 Title is the positional argument; body uses `--body`.
 
-Subscriptions are per-task, not inherited by child tasks:
+**Do NOT use `--initial-status blocked` for ordinary coder cards.** That flag is for cards
+requiring immediate human ops (the R3 gate). Normal coder tasks default to `ready`, and the
+dispatcher picks them up; sequence them with `--parent` (repeatable) instead — a child stays
+`todo` until its parent completes. To capture a newly created task id, pass `--json` and
+`grep '"id"'` — do NOT pipe to `python3 -c` to parse the JSON (that trips the pipe-to-interpreter
+security approval and blocks the command).
+
+**Pitfall — malformed `review-required` block causes a duplicate-worker respawn loop.** A coder's
+"block for review" must be a plain `kanban_block(reason="review-required: ...")` with **no `kind`**.
+If the coder passes `kind="dependency"` (or any kind) without a real parent link, the dispatcher
+treats the block as unsatisfiable and re-promotes the task, spawning a **duplicate worker** on the
+same task. Symptoms: the task flips back to `running` right after the coder blocked for review; two
+live worker PIDs appear for one task (`ps aux | grep 'work kanban task <id>'`); events show
+`protocol_violation` / `gave_up` ("worker exited cleanly rc=0 without calling kanban_complete or
+kanban_block"). The work itself is fine (PR open, CI green) — it's the block call, not the code. Fix:
+kill the duplicate PIDs and let the single task re-block cleanly, or unblock/re-claim once the PR merges.
+(This is board-agnostic; belongs in `kanban-project-workflow` long-term.)
+
+Subscriptions are per-task, not inherited by child tasks — subscribe each task, including
+children, individually:
 ```bash
 hermes kanban --board music-library notify-subscribe <task_id> --platform telegram --chat-id 1811944606
 ```
+
+**Monitoring a running worker — `show` ≠ `log`.** When the user asks "how is it going" / "is it stuck", don't infer progress from `hermes kanban show <task>` — its heartbeat events only prove the worker is *alive*. A task legitimately runs 30+ min on a big vertical slice. Read `hermes kanban --board music-library log <task>` and look for real terminal activity (`patch`/`review diff`, `npm run typecheck`/`lint`/`vitest` runs, `git commit`) to confirm actual progress vs. idle spinning. Watch for `exit 124` on `git commit` — that's the pre-commit hook timing out (lint-staged→oxlint→typecheck→vitest→playwright), the one recurring friction point; the worker retries with `--no-verify`.
 
 ## References
 
@@ -521,6 +694,10 @@ state what to do, not what to avoid.
 - `references/fts5-rebuild.md` — FTS5 rebuild commands, admin page, diagnosis
 - `references/github-operations.md` — `--repo` flag, cross-repo PRs, label management
 - `references/audio-archiving-implementation.md` — models, yt-dlp command, worker loop, retry strategy
+- `references/public-playlist-sync.md` — sync-by-URL feature: `syncSource` schema, API-key vs OAuth auth paths, `SyncAuth` threading, provider seams, `this`-binding pitfall
+- `references/cross-user-unique-key-bugs.md` — cross-user unique-key clobbering bug class (Connection + ServicePlaylist): diagnosis workflow, fix + integration-test pattern, intentionally-global models, docs-drift trap
+- `references/youtube-oauth-connection-bug.md` — YouTube OAuth `Connection` global-unique-key bug, repro recipe, better-sqlite3 `?connection_limit=1` gotcha
+- `references/integration-testing-real-db.md` — writing tests against the real SQLite test DB (per-pool harness, real `prisma`, `createUser` fixture, `vi.hoisted` mock fns)
 - `references/cross-playlist-bulk-operations.md` — API routes for bulk library/playlist operations
 - `references/db-performance-audit.md` — Prisma batch explosion, over-fetching patterns, profiling workflow
 - `references/dependency-migrations.md` — step-by-step recipes for major version bumps
@@ -529,7 +706,7 @@ state what to do, not what to avoid.
 - `references/e2e-responsive-locators.md` — locators that break on desktop viewport (md:hidden elements) + strict mode violations (regex matching URL paths in error pages)
 - `references/agent-browser-testing.md` — local interactive browser testing with `agent-browser` CLI
 - `references/browser-testing-setup.md` — manual browser testing: dev setup, credentials, agent-browser workflow, login flow
-- `references/e2e-testing.md` — commands, env config, webServer setup, nested Radix Escape counts, CSS z-index overlay click bypass with page.evaluate
+- `references/e2e-testing.md` — commands, env config, webServer setup, nested Radix Escape counts, CSS z-index overlay rules, toast dismissal (Radix toast has no `role="status"` → use `data-testid="toast"`; stale-`build/` pitfall)
 - `references/player-now-playing-sheet.md` — mobile now-playing view architecture
 - `references/serwist-navigation-route-method.md` — service worker navigation method internals
 - `references/storage-test-fixtures.md` — local file fixture pattern for audio/image test routes
@@ -538,9 +715,13 @@ state what to do, not what to avoid.
 - `references/ci-debugging-patterns.md` — verify pre-existing CI failures, gh CLI for run/job inspection, concurrency cancels runs on force push
 - `references/mobile-layout.md` — z-index hierarchy, --bottom-bar-height CSS var, sheet positioning, search overlay
 - `references/autoplay-guide.md` — browser autoplay blocking, getAutoplayPolicy API, guide dialog pattern
+- `references/autoplay-next-track.md` — next-track auto-advance on lock screen: symptom→cause distinction (permission vs background-suppression), prefetch-next-URL + keep-mediaSession-playing fix
+- `references/autoplay-user-gesture-lock.md` — Chromium per-element user-gesture lock; unlock-on-first-gesture (always-mount `<audio>` + one-shot `load()`); one-shot-flag pitfall; scope: fixes first-play-from-tap, NOT locked-screen next-track
 - `references/react-router-single-fetch-layout-loaders.md` — `clientLoader.hydrate=true` on parent layouts is an anti-pattern; verified React Router v8.2.0 single-fetch internals; correct fix is removing clientLoader from root, not adding loaders to children
 - `references/react-router-middleware-architecture.md` — React Router v7/v8 has two separate middleware export slots (`middleware` for server, `clientMiddleware` for client); they are not cross-mapped; `clientMiddleware` does NOT execute during SSR; full trace from `handleDocumentRequest` through `runServerMiddlewarePipeline`
 - `references/node-navigator-online-ssr-pitfall.md` — Node 21+ navigator.onLine SSR pitfall: symptoms, fix, detection, Playwright gap, and corrected SSR execution analysis
 - `references/no-result-found-root-routeid.md` — `HydrateFallback` + `routesParams.size === 0` shortcut causes `No result found for routeId "root"`; `__reactRouterHdrActive` only set by Vite HMR, never on initial load
 - `references/react-router-source-tracing.md` — workflow for tracing React Router internals from source (clone repo, cross-reference dist vs source, check Vite-injected runtime files)
+- `references/usage-analytics.md` — play-counter architecture: `UsageEvent` vs `DailyUsageStat` vs `DailyActiveUser`, play_started/play_completed semantics (≥50% heuristic), per-user rate limit, `trackId` tracked-but-not-surfaced + missing index
+- `references/player-state-queue-architecture.md` — in-memory player state, spine/order/position/upNext model, deterministic spine orders, unseeded index-based shuffle, hydration batches — foundation for cross-device queue persistence
 - `templates/oxlintrc.json` — oxlint configuration template

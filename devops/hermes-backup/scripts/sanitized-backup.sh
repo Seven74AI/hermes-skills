@@ -24,11 +24,6 @@ RAW_ZIP=$(ls -t "$TMP_DIR"/hermes-backup-*.zip 2>/dev/null | head -1)
 if [ -z "$RAW_ZIP" ] || [ ! -f "$RAW_ZIP" ]; then
     echo "[$(date -Iseconds)] FATAL: hermes backup produced no output file in $TMP_DIR" >&2
     exit 1
-hermes backup -q -o "$TMP_DIR" 2>&1
-RAW_ZIP=$(ls -t "$TMP_DIR"/hermes-backup-*.zip 2>/dev/null | head -1)
-if [ -z "$RAW_ZIP" ] || [ ! -f "$RAW_ZIP" ]; then
-    echo "[$(date -Iseconds)] FATAL: backup produced no output file" >&2
-    exit 1
 fi
 echo "[$(date -Iseconds)] Backup created: $(basename "$RAW_ZIP") ($(du -h "$RAW_ZIP" | cut -f1))" >&2
 

@@ -4,6 +4,8 @@ Traced through the codebase 2026-07-01. One session of config surgery
 across 4 profiles. This documents what each key ACTUALLY does, to prevent
 future agents from checking dead keys or misunderstanding the hierarchy.
 
+> ⚠️ **Contradiction to watch for:** `kanban-project-workflow`'s "Worker Tuning → max_iterations vs max_turns" section still claims **root-level `max_turns`** is the governing key. That is WRONG per this trace — `agent.max_turns` governs, and root-level `max_turns` is a dead legacy fallback. This stale claim misled a SOUL-harmonization pass (2026-08-20) into treating a dead root-level `max_turns: 120` as active. As of 2026-08-20 that skill's SKILL.md also exceeds the 100 KB patch limit (100,223 chars), so it can't be corrected in place — treat its Worker Tuning section as stale and trust this doc.
+
 ## The only key that matters: `agent.max_turns`
 
 ```yaml

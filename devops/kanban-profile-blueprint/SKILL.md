@@ -55,6 +55,7 @@ diagnosis and fixes.
 | Config has root-level `max_turns` or `max_iterations` | Dead legacy key, silently ignored | Remove from config. Only `agent.max_turns` controls budget. See `references/max-turns-key-semantics.md`. |
 | Reviewer task stuck in `todo` forever | SOUL.md Review Handoff missing `promote` step | Add `terminal("hermes kanban --board <board> promote <review_id>")` after `kanban_create`. `kanban_create()` creates in `todo`, dispatcher only picks up `ready`. |
 | Worker calls `kanban_complete()` instead of `kanban_block()` | SOUL.md has both Review Handoff (→block) AND Completion (→complete) sections | Disambiguate: review-requiring tasks → block; non-review tasks → complete. If ALL tasks require review, remove `kanban_complete` from termination path entirely. See `references/contradiction-check.md` check #7. |
+| Reviewer REJECT leaves coder blocked forever | Reviewer SOUL.md REJECT path calls `kanban_complete(approved:false)` without unblocking coder | Add `unblock <coder_id>` to REJECT before completing; route fixable failures (missing handoff, validation failed) to NEEDS CHANGES not REJECT. See `references/contradiction-check.md` checks #8/#9. |
 | SOUL.md budget ≠ config `agent.max_turns` | Budget number drifted during edits | Align SOUL.md to match config. Run `references/contradiction-check.md` check #1 after every SOUL edit. Coder is 180; all other standard profiles are 90 (or higher if project-specific). |
 
 ## Key references

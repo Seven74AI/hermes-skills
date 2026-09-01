@@ -33,7 +33,7 @@ When disk usage exceeds 75%, systematically analyze and clean up. Never delete p
 
 Run each command as a separate `terminal()` call. Do NOT combine into one block — multi-command blocks trigger `shell command via -c/-lc` rejection. The two shell-loop constructs (workspace count and profile cache subdirs) use Python scripts to avoid `-exec sh -c` and `for` loop blockers.
 
-**Escape hatch — skip analysis when ≥95% full:** At critical fullness, `du` and `find` will time out (I/O starvation). Confirmed 2026-05-23 at 100% (72G/72G, 361M free) — every `du -sh`, `find -size`, and `sort` command hung. Don't waste turns retrying. Jump straight to high-impact cleanup steps: 2ea (/tmp cache dirs), 2eb (/tmp project clones — often 15-25G), 2ec (/tmp media files — often 3-4G), 2ed (/tmp pip build artifacts — often 1-3G per `pip-unpack-*` dir), 2p (/tmp backup archives — often 1-3G), 2n (snapshots), 2j (profile caches + system pnpm store at `/root/.local/share/pnpm` — often 2-4G), 2ja (huggingface caches — often 3-6G), 2i (Playwright), 2r (system npm — `/root/.npm`), 2s (Cursor/VSCode server — `/root/.cursor-server` — often 1-2G), 2t (home media — `/root/Videos`, `/root/Music`). Run `df -h /` after each batch. Resume analysis only after usage drops below ~90%.
+**Escape hatch — skip analysis when ≥95% full:** At critical fullness, `du` and `find` will time out (I/O starvation). Confirmed 2026-05-23 at 100% (72G/72G, 361M free) — every `du -sh`, `find -size`, and `sort` command hung. Don't waste turns retrying. Jump straight to high-impact cleanup steps: 2ea (/tmp cache dirs), 2eb (/tmp project clones — often 15-25G), 2ec (/tmp media files — often 3-4G), 2ed (/tmp pip build artifacts — often 1-3G per `pip-unpack-*` dir), 2p (/tmp backup archives — often 1-3G), 2n (snapshots), 2j (profile caches + system pnpm store at `/root/.local/share/pnpm` — often 2-4G), 2ja (huggingface caches — often 3-6G), 2i (Playwright), 2r (system npm — `/root/.npm`), 2s (Cursor/VSCode server — `/root/.cursor-server` — often 1-2G), 2t (home media — `/root/Videos`, `/root/Music`), 2u (agent-browser — `/root/.agent-browser` — often ~400M). Run `df -h /` after each batch. Resume analysis only after usage drops below ~90%.
 
 ```bash
 df -h /
@@ -938,6 +938,25 @@ for base in ['/root/Videos', '/root/Music', '/root/Downloads']:
 print(f'\nTotal: {total/1024/1024:.0f}M')
 PYEOF
 python3 /tmp/cleanup-home-media.py
+```
+
+### 2u. Agent-browser Chrome binary cache (safe — regeneratable on next browser launch)
+
+The agent-browser tool downloads a full Chrome binary to `/root/.agent-browser/browsers/chrome-<ver>/chrome` (278M binary, ~389M total) — same class as Playwright/Puppeteer/Camoufox/Cursor-server (downloaded browser binaries, regeneratable on next launch). NOT caught by any earlier step (not under `/root/.cache/`, not `/tmp/`, not a profile `.cache`). Observed: 389M at `/root/.agent-browser` (2026-08-31).
+
+```bash
+cat > /tmp/cleanup-agent-browser.py << 'PYEOF'
+import shutil, os, glob
+total = 0
+for p in glob.glob('/root/.hermes/profiles/*/home/.agent-browser') + ['/root/.agent-browser']:
+    if os.path.isdir(p):
+        size = sum(os.path.getsize(os.path.join(dp,f)) for dp,_,files in os.walk(p) for f in files)
+        shutil.rmtree(p, ignore_errors=True)
+        total += size
+        print(f'Removed: {p} ({size/1024/1024:.0f}M)')
+print(f'\nTotal: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-agent-browser.py
 ```
 
 ## Step 3 — Verify

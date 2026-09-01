@@ -231,24 +231,9 @@ Full workflow for creating a new Kanban team from scratch: profiles, SOUL.md, Gi
 
 **Bundle decomposition (multi-feature → parallel atomics):** When a ticket bundles 2+ independent features (visible from combined tags like `[GM-2+GM-3+GM-10]`), decompose into parallel atomic tasks. Different from chain-splitting — these are genuinely independent features that can run concurrently. Full recipe: `references/bundle-decomposition.md`.
 
-**Block Watchdog:** For automated detection and recovery of abnormally blocked tasks (crashes, OOM, iteration budget, missing reviewer tasks). Full pattern in `references/block-watchdog.md`.:
+**Block Watchdog:** For automated detection and recovery of abnormally blocked tasks (crashes, OOM, iteration budget, missing reviewer tasks). Full pattern in `references/block-watchdog.md`.
 
-- **T-base** → apply all changes, commit to a shared branch (no fixes yet)
-- **T-fix-A ∥ T-fix-B ∥ T-fix-C** → parallel workers, each handling a different concern (e.g., config files vs. code types vs. UI classes), assigned to DIFFERENT profiles so the dispatcher runs them concurrently
-- **T-merge** → depends on all fix tasks, merges their branches, runs the full test suite
-
-Constraints:
-- Each fixer must work on non-overlapping file areas to avoid git conflicts. If two fixers must touch the same file, serialize them or use git worktrees.
-- Archive the original monolithic task before creating the split replacement.
-- Update downstream parent links (`hermes kanban link/unlink`) so tasks after the merge point depend on T-merge, not the archived original.
-- Full example in `references/dependency-update-pipeline.md`.
-- **No cloning — cap is 1 per role. All tasks queue on the single profile.**
-- **Category-competitor trap in research scoping.** When creating research tasks about a company's competitive landscape, don't search for competitors in the company's broad product *category* (e.g. "AI gateways"). Search in the company's core *differentiator* (e.g. "token compression"). A company that makes an AI gateway with unique compression tech competes with other compression solutions, not with general-purpose gateways. Scoping by category produces a comparison set that misses the real threats and overstates the company's uniqueness. **Real case (edgee-lab 2026-05-18):** T3 analyzed 8 AI gateways and concluded Edgee was "the only one with token compression" — a tautology, since none of the selected competitors even attempt compression. The correct comparison set would be token compression tools, context window optimizers, and prompt caching services.
-2. After the final review task completes, verify all tasks are resolved:
-   ```bash
-   hermes kanban --board <board> list
-   ```
-Keep the base profile — it's the only one for that role.
+**Category-competitor trap in research scoping.** When creating research tasks about a company's competitive landscape, don't search for competitors in the company's broad product *category* (e.g. "AI gateways"). Search in the company's core *differentiator* (e.g. "token compression"). A company that makes an AI gateway with unique compression tech competes with other compression solutions, not with general-purpose gateways. Scoping by category produces a comparison set that misses the real threats and overstates the company's uniqueness. **Real case (edgee-lab 2026-05-18):** T3 analyzed 8 AI gateways and concluded Edgee was "the only one with token compression" — a tautology, since none of the selected competitors even attempt compression. The correct comparison set would be token compression tools, context window optimizers, and prompt caching services.
 
 **Ideation pipeline (multi-agent brainstorming):** For open-ended project ideation ("generate N ideas for a service that helps people"), decompose into planner → N parallel researchers → reviewer. Each researcher explores different domains, reviewer selects and polishes the top ideas. Full task graph, body templates, and scaling rules in `references/ideation-pipeline.md`.
 
@@ -257,8 +242,6 @@ Keep the base profile — it's the only one for that role.
 **Board migration (moving tasks between boards):** When a tenant's tasks are on the wrong board (e.g. `music-library` tasks on `default`), use the recreate+archive pattern: reclaim/unblock → recreate on target board → archive on source. Step-by-step recipe, CLI pitfalls (`--board` position, board switch unreliability, shell quoting), and parent/child link handling in `references/board-migration.md`.
 
 **Team creation from scratch:** When the user wants a new specialist AI agent team (profiles, Kanban board, GitHub repo, Notion page, cron jobs), follow the full 7-step recipe in `references/team-creation-checklist.md`. Covers: roster design, profile creation, SOUL.md authoring, infrastructure setup, task decomposition, recurring jobs, and verification.
-
-**Phased dependency update pipeline:** For large npm dep updates (20+ packages, major jumps), decompose into a 6-task chain: research (parallel) → minors → likely-safe majors → risky majors → known-breaking → verification. Full task graph, phase details, package categorization, and advanced split-and-merge pattern in `references/dependency-update-pipeline.md`.
 
 ## Pitfalls
 

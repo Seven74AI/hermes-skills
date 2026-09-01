@@ -153,6 +153,27 @@ Fix pattern: for profiles where ALL tasks require review (e.g., twitter-coder), 
 
 **Real case (2026-07-06):** Audit of 8 active profiles found hermes-devops and twitter-coder both had block-vs-complete contradictions. Both were patched. The root cause was the `templates/devops-soul.md` template — also patched.
 
+### 8. Reviewer REJECT path must unblock the coder
+
+The reviewer's terminal paths must be symmetric on the coder-unblock step. APPROVE and NEEDS CHANGES both unblock the coder; the REJECT (fatal) path must ALSO unblock before `kanban_complete(metadata={"approved": false})`. If REJECT completes the review without unblocking, the coder stays blocked on `review-required` forever — deadlock (only rescued by the watchdog).
+
+```bash
+grep -n -A6 "REJECT → complete" /root/.hermes/profiles/reviewer/SOUL.md
+grep -c "unblock" /root/.hermes/profiles/reviewer/SOUL.md
+```
+
+Expected: the REJECT section includes an `unblock <coder_id>` step with a ⛔ NEVER-complete-without-unblocking warning, not just in APPROVE/NEEDS CHANGES.
+
+### 9. Reviewer fixable failures → NEEDS CHANGES, not REJECT
+
+Fixable failure classes (missing handoff output, runtime validation failed, failing tests) must route to NEEDS CHANGES (create fix task + promote + unblock coder + block self), NOT REJECT/`kanban_complete(approved:false)`. REJECT is only for fundamentally wrong approaches. The Godot/game verdict examples in the reviewer SOUL.md are where this historically slips in — they showed `REJECT` templates for "missing handoff" and "validation fails" (both fixable).
+
+```bash
+grep -n "REJECT" /root/.hermes/profiles/reviewer/SOUL.md | grep -iE "handoff|validation|missing"
+```
+
+Expected: no REJECT verdict templates for fixable failure classes.
+
 ### 6. Ghost profile check (tickets assigned to deleted profiles)
 
 ```bash
@@ -174,6 +195,8 @@ done
 - After profile creation/deletion
 - After ticket decomposition (new tickets may have NULL runtime/body)
 - Weekly as part of ops re-audit
+
+**When run as an automated cron/audit, APPLY the fixes you find — don't just report them.** The SOUL Harmonizer cron ran three times (2026-08-13/17/20) proposing the same fixes without applying them; each pass was a no-op that accumulated repeated identical reports while the deadlock bugs stayed live. A recurring audit should remediate in-place via `patch` (the deadlock-class fixes are unambiguous text edits), then report what changed and only flag the genuinely-decision-requiring items (e.g. budget changes) for human review.
 
 ## Real case
 
