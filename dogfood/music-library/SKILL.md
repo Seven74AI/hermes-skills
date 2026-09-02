@@ -26,6 +26,35 @@ present the proposed test seams (prefer existing seams, fewest new ones) and get
 before writing the PRD. `to-issues` splits into tracer-bullet vertical slices and quizzes on
 granularity/dependencies before publishing.
 
+**ADR file format** (match this exactly): `docs/decisions/NNN-*.md`, zero-padded 3-digit, numbered
+sequentially after the latest in the directory (ignore the lone 4-digit `docs/adr/0015-*.md` outlier
+— it predates the `docs/decisions/` convention). Body sections: `# ADR-0NN: <Title>` → `## Status`
+(`Proposed — draft`, flip to `Accepted` when the grill finishes) → `**Date:** YYYY-MM-DD` →
+`## Context` → `## Decision` → `## Non-goals`.
+
+**Batch grills (user lists several items):** one ADR **per item**, numbered sequentially (018, 019,
+020…). Grill one item fully before starting the next — don't interleave. For each item, open with a
+**facts table** (what you found in the code, split cleanly into facts vs. open decisions), then ask
+**one question per turn** with a recommendation. This user answers tersely ("Agree" / "ye") and
+expects you to lock the decision, update the running ADR, and move to the next question without
+re-explaining. Trivial items (loading indicator, a sort tweak) still get a short ADR — don't skip
+the record just because the change is small.
+
+At the `to-prd` stage for a batch, do NOT default to one-PRD-per-feature — **offer grouping options**
+as a `clarify` choice (one-per-feature / one combined / group by shared infrastructure). This user
+groups small related features (real case: 6 features → 3 PRDs — infinite-scroll 020/021/022,
+AddToPlaylist polish 019/023, queue click-to-play 018), keyed on the shared `InfiniteScrollSentinel`
+seam. `to-issues` then slices each grouped PRD separately.
+
+**Completion hygiene — grill→merge does NOT auto-close or auto-commit.** When the feature's PRs
+merge, two things routinely get left behind and must be done explicitly:
+1. Close the child issues — `gh issue close <n> --repo Seven74AI/music-library --reason completed
+   --comment "Implemented and merged in #<pr>."`. PRs merged on the fork do NOT close their issues
+   unless the PR body carried `Closes #N`; these feature PRs usually don't.
+2. Commit the ADR + PRD files — `grill with docs` writes them as **untracked** files; nothing
+   commits them automatically. (Real case: ADR-017 + the queue-persistence PRD sat untracked after
+   PRs #245–250 merged, and issues #240–244 stayed open until the user asked.)
+
 ## GitHub
 
 - **Upstream:** `mnlamart/music-library` — `https://github.com/mnlamart/music-library.git`
@@ -451,6 +480,27 @@ divergence but is the SAME commits under new SHAs. Before force-resetting, confi
 that needs a merge or a fresh consolidation PR. (Real case: consolidation PR #166 rebase-merged; the
 fork showed 6/6 but `git diff` was empty — the 6 fork commits were superseded by their rebased twins.)
 
+**Pitfall — a LOCAL branch goes stale after the fork is rebase-synced (drop the superseded commits).**
+The `git reset --hard upstream/main` above fixes the fork's `main`, but it does NOT touch any local
+feature/docs branch you had built on the OLD fork SHAs. After the sync, such a branch reports "N ahead"
+of `origin/main` where N = (old feature commits + your commits), and
+`git merge-base --is-ancestor <old-tip> origin/main` is false (diverged). Replay ONLY your commits onto
+the new base with `rebase --onto` — do NOT `git merge origin/main`, which keeps the superseded commits
+and re-introduces them into the PR:
+
+```bash
+git fetch upstream main && git fetch origin main
+git checkout <branch>
+git rebase --onto origin/main <old-tip-sha>   # old-tip = tip of the OLD fork main your branch was based on
+git rev-list --left-right --count origin/main...HEAD   # must now be "0  <your-commit-count>"
+git push --force origin <branch>
+```
+
+`<old-tip-sha>` is the last old-SHA commit immediately before your first commit (find it with
+`git log --oneline <branch> | tail -n 2 | head -n 1`). (Real case: docs branch based on the pre-sync fork
+tip `e9395cb` came out 8 ahead — 6 rebased feature SHAs + 2 docs commits — after the fork was
+rebase-synced to `66211ff`; `rebase --onto` dropped the 6 and the PR landed clean as 2 commits.)
+
 **Pitfall — an embedded token in the remote URL goes stale and breaks `git push`.** If push fails with
 `Invalid username or token. Password authentication is not supported for Git operations` while `gh api`
 still works, `git remote -v` embeds a stale PAT (`https://git:ghp_...@github.com/...` or
@@ -581,7 +631,7 @@ Create a reviewer kanban task for fork PRs (not a GitHub issue):
 hermes kanban --board music-library create \
   "Review: PR #N — <short summary>" \
   --assignee reviewer \
-  --skill music-library --skill kanban-project-workflow --skill code-review \
+  --skill music-library --skill kanban-project-workflow --skill github-code-review \
   --priority 3 \
   --body '## Context
 PR #N at <repo>. Changes: <bullet list>.
@@ -638,6 +688,16 @@ silently overwritten. Login providers (`auth.$provider.callback.ts`) use
 
 Condensed implementation reference: `references/audio-archiving-implementation.md`.
 
+### Pitfall: `addTrackToUserPlaylist` does NOT bump `UserPlaylist.updatedAt`
+
+`app/utils/user-playlist.server.ts` `addTrackToUserPlaylist` creates only a
+`UserPlaylistTrack` row (`position = max+1`) — it never touches
+`UserPlaylist.updatedAt`. Both "sort by last modified" code paths
+(`loadUserPlaylists` and `/resources/playlists`) order by `updatedAt desc`, so a
+playlist edited by *adding/removing/reordering tracks* does not float to the top —
+only title/description edits do. If "last modified" should mean "last added to",
+bump `UserPlaylist.updatedAt` in the add (and reorder/remove) paths.
+
 ## Kanban Tasks
 
 ```bash
@@ -653,7 +713,7 @@ hermes kanban --board music-library create \
 hermes kanban --board music-library create \
   "Review: PR #N" \
   --assignee reviewer \
-  --skill music-library --skill kanban-project-workflow --skill code-review
+  --skill music-library --skill kanban-project-workflow --skill github-code-review
 ```
 
 Title is the positional argument; body uses `--body`.
@@ -724,4 +784,6 @@ state what to do, not what to avoid.
 - `references/react-router-source-tracing.md` — workflow for tracing React Router internals from source (clone repo, cross-reference dist vs source, check Vite-injected runtime files)
 - `references/usage-analytics.md` — play-counter architecture: `UsageEvent` vs `DailyUsageStat` vs `DailyActiveUser`, play_started/play_completed semantics (≥50% heuristic), per-user rate limit, `trackId` tracked-but-not-surfaced + missing index
 - `references/player-state-queue-architecture.md` — in-memory player state, spine/order/position/upNext model, deterministic spine orders, unseeded index-based shuffle, hydration batches — foundation for cross-device queue persistence
+- `references/queue-spine-contexts.md` — playback-context → spine-fetch mapping (`toQueueSpineContext`, `fetchQueueSpine` per-context queries + artist `take: 50` cap, `playTrack`→`startSpinePlayback` flow, queue sheet zones, provider API surface)
+- `references/queue-navigation-playback.md` — navigation primitives (`getTrackAtTarget`/`advanceAfterPlay`/`resolveNextTrack`), `playResolvedTrack`, `removeTrackFromPlaylist` index semantics, queue-sheet display→play-order mapping, and the `playQueueTrack` seam — for click-to-play (ADR-018) and artist full-discography (ADR-022)
 - `templates/oxlintrc.json` — oxlint configuration template

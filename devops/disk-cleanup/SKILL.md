@@ -959,10 +959,37 @@ PYEOF
 python3 /tmp/cleanup-agent-browser.py
 ```
 
+### 2v. Cargo registry cache (safe — regeneratable via `cargo fetch`/`cargo build`)
+
+Cargo stores downloaded crate sources in `~/.cargo/registry/` and git checkouts in `~/.cargo/git/` per-profile. These are pure download caches — fully regeneratable on next `cargo build`/`cargo fetch`. Same class as npm/pip/pnpm (2j) and rustup toolchains (2mb), but historically missed because 2mb only targets `.rustup/` (toolchains) and no step targets `.cargo/`. Observed: 374M across 2 profiles (coder 260M + reviewer 114M, 2026-09-01).
+
+**⚠️ Do NOT delete `~/.cargo/bin`** — that holds cargo-INSTALLED binaries (actual software, e.g. cargo-make/cargo-watch, ~279M in coder), NOT cache. Only `registry/` and `git/` are safe.
+
+```bash
+cat > /tmp/cleanup-cargo-registry.py << 'PYEOF'
+import shutil, os, glob
+total = 0
+for cargo in glob.glob('/root/.hermes/profiles/*/home/.cargo'):
+    for sub in ['registry', 'git']:
+        sp = os.path.join(cargo, sub)
+        if os.path.isdir(sp):
+            size = sum(os.path.getsize(os.path.join(dp,f)) for dp,_,files in os.walk(sp) for f in files)
+            shutil.rmtree(sp, ignore_errors=True)
+            total += size
+            print(f'Removed {sp} ({size/1024/1024:.0f}M)')
+print(f'\nTotal reclaimed: {total/1024/1024:.0f}M')
+PYEOF
+python3 /tmp/cleanup-cargo-registry.py
+```
+
 ## Step 3 — Verify
 
 ```bash
 df -h /
+```
+```bash
+# Precise % — df -h rounds 69.73% up to "70%". Use exact math to confirm you're <70%.
+df -B1 / | tail -1 | awk '{printf "Used: %.1fG, Avail: %.1fG, Pct: %.2f%%\n", $3/1024/1024/1024, $4/1024/1024/1024, ($3/($3+$4))*100}'
 ```
 
 Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
@@ -1000,6 +1027,9 @@ Report: starting usage, ending usage, GB reclaimed, and which steps contributed.
 - **🔴 Pip build artifacts in /tmp are NOT caught by 2e/2ea/2eb/2ec.** Failed or interrupted `pip install` runs leave `pip-unpack-*` directories (extracted wheels, single dirs can be 2G+), `pip-build-env-*` (isolated build environments), and `pip-metadata-*` (metadata extraction temp dirs) with random suffixes. These are directories — not caught by 2e (files-only), not project clones — not caught by 2eb, not cache dirs — not caught by 2ea, not media — not caught by 2ec. Observed: 2.2G in one `pip-unpack-*` dir + 7M in `pip-build-env-*` (2026-05-24). Use Step 2ed with a 10-min grace period. When `/tmp` is oversized but all other /tmp steps found nothing, run `ls /tmp/ | grep '^pip-'` to check for these.
 - **🔴 pnpm system store lives at `/root/.local/share/pnpm`, NOT `/root/.cache/pnpm`.** The `PNPM_HOME` environment variable points to `/root/.local/share/pnpm` by default (global store + virtual store). Step 2j now cleans BOTH locations. The pnpm-store-deduplication reference (`references/pnpm-store-deduplication.md`) explains profile isolation and store sharing. Observed: `/root/.cache/pnpm` empty but `/root/.local/share/pnpm` at 2.9G (2026-07-19).
 - **🔴 System-level caches outside profiles are NOT caught by profile-level steps.** `/root/.npm` (416M), `/root/.cursor-server` (1.4G), `/root/.vscode-server` — these are regeneratable server binaries and caches that accumulate outside `/root/.hermes/profiles/`. Steps 2r and 2s now cover them. Observed at 2.4G combined (2026-07-19).
+- **🔴 `~/.cargo/bin` is installed software, NOT cache — do NOT delete it.** Cargo splits into `~/.cargo/registry/` + `~/.cargo/git/` (crate download cache — safe, step 2v) and `~/.cargo/bin/` (binaries installed via `cargo install`, e.g. cargo-make/cargo-watch — actual tools the profile relies on, ~279M in coder). Only `registry/` and `git/` are regeneratable cache. Observed: coder `.cargo` = 585M = 306M registry + 279M bin; deleting `bin/` would remove installed CLI tools.
+- **🔴 uv has TWO locations — only `.cache/uv` is cache.** `/root/.local/share/uv` (101M observed 2026-09-01) holds uv-managed tool installs and Python interpreters — NOT cache, do NOT delete. The safe uv package cache is `/root/.cache/uv` (already in step 2o). Deleting `.local/share/uv` breaks `uv tool` installs and managed Pythons.
+- **🔴 `df -h` rounds the percentage, so "70%" may already be <70%.** `df -h` shows 69.73% as "70%", which looks like you haven't reached the <70% stop threshold yet. Before chasing marginal cleanups (e.g. deleting installed binaries), compute the exact percentage with `df -B1 / | tail -1 | awk '{printf "%.2f%%\n", ($3/($3+$4))*100}'`. If it's <70%, stop — the target is met.
 - **🔴 Home-directory media files are NOT caught by /tmp scans.** `/root/Videos/`, `/root/Music/`, `/root/Downloads/` accumulate media from pipelines and downloads. Step 2t now covers these with a 1h grace period. Observed: 517M in `/root/Videos/` (2026-07-19).
 - **🔴 Pipeline-specific data-processing residue in /tmp is NOT caught by any step.** Data extraction/scraping pipelines leave behind named directories containing JSON/CSV/media files. Known patterns:
 - Instagram transcripts/video/audio: `ig_lot4`, `ig_transcripts_lot3`, `ig_slides`, `reels_transcripts`, `ig_*` (190M observed 2026-05-24)
