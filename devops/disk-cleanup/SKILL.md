@@ -706,6 +706,28 @@ python3 /tmp/cleanup-snapshots-count.py
 
 Observed accumulation (2026-05-22): 306M per snapshot (state.db grows with session count). At the default 2h backup interval, this produces ~12 snapshots/day = ~3.6G/day. The retention script installed at `/root/.hermes/scripts/prune-snapshots.py` is also called by the quick backup cron after each run to prevent unbounded growth.
 
+### 2na. Session store (state.db) bloat — FTS index amplification (safe, no data loss)
+
+`/root/.hermes/state.db` grows far beyond the raw message text because it maintains **three** full-text indexes (`messages_fts` FTS5 + `messages_fts_trigram`) that roughly triple the on-disk size. Observed: 1.9GB for ~14.7k sessions / ~119k messages (2026-09-10). It is the largest single file under `~/.hermes` after `models/` (3GB).
+
+**Reclaim space WITHOUT deleting any data** — merge FTS segments + VACUUM:
+```bash
+hermes sessions optimize
+```
+
+**To actually delete old sessions** (filterable by age/source/title; bare prune defaults to 90 days):
+```bash
+hermes sessions prune --older-than 90d --dry-run   # preview first
+hermes sessions prune --older-than 90d --yes       # then commit
+```
+
+Check current footprint:
+```bash
+hermes sessions stats
+```
+
+⚠️ `sessions optimize` rewrites the DB file (VACUUM + FTS merge), so it needs ~2× the current DB size in free space to complete. If disk is tight, run other cleanup steps first, or `sessions prune` old sessions before optimizing.
+
 ### 2o. System-level regeneratable caches (safe — reinstalled on next use)
 
 `/root/.cache/` accumulates framework and package manager caches at the system level. These are all safe to purge — regenerated on next build/install/download. Model weights (huggingface, datalab) live in `/root/.hermes/models/` and are never touched.
